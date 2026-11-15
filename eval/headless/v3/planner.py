@@ -95,7 +95,7 @@ from ..situations import at_unix, fleet_plan
 from .families import grids
 from .labels import FAMILY
 from .linkmap import link_map
-from .mission import RESOLVE_CONF, rule
+from .mission import RESOLVE_CONF, STILL_MPS, THREAT_MPS, rule
 from .oracle import NEED_AFFILIATIONS, RECOVERING, Path2, to_ll, to_xy
 
 #: the evidence the picture needs (the mission's 0.6)
@@ -1216,11 +1216,6 @@ def at_level(shown: str | None, domain: str) -> bool:
     return rule(domain).level == "recognise" and shown in set(FAMILY.values())
 
 
-#: the speed the honest ceiling takes an unranged aircraft to come in at (a small drone's 25 m/s,
-#: the top of F2's 12 to 25: the mission's threat for its 30 s grace, mission.py)
-THREAT_MPS = {"air": 25.0}
-
-
 class HonestCeiling(CeilingLinkBlind):
     """The realistic ceiling (module doc): the link-blind ceiling reading no truth, built from a
     session, the loop's runner and the sensing model's functions alone (`sense_fn`, which forwards
@@ -1358,7 +1353,7 @@ class HonestCeiling(CeilingLinkBlind):
         """The velocity the plan carries a track at: its shown one; an aircraft the picture gives none
         (a 2D radar's bearings seldom range one) is taken to come straight in at its domain's threat
         speed (`THREAT_MPS`), as a watch officer would."""
-        if dom in THREAT_MPS and math.hypot(*v) < 0.5:
+        if dom in THREAT_MPS and math.hypot(*v) < STILL_MPS:
             d = math.hypot(*xy)
             if d > 1.0:
                 return (-THREAT_MPS[dom] * xy[0] / d, -THREAT_MPS[dom] * xy[1] / d)

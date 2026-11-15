@@ -84,20 +84,23 @@ REPORTED: tuple[tuple[str, str], ...] = ((FORESIGHT, CEILING), (FORESIGHT, "none
                                          ("oracle-v3-late", "none"), ("oracle-v3-linkblind", "none"),
                                          ("oracle-v3-sensorblind", "none"), ("oracle-v3-honest", "none"))
 #: SCORING-V3.md 13.4: each perturbation's predicted moves against the honest ceiling (metric, want);
-#: `not worse`: the pooled interval's lower bound above -`NOT_WORSE` (non-inferiority, v2 0.5 b)
+#: `not worse`: the pooled interval's lower bound above -`NOT_WORSE` (non-inferiority, v2 0.5 b).
+#: 13.4 registered "useless up" and "useless share up"; since 2026-11-15 (choice 40) an order that
+#: served no need is justified or not justified, and those moves read the two together
+#: (`served_no_need`: v2's useless value for value), so each is judged as registered
 MOVES: dict[str, tuple[tuple[str, str], ...]] = {
     "oracle-v3-honest+spam": (("served_share", "not worse"), ("per_hour.follow_up", "up"), ("repeats", "up"),
                               ("cards_per_10min", "up")),
-    "oracle-v3-honest+behind": (("served_share", "down"), ("per_hour.useless", "up")),
+    "oracle-v3-honest+behind": (("served_share", "down"), ("per_hour.served_no_need", "up")),
     "oracle-v3-honest+skip-first": (("served_share", "down"),),
     "oracle-v3-honest+reserve-blind": (("fault_met_share", "down"),),
-    "oracle-v3-honest+ferries": (("per_hour.useless", "up"), ("bad_card_share", "up")),
+    "oracle-v3-honest+ferries": (("per_hour.served_no_need", "up"), ("bad_card_share", "up")),
     "oracle-v3-honest+pull-off": (("served_share", "down"), ("per_hour.harmful_b", "up")),
-    # useless as a share (v2 0.5 c): the honest ceiling looks at traffic it cannot tell from a need
-    # (about 36 looks an episode on the smoke seed 5100, most useless), and wrong-sensor drops the
-    # looks no wrong vehicle can take, so its useless looks per hour fall while every look it sends
-    # is useless (seen on the smoke seed, before any run on the dev seeds)
-    "oracle-v3-honest+wrong-sensor": (("served_share", "down"), ("useless_share", "up")),
+    # served no need as a share (v2 0.5 c): the honest ceiling looks at traffic it cannot tell from a
+    # need (about 36 looks an episode on the smoke seed 5100, most serving none), and wrong-sensor
+    # drops the looks no wrong vehicle can take, so its looks serving no need per hour fall while
+    # every look it sends serves none (seen on the smoke seed, before any run on the dev seeds)
+    "oracle-v3-honest+wrong-sensor": (("served_share", "down"), ("served_no_need_share", "up")),
 }
 NOT_WORSE = 0.05
 #: lesson 4: the guard's level, Holm across each family's cells

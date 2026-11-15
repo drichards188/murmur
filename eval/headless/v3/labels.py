@@ -26,6 +26,15 @@ their runs, fault needs, the reserve, the precedence); what changes is written h
   track, run only while it looks (to the look's end as the record shows it, `look_end`: the vehicle
   then goes back to the order it replaced, under the identify's id), and judged for harm (a) at its
   track's shown position.
+- **An order that served no need** (2.5 item 6, the owner's decision of 2026-11-15, choice 40; v2's
+  `useless`): **justified** when the picture at its creation supported it (`supported_on_picture`:
+  its track in doubt and inside the circle or coming into it within the horizon; an aircraft shown
+  with no velocity taken to come straight in at the air threat speed, the honest ceiling's rule) or
+  it did something useful (`cleared_doubt`: its vehicle's own sensor of the aimed contact's domain
+  raised its hits on the contact's track while it flew the order, and the track, in doubt when the
+  order was made, reached the mission's level by the order's end); **not_justified** otherwise. A
+  collect or a cover is split as labels_ops.py `space_label` says, on the context the agent could
+  see (a stated need's area, a predicted outage).
 - **Nominations** (`engage`, 2.8) and **review decisions** (2.9), judged against truth: their own
   labels (`nomination_labels`, `review_labels`), and **collect** and **cover** (2.10): built in
   labels_ops.py with F14-F16's own needs (`ops` in the labels, where a situation states them).
@@ -38,6 +47,7 @@ their runs, fault needs, the reserve, the precedence); what changes is written h
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Any
 
@@ -51,8 +61,9 @@ from ..v2.record import Picture, carry
 from . import labels_ops as OPS
 from .faults import fault_needs as fault_needs_v3
 from .faults import open_faults
-from .mission import DOMAINS, RESOLVE_CONF, rule
+from .mission import DOMAINS, RESOLVE_CONF, STILL_MPS, THREAT_MPS, rule
 
+#: scoring v3 (the labels' format); each instrument carries its own version (`INSTRUMENT_VERSIONS`)
 VERSION = "3"
 END_MARGIN_S = 10.0
 NEED_AFFILIATIONS = ("unknown", "suspect", "hostile")
@@ -85,14 +96,26 @@ INTENT_ENDS = ("done", "failed", "aborted", "voided")
 INSTRUMENTS = {
     "contact_need": "v3.contact_need", "sensing_error": "v3.sensing_error", "identity_resolved": "v3.identity_resolved",
     "contribution": "v3.contribution", "fault_need": "v2.fault_need", "action": "v3.action_label", "aim": "v3.aim",
-    "justified": "v3.justified_on_picture", "nomination": "v3.nomination", "review": "v3.review_decision",
+    "supported": "v3.supported_on_picture", "cleared": "v3.cleared_doubt", "nomination": "v3.nomination",
+    "review": "v3.review_decision",
 }
+#: an instrument's version where it is not scoring v3's own (`VERSION`): version 4 since 2026-11-15
+#: (choice 40): the action labels split an order that served no need into `justified` and
+#: `not_justified` (v2's `useless`); the support on the picture (until then `v3.justified_on_picture`,
+#: version 3) takes an aircraft shown with no velocity to come straight in at the threat speed; and
+#: `cleared_doubt` is new
+INSTRUMENT_VERSIONS = {"action": "4", "supported": "4", "cleared": "4"}
+#: the labels of an order that served no need (2.5 item 6), and why one is justified (`justified_by`):
+#: the picture supported it (`supported_on_picture`), it cleared a doubt (`cleared_doubt`), or, for a
+#: collect or a cover, the stated tasking supported it (labels_ops.py `no_need`)
+NO_NEED_LABELS = ("justified", "not_justified")
+JUSTIFIED_BY = ("picture", "cleared", "tasking")
 
 
 def instrument(name: str) -> dict[str, str]:
     if INSTRUMENTS[name].startswith("v2."):
         return _v2_instrument(name)
-    return {"name": INSTRUMENTS[name], "version": VERSION}
+    return {"name": INSTRUMENTS[name], "version": INSTRUMENT_VERSIONS.get(name, VERSION)}
 
 
 def picture(rec: dict[str, Any]) -> Picture:
@@ -376,13 +399,46 @@ def contributed(a: dict[str, Any], pic: Picture, needs: dict[str, dict[str, Any]
     return sorted(out, key=lambda c: (needs[c]["t_need"], c))
 
 
-def justified(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth, p: Params,
-              center: tuple[float, float], radius_m: float) -> dict[str, Any]:
-    """v2's justification on the picture, about the world's own centre; an identify is judged on the
-    track it names, when the picture showed it then (choice 37)."""
+def in_doubt(tr: dict[str, Any]) -> bool:
+    """A track the picture shows in doubt (2.5): shown unknown, suspect or hostile, in identity
+    conflict, or under 0.6 identity confidence (or with none)."""
+    idn = tr.get("identity") or {}
+    return (tr.get("affiliation") in NEED_AFFILIATIONS or bool(idn.get("conflict"))
+            or idn.get("confidence") is None or float(idn["confidence"]) < RESOLVE_CONF)
+
+
+def approaches(kin: dict[str, Any] | None, domain: str | None, t_a: float, p: Params, center: tuple[float, float],
+               radius_m: float) -> tuple[bool, str | None]:
+    """Whether a track's shown motion brings it within the circle within the horizon, and how that
+    was judged: v2's rule (its shown position carried along its shown velocity from its last fix to
+    `t_a`, then for up to the horizon in 5 s steps; a track with no velocity at its position only),
+    except that an aircraft shown with no velocity (none, or under `STILL_MPS`: the tracker feeds one
+    without as 0.0 m/s) is taken to come straight in at its domain's threat speed (`THREAT_MPS`, the
+    honest ceiling's rule, planner.py `HonestCeiling.motion`): it approaches when that run from its
+    shown position reaches the circle within the horizon (choice 40)."""
+    if not kin or kin["position"][0] is None:
+        return False, None
+    v = kin["velocity"]
+    p0 = carry(kin["position"], v, t_a - float(kin["last_seen_s"] or t_a))
+    if domain in THREAT_MPS and (v is None or math.hypot(*v) < STILL_MPS):
+        return dist_m(p0, center) - radius_m <= THREAT_MPS[str(domain)] * p.justify_horizon_s + 1e-9, "threat_speed"
+    steps = int(p.justify_horizon_s // V2.JUSTIFY_STEP_S) if v else 0
+    for j in range(steps + 1):
+        if dist_m(carry(p0, v, j * V2.JUSTIFY_STEP_S), center) <= radius_m:
+            return True, "velocity" if v else "position"
+    return False, "velocity" if v else "position"
+
+
+def supported_on_picture(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth, p: Params,
+                         center: tuple[float, float], radius_m: float) -> dict[str, Any]:
+    """Whether the picture at the order's creation supported it (2.5 item 6; v2's justification on
+    the picture, about the world's own centre): the track nearest the aim (an identify's, the track it
+    names, when the picture showed it then: choice 37) shown in doubt (`in_doubt`) and inside the
+    circle or coming into it within the horizon (`approaches`: an aircraft with no velocity at the
+    air threat speed, choice 40)."""
     t_a = a["created"]
     k = pic.index(t_a)
-    out: dict[str, Any] = {"justified": False, "track": None, "instrument": instrument("justified"),
+    out: dict[str, Any] = {"supported": False, "track": None, "instrument": instrument("supported"),
                            "horizon_s": p.justify_horizon_s}
     if k is None:
         return out
@@ -406,21 +462,54 @@ def justified(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth
             return out
         tid = min(tracks, key=lambda x: geometry_dist(pic.predicted(x, t_a) or (0.0, 0.0), g))
     tr = pic.track(tid, k) or {}
-    idn = tr.get("identity") or {}
-    shown_aff = tr.get("affiliation")
-    doubt = (shown_aff in NEED_AFFILIATIONS or bool(idn.get("conflict"))
-             or idn.get("confidence") is None or float(idn["confidence"]) < RESOLVE_CONF)
-    kin = pic.kinematics(tid, k)
-    near = False
-    if kin and kin["position"][0] is not None:
-        p0 = carry(kin["position"], kin["velocity"], t_a - float(kin["last_seen_s"] or t_a))
-        steps = int(p.justify_horizon_s // V2.JUSTIFY_STEP_S) if kin["velocity"] else 0
-        for j in range(steps + 1):
-            if dist_m(carry(p0, kin["velocity"], j * V2.JUSTIFY_STEP_S), center) <= radius_m:
-                near = True
-                break
-    out.update(justified=doubt and near, track=tid, shown={"affiliation": shown_aff, "identity": idn}, doubt=doubt,
-               approaches=near)
+    doubt = in_doubt(tr)
+    near, how = approaches(pic.kinematics(tid, k), tr.get("domain"), t_a, p, center, radius_m)
+    out.update(supported=doubt and near, track=tid, shown={"affiliation": tr.get("affiliation"),
+                                                           "identity": tr.get("identity") or {}},
+               doubt=doubt, approaches=near, approach=how)
+    return out
+
+
+def cleared_doubt(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth) -> dict[str, Any]:
+    """Whether the order did something useful (2.5 item 6, choice 40): it cleared a doubt the picture
+    had, as the brief asks, whether or not its contact was a need. For a contact it was aimed at (an
+    identify's or a `track` order's, the contact its track names; by hits, each contact whose hits
+    rose while it ran; by geometry, the one it points at when that is not ambiguous): the contact's
+    track was shown in doubt (`in_doubt`) and not at the mission's level (`resolved_at`: its true kind
+    at 0.6 or more without conflict, supported by the domain's sensor; a class under the water) when
+    the order was made; it reached that level at a picture sample after, within a run of the order
+    (by the order's end; an identify's, its look's end); and its vehicle's own sensor of the
+    contact's domain (2.2's support, as a contribution counts it: EO/IR, sonar under the water, AIS
+    for a true broadcaster on the surface) raised its hits on the track from the start of that run
+    to that sample."""
+    out: dict[str, Any] = {"cleared": False, "contact": None, "instrument": instrument("cleared")}
+    t_a = a.get("created")
+    runs = [(uid, r) for uid, r in a["runs"].items() if r.get("flew")]
+    if t_a is None or not runs:
+        return out
+    k_a = pic.index(t_a)
+    if k_a is None:
+        return out
+    if aim.get("by") in ("hits", "track"):
+        cands = list(aim.get("contacts") or [])
+    else:
+        cands = [aim["primary"]] if aim.get("primary") else []
+    k_end = pic.index(max(float(r["end"]) for _, r in runs))
+    for c in cands:
+        m = truth.meta.get(c)
+        tid = pic.track_of(c, k_a)
+        if m is None or tid is None or not in_doubt(pic.track(tid, k_a) or {}) or resolved_at(pic, k_a, c, m):
+            continue
+        k_res = next((k for k in range(k_a + 1, (k_end or k_a) + 1) if resolved_at(pic, k, c, m)), None)
+        if k_res is None:
+            continue
+        t_res = pic.time(k_res)
+        r = rule(m.get("domain"))
+        sensors = tuple(r.sensors) + (("ais",) if r.ais_counts and ais_true(m) else ())
+        for uid, run in runs:
+            if run["own_start"] <= t_res <= run["end"] and pic.contact_hits_rose(c, uid, sensors, run["own_start"], t_res):
+                out.update(cleared=True, contact=c, track=tid, uid=uid, t_level=round(t_res, 3))
+                return out
     return out
 
 
@@ -500,28 +589,31 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
         lab["paired"] = none_served is not None
         lab["instrument"] = instrument("action")
         lab["contribution_instrument"] = instrument("contribution")
+        unsupported = {"supported": False}
         if a["refused"] and a["kind"] != "cover":
-            lab.update(aim=empty_aim, aimed_need=None, contributed=[], justified={"justified": False}, faults_open=[],
+            lab.update(aim=empty_aim, aimed_need=None, contributed=[], supported=unsupported, faults_open=[],
                        harm=[], label="refused")
             out.append(lab)
             continue
         if a["kind"] == "engage":
-            lab.update(aim=empty_aim, aimed_need=None, contributed=[], justified={"justified": False},
+            lab.update(aim=empty_aim, aimed_need=None, contributed=[], supported=unsupported,
                        faults_open=open_faults(a, pic, rec, fneeds), harm=[])
             lab.update(nomination_label(a, rec, pic, truth))
             lab["also_fault"] = bool(lab["faults_open"])
             out.append(lab)
             continue
         if a["kind"] in SPACE_KINDS:
-            # 2.10 (labels_ops.py): a cover whose only failing check is coverage answered its question
-            lab.update(aim=empty_aim, aimed_need=None, contributed=[], justified={"justified": False},
+            # 2.10 (labels_ops.py), its own labels: a collect or a cover is judged against the stated
+            # needs and the predicted outages the agent could see, never as a look at a contact (a cover
+            # whose only failing check is coverage answered its question)
+            lab.update(aim=empty_aim, aimed_need=None, contributed=[], supported=unsupported,
                        faults_open=open_faults(a, pic, rec, fneeds), harm=[])
             lab.update(OPS.space_label(a, rec, pic, none_cover))
             lab["also_fault"] = bool(lab["faults_open"])
             out.append(lab)
             continue
         if a["kind"] not in MOVING_KINDS:
-            lab.update(aim=empty_aim, aimed_need=None, contributed=[], justified={"justified": False},
+            lab.update(aim=empty_aim, aimed_need=None, contributed=[], supported=unsupported,
                        faults_open=open_faults(a, pic, rec, fneeds), harm=[], label="unjudged",
                        unjudged_because=f"no v3 label for {a['kind']!r}")
             lab["also_fault"] = bool(lab["faults_open"])
@@ -531,7 +623,7 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
         lab["aim"] = aim
         lab["aimed_need"] = V2.aimed_need(aim, needs)
         lab["contributed"] = contributed(a, pic, needs) if a["runs"] else []
-        lab["justified"] = justified(a, aim, pic, truth, p, center, radius)
+        lab["supported"] = supported_on_picture(a, aim, pic, truth, p, center, radius)
         lab["faults_open"] = open_faults(a, pic, rec, fneeds)
         harm = harmful(a, aim, pic, needs, truth, p)
         lab["harm"] = harm
@@ -569,9 +661,17 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
                                          or resolved_at(pic, pic.index(a["created"]), c, truth.meta.get(c) or {})))
                 was_credited = bool(c and c in credited and credited[c][1] is not None
                                     and credited[c][1] <= (a["created"] or 0.0))
-                label = "redundant" if (was_served or was_credited) else "useless"
-                if label == "redundant":
+                if was_served or was_credited:
+                    label = "redundant"
                     lab["redundant_because"] = "served" if was_served else "credited"
+                else:
+                    # it served no need (choice 40): justified when the picture supported it or it
+                    # cleared a doubt the picture had, not justified when neither
+                    lab["cleared"] = cleared_doubt(a, aim, pic, truth)
+                    by = [w for w, ok in (("picture", lab["supported"]["supported"]),
+                                          ("cleared", lab["cleared"]["cleared"])) if ok]
+                    label = "justified" if by else "not_justified"
+                    lab["justified_by"] = by
         lab["label"] = label
         out.append(lab)
     return out

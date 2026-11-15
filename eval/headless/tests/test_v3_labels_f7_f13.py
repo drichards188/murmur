@@ -188,7 +188,7 @@ def test_a_gnss_jammer_is_open_on_every_vehicle_inside_its_circle():
     a = by_intent(L.episode_labels(faulted(log, stated)))[10]
     assert a["faults_open"] == ["gnss_jam:3"] and a["label"] == "fault_response"
     a = by_intent(L.episode_labels(faulted(log, stated, where=at(3000.0, 0.0))))[10]
-    assert a["faults_open"] == [] and a["label"] == "useless"
+    assert a["faults_open"] == [] and a["label"] == "not_justified"
 
 
 def test_a_spoof_stop_battery_and_reboot_are_open_on_their_vehicles():

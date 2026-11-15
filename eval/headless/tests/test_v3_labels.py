@@ -8,6 +8,7 @@ No simulator: the records are v2's synthetic ones (tests/test_v2_labels.py `Synt
 
 from __future__ import annotations
 
+import json
 import random
 from typing import Any
 
@@ -166,12 +167,14 @@ def test_a_track_order_is_pointed_at_the_contact_its_track_names():
     assert a["aim"]["by"] == "track" and a["aim"]["primary"] == "c" and a["aimed_need"] == "c"
 
 
-@pytest.mark.parametrize("ended_at, want", [(None, "useful"), (100.0, "useless")])
+@pytest.mark.parametrize("ended_at, want", [(None, "useful"), (100.0, "justified")])
 def test_an_identify_is_labelled_by_its_vehicle_s_look_at_its_track(ended_at: float | None, want: str):
     """An identify (decision rules 21) is aimed at the contact its track names. Its op says `done` once
     on station, which does not end it: its vehicle's EO/IR raising its hits on the need while it looks
     is a contribution. Once its look ended (the bridge's end alert on the order), the vehicle flies the
-    order it replaced, under the identify's id, and hits then are not the identify's (choice 38)."""
+    order it replaced, under the identify's id, and hits then are not the identify's (choice 38): it
+    served no need, and the picture supported it (its track in doubt and inbound), so it is justified
+    (choice 40)."""
     s = one("small_fast_boat", "surface", ("small_fast_boat", 0.9, None, ["eo_ir"]), 130.0)
     s.tracks["T-0001"]["hits"] = rising("3:eo_ir", 105.0, 135.0)
     s.vehicle(3, lambda t: {})
@@ -186,6 +189,99 @@ def test_an_identify_is_labelled_by_its_vehicle_s_look_at_its_track(ended_at: fl
     a = by_intent(L.episode_labels(rec, none_labels={"needs": [{"contact": "c", "served": False}]}))[10]
     assert a["label"] == want, (a["label"], a["runs"], a["contributed"])
     assert a["aim"]["by"] == "track" and a["aimed_need"] == "c"
+    if want == "justified":
+        assert a["justified_by"] == ["picture"] and not a["cleared"]["cleared"], "its look ended before the level"
+
+
+# ---- 2.5 item 6: an order that served no need, justified or not (choice 40) ---------------------------
+
+def still(rec: dict[str, Any], domain: str = "air", velocity: bool = False) -> dict[str, Any]:
+    """The record's track shown in `domain`, with no velocity (`velocity` False: none at all) or a
+    zero one (the tracker feeds a track without one as 0.0 m/s)."""
+    T = rec["v3"]["picture"]["tracks"]["T-0001"]
+    T["domain"] = domain
+    for r in T["kin"]:
+        r[3] = r[4] = (0.0 if velocity else None)
+    return rec
+
+
+def far_look(east_m: float) -> Synth:
+    """An unknown contact holding still `east_m` west of the bridge, its track in doubt, and an orbit
+    at it that raises no hits."""
+    s = Synth(300)
+    s.contact("d", kind="small_drone", domain="air", path=[(0.0, -east_m, 0.0)])
+    s.track("T-0001", "d", ident=lambda t: ("small_air", 0.01, None, ["radar"]))
+    s.vehicle(3, lambda t: {})
+    orbit(s, 10, 3, created=60.0, start=61.0, center=at(-east_m, 0.0), radius=500.0)
+    return s
+
+
+@pytest.mark.parametrize("east_m, domain, velocity, want, approach", [
+    (5000.0, "air", False, "justified", "threat_speed"),       # 2 km out: 80 s at 25 m/s
+    (10000.0, "air", False, "justified", "threat_speed"),      # 7 km out: 280 s, within the 300 s horizon
+    (11000.0, "air", False, "not_justified", "threat_speed"),  # 8 km out: 320 s
+    (5000.0, "air", True, "justified", "threat_speed"),        # a 0.0 m/s velocity is none
+    (5000.0, "surface", False, "not_justified", "position"),   # other domains as before: its position only
+    (5000.0, "surface", True, "not_justified", "velocity"),
+])
+def test_an_aircraft_with_no_velocity_is_taken_to_come_straight_in(east_m: float, domain: str, velocity: bool,
+                                                                   want: str, approach: str):
+    """The picture supports an order at a track in doubt that is inside the circle or coming into it
+    within the horizon (300 s) along its shown velocity. An aircraft shown with no velocity (a radar's
+    bearings, unranged) is taken to come straight in at the air threat speed, 25 m/s (the honest
+    ceiling's rule, mission.py `THREAT_MPS`); a boat with none is judged where it is (choice 40)."""
+    rec = still(v3_record(far_look(east_m)), domain, velocity)
+    a = by_intent(L.episode_labels(rec, none_labels={"needs": []}))[10]
+    assert a["label"] == want and a["supported"]["approach"] == approach, (a["label"], a["supported"])
+    assert a["justified_by"] == (["picture"] if want == "justified" else [])
+    assert a["supported"]["instrument"] == {"name": "v3.supported_on_picture", "version": "4"}
+
+
+def ferry_look(ident_from: float | None = 150.0, hits_by: int = 3, level_from: float | None = None) -> Synth:
+    """A neutral ferry 8 km west of the bridge heading away (no need, and the picture never supports
+    a look: it will not come within 3 km), shown unknown until a camera identifies it at `ident_from`
+    (or at `level_from` before the order), and an orbit on it by vehicle 3 from 100 s; `hits_by`'s
+    EO/IR raises its hits on it from 100 to 160 s."""
+    s = Synth(300)
+    s.contact("ferry", kind="ferry", aff="neutral", path=[(0.0, -8000.0, 0.0), (300.0, -12000.0, 0.0)])
+    t1 = level_from if level_from is not None else ident_from
+    s.track("T-0001", "ferry", ident=lambda t: ("ferry", 0.9, None, ["eo_ir"]) if t1 is not None and t >= t1
+            else ("large_vessel", 0.4, None, ["radar"]), hits=rising(f"{hits_by}:eo_ir", 100.0, 160.0))
+    s.vehicle(3, lambda t: {})
+    orbit(s, 10, 3, created=60.0, start=100.0, center=at(-9500.0, 0.0), radius=1000.0)
+    return s
+
+
+def test_an_order_that_cleared_a_doubt_is_justified():
+    """It did something useful: its vehicle's own camera raised its hits on the track it was aimed at
+    while it flew the order, and the track, in doubt when the order was made, reached the mission's
+    level (its true kind at 0.6, supported by EO/IR) by the order's end. A ferry is no need, but the
+    brief asks every contact of unknown affiliation identified (choice 40)."""
+    a = by_intent(labels(ferry_look(), none_served={}))[10]
+    assert not a["supported"]["supported"], "heading away, 8 km out"
+    assert a["label"] == "justified" and a["justified_by"] == ["cleared"], (a["label"], a["cleared"])
+    assert a["cleared"]["contact"] == "ferry" and a["cleared"]["uid"] == "3" and a["cleared"]["t_level"] == 150.0
+    assert a["instrument"] == {"name": "v3.action_label", "version": "4"}
+    # another vehicle's camera identified it: not this order's doing
+    assert by_intent(labels(ferry_look(hits_by=4), none_served={}))[10]["label"] == "not_justified"
+    # its camera looked but the track never reached the level
+    assert by_intent(labels(ferry_look(ident_from=None), none_served={}))[10]["label"] == "not_justified"
+    # already at the level when the order was made (shown unknown still): nothing left to clear
+    a = by_intent(labels(ferry_look(level_from=50.0), none_served={}))[10]
+    assert a["label"] == "not_justified" and not a["cleared"]["cleared"]
+
+
+def test_the_metrics_count_justified_not_justified_and_the_burden():
+    lab = labels(ferry_look(), none_served={})
+    m = M.episode_metrics(v3_record(ferry_look()), lab)
+    assert m["counts"]["justified"] == 1 and m["counts"]["not_justified"] == 0 and m["counts"]["served_no_need"] == 1
+    assert m["counts"]["orders"] == 1 and m["counts"]["cards"] == 0
+    assert m["per_hour"]["justified"] == 12.0 and m["per_hour"]["orders"] == 12.0, "one order in 300 s"
+    assert m["not_justified_share"] == 0.0 and m["served_no_need_share"] == 1.0 and m["not_justified_dispatched"] == 0
+    assert "useless" not in json.dumps(m), "v2's useless figures replaced"
+    lab = labels(ferry_look(ident_from=None), none_served={})
+    m = M.episode_metrics(v3_record(ferry_look(ident_from=None)), lab)
+    assert m["per_hour"]["not_justified"] == 12.0 and m["per_hour"]["justified"] == 0.0
 
 
 def test_collect_and_cover_are_left_unjudged():
@@ -197,7 +293,8 @@ def test_collect_and_cover_are_left_unjudged():
     lab = labels(s, none_served={"c": False})
     assert {a["label"] for a in lab["actions"]} == {"unjudged"}
     m = M.episode_metrics(v3_record(s), lab)
-    assert m["unjudged_actions"] == 2 and m["counts"]["useless"] == 0
+    assert m["unjudged_actions"] == 2 and m["counts"]["not_justified"] == 0 and m["counts"]["justified"] == 0
+    assert m["counts"]["orders"] == 2, "the burden counts every order, whatever its label"
 
 
 # ---- 2.8: nominations ----------------------------------------------------------------------------------

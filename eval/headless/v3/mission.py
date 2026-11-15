@@ -34,6 +34,13 @@ from eval.world import load_world
 
 NEED_RADIUS_M = 3000.0
 RESOLVE_CONF = 0.6
+#: the speed an aircraft the picture shows no velocity for is taken to come straight in at (a small
+#: drone's 25 m/s, the top of F2's 12 to 25: the mission's threat for its 30 s grace); the honest
+#: ceiling's plan (planner.py `HonestCeiling.motion`) and the labels' support on the picture
+#: (labels.py `supported_on_picture`) both read it here
+THREAT_MPS = {"air": 25.0}
+#: a shown speed under this is no velocity (the tracker feeds a track without one as 0.0 m/s)
+STILL_MPS = 0.5
 
 
 @dataclass(frozen=True)

@@ -135,7 +135,7 @@ def collect_world(product_s: float | None, area_center: list[float] | None = Non
     return L.episode_labels(rec, none_labels=nl)
 
 
-def test_a_collect_is_useful_late_redundant_or_useless():
+def test_a_collect_is_useful_late_redundant_justified_or_not():
     lab = collect_world(5000.0)
     assert by_intent(lab)[20]["label"] == "useful" and lab["ops"]["gap"][0]["served"]
     assert lab["ops"]["gap"][0]["by"] == "collect"
@@ -143,8 +143,12 @@ def test_a_collect_is_useful_late_redundant_or_useless():
     assert not collect_world(7000.0)["ops"]["gap"][0]["served"]
     assert by_intent(collect_world(5000.0, none_cover={"gap-1": 900.0}))[20]["label"] == "redundant"
     assert by_intent(collect_world(5000.0, near_s=50.0))[20]["label"] == "redundant", "ours covered it before"
-    assert by_intent(collect_world(5000.0, area_center=[-122.0, 36.0]))[20]["label"] == "useless", "no need's area"
-    assert by_intent(collect_world(None))[20]["label"] == "useless", "never tasked"
+    # served no need (choice 40): over no stated need's area not justified; over one, never tasked,
+    # justified (the brief's tasking supported asking)
+    assert by_intent(collect_world(5000.0, area_center=[-122.0, 36.0]))[20]["label"] == "not_justified", "no need's area"
+    a = by_intent(collect_world(None))[20]
+    assert a["label"] == "justified" and a["justified_by"] == ["tasking"], "never tasked"
+    assert a["space"]["instrument"] == {"name": "v3.collect", "version": "4"}
     assert by_intent(collect_world(5000.0, none_cover=None))[20]["label"] == "unjudged", "no none replicate"
     served_by_ours = collect_world(None, near_s=300.0)["ops"]["gap"][0]
     assert served_by_ours["served"] and served_by_ours["by"] == "ours"
@@ -156,7 +160,8 @@ NEED = {"id": "gnss-1", "uid": 18, "callsign": "FERRET 1", "route": [[-122.46, 3
 
 
 def cover_world(coverage: str, held_at: float | None, outage_at: float = 600.0, other_fail: bool = False,
-                stated: bool = True, created: float = 100.0, area: dict[str, Any] | None = None) -> dict[str, Any]:
+                stated: bool = True, created: float = 100.0, area: dict[str, Any] | None = None,
+                end_s: float | None = None) -> dict[str, Any]:
     s = Synth(900)
     s.contact("c", aff="neutral", path=inbound())
     s.intent(30, "cover", [], created, {"area": area or NEED["area"], "service": NEED["service"], "min_level": 10.0},
@@ -167,7 +172,7 @@ def cover_world(coverage: str, held_at: float | None, outage_at: float = 600.0, 
         s.intent(32, "hold", [18], held_at, {}, states=[(held_at, "dispatched", "x")],
                  op={18: [(held_at + 1.0, "acked"), (held_at + 2.0, "done")]})
     rec = v3_record(s)
-    rec["truth"]["stated"] = {"cover_needs": [NEED]} if stated else {}
+    rec["truth"]["stated"] = {"cover_needs": [{**NEED, **({"end_s": end_s} if end_s is not None else {})}]} if stated else {}
     checks = [{"rule": "space_query", "outcome": "fail" if other_fail else "pass"}, {"rule": "coverage", "outcome": coverage}]
     rec["v3"]["space"] = {"intents": [{"id": 30, "kind": "cover", "checks": checks, "order": None, "op": []}]}
     rec["script"] = [{"t": 1.0, "kind": "probe", "id": "gnss-1", "answer": {"samples": [
@@ -180,9 +185,19 @@ def test_a_cover_is_useful_when_the_predicted_outage_was_avoided():
     a = by_intent(lab)[30]
     assert a["label"] == "useful", a["space"]
     assert lab["ops"]["cover"][0]["served"] and lab["ops"]["cover"][0]["outage"]
+    # served no need (choice 40), on the context the agent could see: the outage predicted over the
+    # stated run's area, which then went through it, is justified; so is a cover of that area asked
+    # before its run's end that predicted no outage (the service confirmed, as tasked); one of no
+    # stated need's area that predicted none, or of that area after its run, is not
     lab = cover_world("fail", held_at=None)
-    assert by_intent(lab)[30]["label"] == "useless" and lab["ops"]["cover"][0]["cause"] == "run_during_outage"
-    assert by_intent(cover_world("pass", held_at=None))[30]["label"] == "useless", "no outage predicted"
+    assert by_intent(lab)[30]["label"] == "justified" and lab["ops"]["cover"][0]["cause"] == "run_during_outage"
+    a = by_intent(cover_world("pass", held_at=None))[30]
+    assert a["label"] == "justified" and a["justified_by"] == ["tasking"], "no outage predicted, as tasked"
+    assert a["space"]["instrument"] == {"name": "v3.cover", "version": "4"}
+    assert by_intent(cover_world("pass", held_at=None, stated=False))[30]["label"] == "not_justified"
+    assert by_intent(cover_world("pass", held_at=None, created=500.0, end_s=450.0))[30]["label"] == "not_justified"
+    assert by_intent(cover_world("fail", held_at=None, outage_at=420.0, created=500.0, end_s=450.0))[30]["label"] \
+        == "not_justified"
     assert by_intent(cover_world("fail", held_at=None, stated=False))[30]["label"] == "unjudged"
     assert by_intent(cover_world("fail", held_at=None, other_fail=True))[30]["label"] == "refused"
     late = cover_world("fail", held_at=550.0, created=450.0)["ops"]["cover"][0]
@@ -452,7 +467,8 @@ def test_f14_smoke_a_collect_and_a_cover(name: str, tmp_path: Path, binary: None
     # a collect when a pass can deliver by the due time (else the oracle says none is in time)
     assert kinds == ({"collect", "cover"} if in_time else {"cover"})
     labels = {a["kind"]: a["label"] for a in lab["actions"] if a["kind"] in ("collect", "cover")}
-    assert labels.get("collect", "unjudged") in ("unjudged", "useful", "late") and labels["cover"] in ("useful", "useless")
+    assert labels.get("collect", "unjudged") in ("unjudged", "useful", "late")
+    assert labels["cover"] in ("useful", "justified", "not_justified")
     assert lab["ops"]["gap"][0]["need"] == "gap-1" and lab["ops"]["cover"][0]["asked"]
 
 

@@ -9,7 +9,10 @@ judged. A batch with the model watch officer (run.py's model arm) gets its own s
 (`model_arm`): need served beside `none`, the cost column, and the needs paired by situation against
 the playbook and `none` with the exact McNemar test (`paired`; an episode not scored serves nothing
 there). The restraint table shows the playbook's and the model's columns beside the free agents',
-and the orders naming more than one vehicle (group orders, bd murmur-3kqi). The episodes are
+and the orders naming more than one vehicle (group orders, bd murmur-3kqi); the orders that served
+no need are not justified or justified (SCORING-V3.md 2.5 item 6, choice 40), not justified per
+situation-hour being the judgment measure, and the burden (orders and cards per situation-hour,
+whatever their labels) is reported apart, per family and world and pooled over both worlds. The episodes are
 summarized in name order, so a report is the same whatever its workers. MODEL RESULTS ONLY.
 """
 
@@ -44,6 +47,10 @@ PLANNERS = (CEILING, FORESIGHT)
 #: a vehicle type can answer a need when its model range (a pointed sensor, Pd 0.5, under the
 #: situation's conditions, open geometry) times the oracle's share reaches at least this far
 CAPABLE_M = {"eo_ir": 150.0, "sonar": 35.0}
+#: the per-hour rates of restraint and burden the report carries (metrics.py): an order that served no
+#: need, not justified or justified (2.5 item 6, choice 40), harm and fault responses, and the agent's
+#: orders and cards whatever their labels (the burden)
+RESTRAINT_RATES = ("not_justified", "justified", "harmful", "fault_response", "orders", "cards")
 
 
 def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]:
@@ -86,7 +93,8 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
     contact_domains = sorted({str(m.get("domain")) for m in truth.meta.values()})
     actions = Counter(a["label"] for a in lab["actions"])
     return {"name": meta["name"], "family": meta["family"], "agent": meta["agent"], "seed": meta["situation_seed"],
-            "needs": needs, "metrics": {k: met[k] for k in ("served_share", "cards", "cards_per_10min", "useless_share",
+            "needs": needs, "metrics": {k: met[k] for k in ("served_share", "cards", "cards_per_10min", "not_justified_share",
+                                                             "served_no_need_share",
                                                              "by_domain", "per_hour", "actions", "nominations", "review",
                                                              "unjudged_actions", "bad_card_share", "repeats",
                                                              "fault_met_share", "rmst", "harmful_kinds")},
@@ -107,8 +115,7 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
             "decoys": len(decoys),
             # one order to several vehicles (a group order: its known faults are bd murmur-3kqi's)
             "group_orders": sum(1 for a in lab["actions"] if len(a.get("uids") or []) > 1),
-            "per_hour": {k: met["per_hour"].get(k) for k in ("useless", "useless_justified", "useless_unjustified",
-                                                              "harmful", "fault_response", "fault_actions")}}
+            "per_hour": {k: met["per_hour"].get(k) for k in RESTRAINT_RATES + ("fault_actions",)}}
 
 
 def decoy_only(pointed: set[str], decoys: set[str], needs: set[str]) -> bool:
@@ -319,7 +326,27 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                                   "single_cause": single_cause([n["cause"] for n in needs if not n["served"] and n.get("cause")]),
                                   **fault_summary(ag)}
     out["pooled"] = pooled
+    # restraint and burden pooled over both worlds, per family and over the whole batch (2.5 item 6,
+    # 3.4b): each agent's episodes' rates per situation-hour, averaged
+    restraint: dict[str, Any] = {}
+    for fam in sorted({parse(f)[0] for f in fams}) + ["all"]:
+        restraint[fam] = {}
+        for agent in sorted({s["agent"] for s in scored}):
+            ag = [s for s in scored if s["agent"] == agent and (fam == "all" or parse(s["family"])[0] == fam)]
+            if ag:
+                restraint[fam][agent] = {"episodes": len(ag), "families": sorted({parse(s["family"])[0] for s in ag}),
+                                         "per_hour": mean_rates(ag)}
+    out["restraint"] = restraint
     return out
+
+
+def mean_rates(ag: list[dict[str, Any]]) -> dict[str, float | None]:
+    """The episodes' rates of restraint and burden per situation-hour (`RESTRAINT_RATES`), averaged."""
+    def mean(k: str) -> float | None:
+        xs = [float((s.get("per_hour") or {}).get(k) or 0.0) for s in ag]
+        return round(statistics.fmean(xs), 2) if xs else None
+
+    return {k: mean(k) for k in RESTRAINT_RATES}
 
 
 def fault_summary(ag: list[dict[str, Any]]) -> dict[str, Any]:
@@ -329,18 +356,13 @@ def fault_summary(ag: list[dict[str, Any]]) -> dict[str, Any]:
     st = Counter(f["status"] for f in fns)
     judged = st["met"] + st["unmet"]
     lost = Counter(f"{x['platform']} {x['why']}" for s in ag for x in s.get("lost") or [])
-
-    def mean(k: str) -> float | None:
-        xs = [float((s.get("per_hour") or {}).get(k) or 0.0) for s in ag]
-        return round(statistics.fmean(xs), 2) if xs else None
-
     return {"fault_needs": {"met": st["met"], "unmet": st["unmet"], "censored": st["censored"],
                             "met_share": round(st["met"] / judged, 3) if judged else None},
             "decoy_looks": sum(int(s.get("decoy_looks") or 0) for s in ag),
             "decoy_situations_looked": sum(1 for s in ag if s.get("decoy_looks")),
             "group_orders": sum(int(s.get("group_orders") or 0) for s in ag),
             "lost_vehicles": sum(lost.values()), "lost_by": dict(lost.most_common()),
-            "per_hour": {k: mean(k) for k in ("useless", "useless_justified", "harmful", "fault_response")}}
+            "per_hour": mean_rates(ag)}
 
 
 def pct(x: float | None) -> str:
@@ -470,6 +492,27 @@ def model_markdown(arm: dict[str, Any]) -> list[str]:
     return lines
 
 
+def restraint_markdown(restraint: dict[str, Any]) -> list[str]:
+    """The restraint and burden table pooled over both worlds: per family, then over every family of
+    the batch, each agent's mean rates per situation-hour over its scored episodes (`summarize`)."""
+    if not restraint:
+        return []
+    lines = ["", "## Restraint and burden, pooled over both worlds", "",
+             "Each agent's rates per situation-hour, averaged over its scored episodes of the family in both worlds, "
+             "then over every family of the batch it ran (`all`). Not justified is the judgment measure (an order that "
+             "served no need, neither supported by the picture or the stated tasking when it was made nor doing "
+             "anything useful); orders and cards are the burden, whatever their labels.", "",
+             "| family | agent | episodes | not justified | justified | orders | cards | harmful |",
+             "|---|---|---|---|---|---|---|---|"]
+    for fam, agents in restraint.items():
+        for agent, x in agents.items():
+            ph = x["per_hour"]
+            where = fam if fam != "all" else "all (" + ", ".join(x["families"]) + ")"
+            lines.append(f"| {where} | {agent} | {x['episodes']} | " + " | ".join(str(ph.get(k)) for k in
+                         ("not_justified", "justified", "orders", "cards", "harmful")) + " |")
+    return lines
+
+
 def markdown(summary: dict[str, Any], d: Path) -> str:
     cov = summary["coverage"]
     who = ("free deterministic agents and the model watch officer" if summary.get("model")
@@ -517,14 +560,16 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
         lines.append(f"| {fam} | {c2('none')} | {c2('random-valid')} | {c2(ORACLE)} | {c2(FORESIGHT)} |")
     lines += ["", "## Faults and restraint, per family and world", "",
               "Fault needs met (low reserve, met over judged; censored apart), vehicles lost by the end (a diagnostic), "
-              "useless orders per situation-hour (justified on the picture among them), and orders naming more than one "
-              "vehicle (group orders: their known faults are bd murmur-3kqi's). The model's columns are its scored "
-              "episodes'.", "",
+              "the orders that served no need per situation-hour, not justified (neither supported by the picture nor "
+              "doing anything useful; justified ones in parentheses: SCORING-V3.md 2.5 item 6), the burden (every order "
+              "and every card per situation-hour, whatever its label), harm, and orders naming more than one vehicle "
+              "(group orders: their known faults are bd murmur-3kqi's). The model's columns are its scored episodes'.", "",
               "| family | world | fault needs met: none / random-valid / oracle | vehicles lost: none / random-valid / oracle | "
-              "useless per hour (justified): random-valid / oracle / playbook / model | harmful per hour: random-valid / "
+              "not justified per hour (justified): random-valid / oracle / playbook / model | orders per hour (cards): "
+              "random-valid / oracle / playbook / model | harmful per hour: random-valid / "
               "oracle / playbook / model | orders at a look-alike: random-valid / oracle / playbook / model | "
               "orders naming more than one vehicle: random-valid / oracle / playbook / model |",
-              "|---|---|---|---|---|---|---|---|"]
+              "|---|---|---|---|---|---|---|---|---|"]
     shown = ("random-valid", ORACLE, "playbook", "model")
     for f, b in summary["families"].items():
         a = b["agents"]
@@ -543,8 +588,11 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
         def each(cell: Any) -> str:
             return " / ".join(cell(x) for x in shown)
 
-        def useless(agent: str) -> str:
-            return f"{ph(agent, 'useless')} ({ph(agent, 'useless_justified')})"
+        def no_need(agent: str) -> str:
+            return f"{ph(agent, 'not_justified')} ({ph(agent, 'justified')})"
+
+        def burden(agent: str) -> str:
+            return f"{ph(agent, 'orders')} ({ph(agent, 'cards')})"
 
         def harmful(agent: str) -> str:
             return ph(agent, "harmful")
@@ -557,7 +605,8 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
 
         lines.append(f"| {b['family']} | {b['world']} | {fn('none')} / {fn('random-valid')} / {fn(ORACLE)} | "
                      f"{lost('none')} / {lost('random-valid')} / {lost(ORACLE)} | "
-                     f"{each(useless)} | {each(harmful)} | {each(looks)} | {each(groups)} |")
+                     f"{each(no_need)} | {each(burden)} | {each(harmful)} | {each(looks)} | {each(groups)} |")
+    lines += restraint_markdown(summary.get("restraint") or {})
     if summary.get("model"):
         lines += model_markdown(summary["model"])
     return "\n".join(lines) + "\n"

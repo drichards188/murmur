@@ -208,8 +208,33 @@ Orbit, patrol, hold and rtl (the movers' tasks), `track` (the antenna tracker's)
    cost);
 4. **fault response**: a hold or rtl on a faulted vehicle that earned no label of effect;
 5. **redundant**: its aimed need was already served or credited when it was created;
-6. **useless**: anything else, reported twice (justified on the picture, about the world's centre,
-   or not).
+6. an order that served no need otherwise (choice 40, the owner's decision of 2026-11-15) is
+   **justified** when the picture at the time supported it or it did something useful, and
+   **not_justified** when neither: the context did not support it and it did nothing useful.
+   - **The picture supported it** (`supported_on_picture`): the track it names (an identify's) or
+     the track nearest its aim, at its creation, shown in doubt (unknown, suspect or hostile, in
+     identity conflict, or under 0.6 confidence) and inside the world's mission circle or carried
+     into it along its shown velocity within the horizon (300 s, in 5 s steps). An aircraft shown
+     with no velocity (none, or under 0.5 m/s: the tracker feeds one without as 0.0 m/s) is taken to
+     come straight in at the air threat speed, 25 m/s (mission.py `THREAT_MPS`, the honest
+     ceiling's own rule): it approaches when that run from its shown position reaches the circle
+     within the horizon, so out to 10.5 km. A track of another domain with no velocity is judged at
+     its position only, as before.
+   - **It did something useful** (`cleared_doubt`): it cleared a doubt the picture had, as the
+     brief asks, whether or not the contact was a need. For a contact it was aimed at (an
+     identify's or a `track` order's, the contact its track names; by hits, each contact whose hits
+     rose while it ran; by geometry, the one it points at when not ambiguous), the contact's track
+     was shown in doubt and not at the mission's level when the order was made, reached that level
+     (2.2's `resolved_at`: its true kind at 0.6 or more without conflict, supported by the domain's
+     sensor; a class under the water) at a picture sample within one of the order's runs (by the
+     order's end; an identify's, its look's end), and the run's vehicle's own sensor of the contact's
+     domain (2.2's support, as a contribution counts it) raised its hits on the track from the run's
+     start to that sample.
+   - A collect or a cover is split on the context the agent could see (2.10).
+
+   The judgment measure is not_justified per situation-hour; the burden is reported apart (3.4b).
+   Sections 11 to 17.11 and choices 15 and 28 were written under the former label `useless`, which
+   is justified and not justified together.
 
 **Credit only effects**; **no credit after the need is met** (`t_identified`); the label of effect
 outranks an open fault (kept as `also_fault`). Aim: by hits of any classifying sensor (EO/IR, sonar)
@@ -225,9 +250,9 @@ officer's identify orders, 17.8). It is labelled as the moving kinds are, with w
 
 - **aim**: the contact its track names when it was ordered (the tracker's association), whatever
   else its camera saw; v2's aim, by hits while it looked, only when its track names none (choice
-  37). So it is `useless` when its track holds no need, and `redundant` when that need was already
-  served or credited;
-- **justified on the picture**: judged on the track it names, as the picture showed it when it was
+  37). So, when its track holds no need, it is `justified` or `not_justified` (item 6), and
+  `redundant` when that need was already served or credited;
+- **supported on the picture**: judged on the track it names, as the picture showed it when it was
   ordered (in doubt, and coming within the circle within the horizon), as every moving kind is;
 - **its run**: from v2's own run (the vehicle's first acknowledgement) to the look's end (choice 38):
   its op's `done` on station does not end it, and the way back after the look is not its run. It
@@ -286,10 +311,19 @@ reviewer's decline or leave are read as choices 18-20 say. F15 and F16 raise rev
 - **collect** (a satellite collect over an area): **useful** when its product is ready before the
   need it was asked for (a contact need, or a stated gap need) is due, and nothing of ours would have
   covered that area by then (the paired `none` replicate's picture); **redundant** when the area was
-  already covered then; **late** when the product came after; **useless** otherwise.
+  already covered then; **late** when the product came after. Otherwise it served no need (choice
+  40): **justified** when it was asked over a stated gap need's area and never tasked (the brief's
+  tasking supported asking), **not_justified** when it was asked over no stated need's area.
 - **cover** (watching GNSS or SATCOM coverage over an area): **useful** when the area had a predicted
-  outage in its window that the C2 then avoided (an order moved or held); **useless** when no outage
-  was predicted.
+  outage in its window that the C2 then avoided (an order moved or held). Otherwise it served no need
+  (choice 40): **justified** when it was asked over a stated cover need's area before that run's
+  scheduled end, whether it predicted no outage (the service confirmed, as the tasking asked: choice
+  15's `confirmed`) or one the run then went through (the prediction made, the avoiding not);
+  **not_justified** when it predicted no outage over no stated need's area, or was asked over one
+  after its run's end. A space order does something useful only as `useful`; its support is the
+  context the agent could see (a stated need's area, a predicted outage), never the picture's: the
+  contact labels hand collect and cover to labels_ops.py `space_label`, so a cover is never judged
+  as a look at a contact.
 
 Built (labels_ops.py `space_label`) from a digest of each collect and cover the episode writes under
 `v3.space` (its checks, its space answer, its order): a collect's product time is its order's,
@@ -314,7 +348,18 @@ Changes:
 - **3.1b need served per domain**: served over eligible needs of each domain, beside the pooled share;
 - **3.2 time to serve**: censored at each need's own grace (v2's 60 s for all); RMST per domain;
 - **3.11 nominations** per situation-hour by label; **3.12 review decisions** by label;
-- `unjudged` actions counted apart.
+- `unjudged` actions counted apart;
+- **3.3 the orders that served no need** (2.5 item 6, choice 40): `justified` and `not_justified`
+  per situation-hour, where v2 has `useless` both ways (by the picture alone); `not_justified_share`
+  (over the orders with an outcome) and `not_justified_dispatched` stand for v2's `useless_share`
+  and `useless_dispatched`, and the bad-card share counts the cards whose order is not justified or
+  harmful (a card for an order the picture supported is not a bad card). **Not justified per
+  situation-hour is the judgment measure.** The two together (`served_no_need`, per hour and as a
+  share) are v2's useless value for value, kept only for the ruler's moves registered on them (13.4);
+- **3.4b the burden**, apart from any label: the agent's orders (every one it made, refused ones
+  among them) and its cards per situation-hour (`per_hour.orders`, `per_hour.cards`), beside v2's
+  cards per 10 minutes of watch. v2's functions and outputs are unchanged: v3 maps its labels onto
+  them (metrics.py).
 
 ## 4. Conditions
 
@@ -654,6 +699,31 @@ same.
     identify as an orbit and checks its reserve as an orbit's. *Alternative*: no harm (a), as for a
     `track` order (an antenna tracker never leaves home). **Recommend** as built.
 
+**The owner's decision (2026-11-15)**, on the model pilot's result (17.10, 17.11; bd murmur-k205):
+"update scoring with the name justified and not justified. not justified is the context doesnt
+support it and it did nothing useful." Built as 2.5 item 6, 2.10 and 3 say; recorded as choice 40.
+
+40. **An order that served no need is `justified` or `not_justified`**, never `useless`. `useless`
+    was a hindsight label: the needs are the contacts whose true affiliation is unknown, suspect or
+    hostile, while the brief tells the agent to identify every contact of unknown affiliation
+    within 3 km, and the agent can know only the picture's. So an order that served no need is
+    `not_justified` only when the picture (for a collect or a cover, the stated tasking) at the time
+    did not support it and it did nothing useful (cleared no doubt the picture had); every other
+    such order is `justified`. Orders that served a need and the other labels (refused, harmful,
+    useful, follow-up, duplicate, fault response, redundant, unjudged) keep their meaning. Two
+    fixes come with it: an aircraft the picture shows with no velocity is taken to come straight
+    in at 25 m/s, the honest ceiling's rule (before it, every early look at an inbound drone with
+    no velocity yet was unsupported, all 5 of the model's at F2's drone in the pilot, 3.3 to 4.7 km
+    out, while a look once it was inside was supported); and the contact labels hand every collect
+    and cover to 2.10's own labels, as they did, now on the context the agent could see, so a GNSS
+    cover asked over the stated run's area is no longer `useless` while F14's cover need counts it
+    asked (3 in the pilot). The action labels, the support on the picture (renamed from
+    `v3.justified_on_picture`), the new `v3.cleared_doubt`, collect and cover are version 4. Where
+    earlier sections and choices say `useless` (11 to 17.11, choices 15 and 28), read justified and
+    not justified together; 17.9 and 17.10 stand as registered and recorded. *Alternative*: keep
+    one label for an order that served no need and report the picture's support beside it (v2's two
+    counts, the former reading). Made by the owner.
+
 ## 10. Gates (dev)
 
 Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5194 (13.7):
@@ -698,8 +768,8 @@ validation are written in phase D, after the audit of item 3.
      are reported, but it does not rank agents until a redesign shows room on fresh dev seeds.
      Agents are compared with each other and with the ceiling's measured need served as v2's relative
      comparison does (SCORING-V2.md 0.3): outcomes (need served, time to serve), hard limits (harm,
-     the reserve), costs (cards, useless looks), dominance where it holds and a stated exchange rate
-     only where two agents trade one for the other. An agent's place in the room, (agent - `none`) /
+     the reserve), costs (cards, looks not justified), dominance where it holds and a stated
+     exchange rate only where two agents trade one for the other. An agent's place in the room, (agent - `none`) /
      (ceiling - `none`), is reported, never judged.
    - **Multiplicity.** The test admits family-worlds, one decision each: a family-world with no
      true room passes (a) by chance at most 2.5 % of the time (one-sided). No correction across the
@@ -1192,6 +1262,15 @@ resamples, seed 0), "up" and "down" needing the interval wholly on that side; a 
 `not testable` where the honest ceiling is not shown above `none` on that metric (pooled), unless it
 shows anyway; per family-world each move is reported and enters the guard (10.5).
 
+Since 2026-11-15 (choice 40) an order that served no need is justified or not justified. The moves
+registered as "useless up" (`+behind`, `+ferries`) and "useless share up" (`+wrong-sensor`) read
+the two together (`per_hour.served_no_need`, `served_no_need_share`: v2's useless value for value),
+so each is judged as registered: a look behind its contact or by a vehicle without the domain's
+sensor is supported on the picture and serves nothing, so it is justified, and only the union
+moves with it. The bad-card share of `+ferries` counts not justified and harmful cards now; its
+looks at tracks shown neutral with an AIS identity are not justified, so its predicted rise is the
+same or larger.
+
 ### 13.5 The commands
 
     .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5160-5194 --workers 18 \
@@ -1630,10 +1709,10 @@ where it applies.
    divided by the grace, so domains with different graces pool; lower is better). Time is never scored
    alone (it would reward rushing).
 2. **False alarms** (every situation; the must-hold line on must-hold situations), **per hour of
-   watch**: useless actions not justified on the picture (2.5 item 6's second count), escalations
-   beyond the evidence (an armed task, a nomination or a human-tier card on a track the picture showed
-   neutral or assumed friend, or below the rule book's `C_MIN` 0.5), cards to the human, and repeat
-   looks (2.5's redundant). An action justified on the picture is not a false alarm: looking at a
+   watch**: orders not justified (2.5 item 6; until choice 40, useless actions not justified on the
+   picture), escalations beyond the evidence (an armed task, a nomination or a human-tier card on a
+   track the picture showed neutral or assumed friend, or below the rule book's `C_MIN` 0.5), cards to
+   the human, and repeat looks (2.5's redundant). A justified order is not a false alarm: looking at a
    contact the picture shows in doubt is good practice even when it turns out harmless; penalising it
    would teach the agent never to look (the pressure test's change).
 3. **Hard fails** (every situation): an engagement of anything but a declared hostile, harmful (a) and
@@ -1665,7 +1744,8 @@ result opens with section 0's coverage statement.
 
 1. **The limits**: the false alarms and cards an hour 17.2 allows. Suggested start: the playbook's own
    budget (agents/playbook/CRITERIA.md: at most one human-tier card per 30 s after a burst of 2, at most
-   2 pending), and no more than `random-valid`'s 4 to 6 useless orders an episode on F18 (11.5).
+   2 pending), and no more than `random-valid`'s 4 to 6 orders an episode that served no need on F18
+   (11.5, under the former label).
 2. **Tuning the thresholds**: CRITERIA.md says every threshold comes "from doctrine, the shipped policy
    and the research, never from Harbor watch". *Either* keep that, and improve only by adding or fixing
    plays, *or* allow tuning to this score with a dated note there. **Recommend** keeping it: a
@@ -1710,7 +1790,7 @@ checked again once that lands.
 | F15 engagement | must act, with a must-hold escort (p 0.35) | engagement right 0 of 10 for every agent, the oracle too (12.1; keep-outs, bd murmur-e3b) | no: blocked by murmur-e3b, and changed by murmur-lbw8 |
 | F16 review load | the reviewer's (a person's) work | 75 to 87 % right (12.1) | no: for the human study |
 | F17 scale | a mix of F1 to F6, their kinds | `none` 55 %, oracle 61 % (12.1); golden-gate-scale only | exam only |
-| F18 quiet | must hold | the oracle orders nothing; `random-valid` 4 to 6 useless orders an episode (11.5) | **yes** |
+| F18 quiet | must hold | the oracle orders nothing; `random-valid` 4 to 6 orders an episode that served no need (11.5) | **yes** |
 
 **Usable now**: must act F1 at night, F2, F9, F12, F13; must hold F18 and F8's look-alikes; already
 covered F1 by day. **Need work first**: F3 and F6 (a fresh batch), F11 (a ceiling), F7 and F17 (exam
@@ -1718,7 +1798,7 @@ sets). **Out of the playbook's reach or blocked**: F4, F5, F14, F15, F16.
 
 ### 17.7 What it needs built
 
-Mostly there: the anchors, the labels with "justified on the picture", the causes, F18, F8's
+Mostly there: the anchors, the labels with "justified" and "not justified", the causes, F18, F8's
 look-alikes, `+pull-off` (breaking what works), RMST per domain (3.2), the playbook's card budget. New:
 the predicted-coverage check that makes an element must act (17.1); the paired look-alike draw; the
 kind as a field of each family and situation; the time share and the per-hour false-alarm line in the
@@ -1775,8 +1855,9 @@ tested with a fake client only.
   workers.
 - **Its orders** (2026-11-14, bd murmur-1zcp): the watch officer looks with `identify` (decision
   rules 21) where the playbook and the oracle send orbits, and 2.5 labels it (choices 37 to 39), so
-  useless orders per hour, justified on the picture, harm and the false-alarm line (17.2) read the
-  model's orders. In the smoke of 2026-11-14 the report had left 13 of its 14 orders `unjudged`.
+  the orders that served no need per hour (justified or not since choice 40), harm and the
+  false-alarm line (17.2) read the model's orders. In the smoke of 2026-11-14 the report had left
+  13 of its 14 orders `unjudged`.
 
 ### 17.9 The model pilot, registered before it ran (2026-11-14)
 
