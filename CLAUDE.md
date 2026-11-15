@@ -607,9 +607,9 @@ meaningful.
   of rules 31's (an eighth of the clear-day detection reach) and the camera's identification reach
   now (the conditions only take reach away: the payload manager cues only within the catalog's
   `range_m`), the standoff 70 % of it, refused, saying the conditions, where it is nothing or
-  nearer than its height or tightest orbit keeps it ("in fog
-  of 50 m visibility PUMA 1's camera identifies a small_air contact only within about 160 m: ...";
-  "at night MAGURA 1's camera identifies no ...: it has no thermal channel"); an assessment's cover
+  nearer than its height or tightest orbit keeps it ("in fog of 50 m visibility PUMA 1's camera
+  identifies a small_air contact only within about 160 m: ..."; "at night MAGURA 1's camera
+  identifies no ...: it has no thermal channel"); an assessment's cover
   (`engage::covering_sensor`) is the detection reach now; a missing or stale fact cannot be
   evaluated (never a clear day's in its place). The bridge prepares it outside the lock at each
   tick's start (`Tracks::prepare_reach`, `snapshot::fill_reach`) from `tracks::reach`, the reach

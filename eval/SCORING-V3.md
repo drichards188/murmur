@@ -2352,3 +2352,53 @@ mix pairs (far and high transits under a surface radar, NEES 0.16 to 0.41, truth
 8,000 m and the slant range is widened two sigmas), and nothing changed along the surface radar's
 line. 17.14's option 2, a ceiling by the shown size class, would close most of it: the owner's call.
 Saturation's dated digests (docs/HEADLESS.md 17.6) were not re-taken and will move on a new run.
+
+### 17.16 F15 engagements on the fixed terrain (2026-11-15, bd murmur-e3b)
+
+Set out in 12.5 (coverage there: both worlds, dev seeds 5400-5409, `none` and the basic oracle,
+the scripted reviewer and signers; decision rules 31). In short: three harness faults fixed (San
+Diego's Switchblade link over Point Loma, REAPER 1 never moved clear, no acceptance ever reaching
+a nomination), and F15 version 2's adopter (op-4) takes up an agent's refused nomination with its
+blockers accepted where the form says that clears them. The honest oracle is right in 1 of 20
+situations on its own nominations, 7 of 20 with the adopter's, none harmful. F15 is not yet
+scoreable: whether the adopter's engagements count as the agent's (choice 26), aircraft without a
+velocity in the keep-out (bd murmur-u2k0, the owner's), situations where engaging is wrong by truth
+(bd murmur-yu6s) and more seeds come first. Rules 32 (17.17) came after these runs: an engagement's
+assessment in fog or at night now counts only the reach under the conditions, which F15's figures
+do not include.
+
+### 17.17 Reach under the conditions now: decision rules 32 (2026-11-15, bd murmur-ahss)
+
+**Coverage.** F9 night and fog in both worlds (golden-gate-v3, san-diego), dev seeds 5000-5009, 20
+situations (fog 10, night 7, twilight 2, day 1); the physical sensing model; agents `none`, the
+playbook, `oracle-v3-honest` and `oracle-v3-shown`, before (a8fc5de, rules 31) and after (rules
+32); free. A probe agent that never acts and asks `get_identify_options` for one live track every
+5 s, paired between the two rules (3,380 asks, 54,080 candidates); F2 (5000-5004) the same way.
+Records in the main checkout's logs/ahss/, not in git.
+
+**The change** (DECISIONS.md "Rules 32: reach under the conditions now"): from rules 32 the engine
+reads a sensor's reach under the conditions where its vehicle is now (visibility, light, its
+height), the reach display's own computation, logged as the vehicle fact `reach_now` where a
+decision reads it, so replay needs no sensing model. An identify order's reach is the smaller of
+rules 31's planning reach and the camera's identification reach now (the conditions only take
+reach away; a clear day plans as before), and the order is refused, saying the conditions, where
+the camera identifies nothing (at night without a thermal channel) or only nearer than the vehicle
+can fly; an engagement's assessment counts a sensor only within its detection reach now. A stale
+or missing fact cannot be evaluated; it never falls back to a clear day. The legacy model has no
+reach now: v1, v2 and the golden decide as before (the digests moved by the rules version and,
+for the model's records, two reworded tool descriptions).
+
+**Result.** Needs served did not move for any free agent (none order identify; F9 has no
+engagement): Golden Gate `none` 3/10, playbook 3/10, honest ceiling 5/10, ceiling 6/10; San Diego
+3, 3, 4, 4; every episode's picture and truth digests identical. The probe: rules 32 newly refused
+1,817 candidates in fog and 931 at night that rules 31 offered, 5 at twilight, none by day; in fog
+the standoff of those passing under both is a median 0.80 of rules 31's; asks with a passing
+candidate stayed as common (fog 1,579 to 1,600 of 1,690). On F2 by day, 77 candidates newly
+refused (a boat's camera that identifies no small drone 300 m up).
+
+**Reading.** F9 is no longer left out for murmur-ahss (17.9's note): a model's identify orders
+in fog and at night are now judged on what its cameras can do there. The honest ceiling sits above
+`none` in both worlds (9 against 6 of 20 pooled), a small margin. **Open, the owner's**: whether
+day standoffs may grow past rules 31's (that needs the camera to cue farther than the catalog's
+`range_m`); whether the honest ceiling should read the visibility `get_sensor_reach` shows; the
+per-tick reach pass at Saturation's 3,602 vehicles is not measured.

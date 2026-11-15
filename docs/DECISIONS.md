@@ -3728,9 +3728,19 @@ computation. Chosen in building it:
   (the model's light), and its refusal says so; one with a thermal channel uses that channel's
   reach (a Puma's LWIR: a small fast boat about 2 km at night, which takes nothing from a clear
   day's planning reach of 1.8 km; a small drone about 200 m, so refused).
-- **What it did to F9** (dev seeds 5000-5009, both worlds): nothing for the free agents, which
-  order orbits only (served the same before and after for `none`, the playbook, the honest
-  ceiling and the ceiling). Asked of every candidate every 5 s by a probe agent, the identify
-  options under rules 32 refuse a camera at night without a thermal channel, or one that
-  identifies nothing from where it is in fog, where rules 31 offered them at a clear day's
-  standoff. Model agents, which do send identify orders, are what F9 now scores fairly.
+- **What it did to F9** (dev seeds 5000-5009, both worlds, 20 situations: fog 10, night 7,
+  twilight 2, day 1): nothing for the free agents, which order orbits only and meet no
+  engagement (needs served the same before and after: `none` 6 of 20, the playbook 6, the honest
+  ceiling 9, the ceiling 10; every episode's picture and truth byte for byte, the audit log moved
+  by its rules version). A probe agent that never acts asked `get_identify_options` for one live
+  track every 5 s (3,380 asks, 54,080 candidates, paired one to one): rules 32 newly refused 1,817
+  candidates in fog and 931 at night that rules 31 offered, 5 at twilight and none by day; the
+  identify check's new refusals are a camera without a thermal channel in the dark (3,718
+  candidate-asks), one that identifies nothing from where it is in fog or from its height (2,598)
+  and a tightest orbit beyond the reach now (290). Of the candidates passing under both, the
+  standoff in fog is a median 0.80 of rules 31's (half of them under 0.8), at night 1,929 of
+  6,287 shorter by a fifth or more, by day and at twilight unchanged. An ask with at least one
+  passing candidate stayed as common (fog 1,579 to 1,600 of 1,690, night 1,125 to 1,152 of 1,183):
+  a shorter orbit passes other checks a far one failed. On F2 (5000-5004, all by day but one fog):
+  77 day candidates newly refused, a boat's camera that identifies no small drone 300 m up.
+  Model agents, which send identify orders, are what F9 now scores fairly.
