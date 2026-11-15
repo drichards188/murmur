@@ -147,6 +147,31 @@ def test_f5_is_mostly_at_night(tmp_path: Path):
     assert 0.5 < sum(nights) / len(nights) < 0.9
 
 
+def test_no_family_flies_an_aircraft_outside_the_band_the_tracker_assumes(tmp_path: Path):
+    """murmur-m4fc: the tracker bounds a 2D radar's bearing segment of an aircraft by the band of
+    heights aircraft fly in (`AIR_FLOOR_M` to `AIR_CEILING_M`, read here from the bridge's own
+    source), so every aircraft every v3 family's contacts file holds (the world's traffic and the
+    family's element, at its own height or its kind's default) flies inside it; the shipped contacts
+    files have the bridge's test (`no_contact_a_world_defines_flies_above_the_air_ceiling`)."""
+    import re
+
+    src = (REPO / "crates/murmur-bridge/src/tracks/sensing.rs").read_text()
+    band = {k: float(re.search(rf"pub const {k}: f64 = ([0-9_.]+);", src).group(1).replace("_", ""))
+            for k in ("AIR_FLOOR_M", "AIR_CEILING_M")}
+    kinds = tomllib.loads((REPO / "sim/contacts.toml").read_text())
+    n = 0
+    for name in F.all_names():
+        for seed in range(5000, 5004):
+            _, path = F.generate(name, seed, tmp_path / f"{name}-{seed}")
+            for c in tomllib.loads(path.read_text()).get("contact", []):
+                if c.get("domain") != "air":
+                    continue
+                alt = float(c.get("alt_m", kinds.get(c.get("kind"), {}).get("alt_m", 300.0)))
+                assert band["AIR_FLOOR_M"] <= alt <= band["AIR_CEILING_M"], f"{name} seed {seed}: {c['id']} at {alt} m"
+                n += 1
+    assert n > 50, n
+
+
 def test_family_names_round_trip():
     for n in F.all_names():
         fam, world = F.parse(n)

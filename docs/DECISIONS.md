@@ -1299,7 +1299,8 @@ group. Dates are 2026.
   an aircraft 1,500 m up 1 km away) and the detection says where the radar was
   (`Detection::slant_from`); the tracker reads it as the bearing line the aircraft is on, no
   farther out than the slant range. One radar alone does not range an aircraft (no height
-  bound is assumed: one would be an invented altitude). A track is ranged while a ranging fix
+  bound is assumed: one would be an invented altitude; revised 2026-11-15, murmur-m4fc: the
+  radar's own height and the band aircraft fly in bound the segment). A track is ranged while a ranging fix
   came within 10 s (`RANGE_FRESH_S`, the engine's own limit for a ranged altitude): another
   sensor's position, or another radar's bearing crossing this one by 30 degrees or more (the
   pair triangulates; at 15 degrees, the first choice, two radars 12 km out put an aircraft
@@ -3641,3 +3642,47 @@ class where the vehicle's facts carry one, else of the domain as before. Chosen 
   the model.
 - **ESM's words** (`aircraft`, `vessel`, `ground_vehicle`, `submerged` at detection) say no
   size, and keep the domain's reach.
+
+## 2026-11-15: A 2D radar's bearing segment uses the radar's own height (murmur-m4fc)
+
+The owner's decision, on eval/SCORING-V3.md 17.14 ("we need to use radar height. thats key
+info"). It revises the murmur-oho entry's "one radar alone does not range an aircraft (no height
+bound is assumed: one would be an invented altitude)": the radar's own height is measured (its
+vehicle knows it), and the band of heights aircraft fly in is the one the cameras' elevation search
+has assumed since murmur-7vp. An unranged air track sat at the middle of the bearing segment from
+the radar's foot to the slant range; under REAPER 1's radar, 3,000 m up, a drone 100 m up is near
+the slant range, so the track showed it about half way out, 2 km short in the F2 pilot's records,
+and an identify orbit centred there circled short of it.
+
+- **What the segment is now.** The physical model's plot carries the radar's sensor height
+  (`SlantFrom::alt_m`), and the segment is the ground ranges `sqrt(rho^2 - dz^2)` an aircraft
+  anywhere in the band can be at, `dz` its height off the radar's: from the band's farthest height
+  from the radar's (the ceiling under a radar below 4 km, the floor above it) to its nearest (the
+  slant range itself for a radar flying in the band). The slant range's error is carried through
+  (two of the radar's sigmas short for the near end and long for the far end, three for the
+  constraint on a ranged estimate). The track sits at its middle with a third of its length for its
+  1-sigma, as before, and never gives a height: the band bounds where the aircraft can be, it
+  measures nothing of where it is. A plot the band cannot explain is read without it. The physical
+  model's act placement reads the same segment.
+- **The band.** 10 to 8,000 m above the sea (`sensing::AIR_FLOOR_M`, `AIR_CEILING_M`), one pair of
+  constants for the cameras' search and the tracker, [E]: above the 4 to 6 km service ceilings of
+  the light aircraft and helicopters the air kinds stand for and the 7,000 m of the engagement
+  scenarios' highest aircraft. The assumption is guarded, not measured: a bridge test reads every
+  contacts file (the situations' and worlds' among them) and a test reads every v3 family's
+  generated contacts, and both fail on an aircraft outside the band. One above the ceiling would sit
+  short along the bearing with too small a spread, so keep-outs drawn from it would be too tight.
+  Our own aircraft (the MQ-9B's 7,600 m, the RQ-4's 18,000) are radars here, not contacts.
+- **Legacy untouched.** The legacy model's plots carry no height and are read as before, so the
+  v1 and v2 worlds, the golden and paused digests and the keep-out measurement's probe (legacy
+  sensing) are unchanged; the asserting air calibration (legacy) passes as before.
+- **Measured** (docs/SENSING.md, "A 2D radar's bearing segment bounded by the radar's height"):
+  the tuning sets unchanged in honesty and keep-outs; the seventh air held-out set (551-580, written
+  before, run once) honest but for six cautious class and mix pairs (far and high transits under a
+  surface radar: the segment spreads over the whole band while each case flies at one height), the
+  same keep-out misses as the old tracker's; on F2 (6600-6609) the honest ceiling served 8 of 20
+  drone needs (4 before), and the drone's track before a camera's first look was more than a
+  kilometre off 290 times in 2,271 seconds (676 before).
+- **Not done.** A ceiling by the shown size class (17.14's second option: a small drone's few
+  hundred metres) would close most of what is left (a drone under REAPER 1 still sits a median 0.9
+  km short), on a radar's size call made at low confidence; and the picture showing the segment
+  itself (murmur-xj6) is unchanged. Both are the owner's call.

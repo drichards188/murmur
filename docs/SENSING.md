@@ -404,7 +404,9 @@ bar by bar (four fifths of the field's height a step), lowest first, staring 4 s
 settled, as its search steps the task area and as an EO director cued by a 2D surveillance radar
 scans in elevation at the cued bearing. The band is 10 m to 8,000 m, or the slant range if lower
 ([E here]: above the 4 to 6 km service ceilings of the light aircraft and helicopters the air
-kinds stand for, and the 7,000 m of the engagement scenarios' highest aircraft). A
+kinds stand for, and the 7,000 m of the engagement scenarios' highest aircraft;
+`sensing::AIR_FLOOR_M`, `AIR_CEILING_M`, which the tracker's bearing segment reads too since
+murmur-m4fc, below). A
 height-finding radar's fix (within 10 s) aims at the aircraft itself. A cued camera holds its
 cue's pattern (its one aim, or its bars) while each new fix keeps the contact within it, and
 plans it again from the fix only when the fix puts the contact outside it (sensing round 3,
@@ -434,8 +436,10 @@ near vertical incidence [72,73]); a radar with a Doppler mode sees a surface tar
 its line of sight faster than the sea clutter's Doppler band (`0.25 + 0.44 U` m/s, `U` the wind
 [72]) against the noise alone. Accuracy 30 m or 1 % of range
 and 1 degree in bearing [19] (the larger given as the fix's 1-sigma). A 2D radar plots an
-aircraft at its slant range on the bearing, as the legacy model. Every radar revisits in at
-most 5 s: the catalog refuses a slower one.
+aircraft at its slant range on the bearing, as the legacy model, and the plot says where the
+radar was and how high (its sensor height above the sea, `Detection::slant_from`; the legacy
+model's plot gives no height): the tracker bounds the bearing segment by it (murmur-m4fc, below).
+Every radar revisits in at most 5 s: the catalog refuses a slower one.
 
 **AIS** (`physical/rf.rs`). A contact with its transponder on reports at its class's interval
 for its speed [22] (turning ignored); heard within the VHF horizon `4.12 km (sqrt h1 + sqrt h2)`
@@ -980,7 +984,8 @@ deadline in 8 of 20. The cause is not ground's:
   mixture's velocity has a mean normalized error of 0.2 in straight flight (cautious) and 2.4 to
   2.8 on routes that turn every minute or so.
 - *The hobby drone* emits nothing: 2D radars' bearings alone, so it is unranged (one radar does
-  not range an aircraft; no height bound is assumed) and has no velocity by design.
+  not range an aircraft; no height bound was assumed then, murmur-m4fc below) and has no velocity
+  by design.
 - Fixed by a camera every second, an aircraft has a velocity 63 to 89 % of the time.
 
 So under the 3 m/s gate an ESM-fixed aircraft has no velocity, and no honest tuning of the IMM
@@ -1092,6 +1097,63 @@ The smokes, the same situations before (main's code) and after:
 - F2 (seeds 5370-5379, both worlds, `none`): the drone's track had a velocity at some sample by its
   need's deadline in 20 of 20 (8 before), at the deadline in 11 of 20 (5).
 
+**A 2D radar's bearing segment bounded by the radar's height** (murmur-m4fc, 2026-11-15, the
+owner's decision: "we need to use radar height"; DECISIONS.md the same day; eval/SCORING-V3.md 17.14
+found the cause). An unranged air track was the middle of the bearing segment from the radar's
+foot to the slant range, which put a drone 100 m up under REAPER 1's radar, 3,000 m up, at about
+half its range: in the F2 pilot's records 665 seconds of drone track lay more than 0.5 km short
+along REAPER 1's line (median 2.0 km), and an identify orbit centred there circled kilometres
+short. Now the physical model's plot carries the radar's sensor height (`SlantFrom::alt_m`), and
+the segment is the ground ranges an aircraft in the band the cameras' search already assumes (10
+to 8,000 m) can be at: `sqrt(rho^2 - dz^2)`, farthest at the band's height nearest the radar's (the
+slant range itself for a radar in the band) and nearest at its farthest (the ceiling under a radar
+below 4 km, the floor above), the slant range taken two of the radar's sigmas short for the near
+end and long for the far end (three for the constraint on a ranged estimate, which now has a near
+end too). The track sits at its middle with a third of its length for its 1-sigma, as before; the
+physical model's `observe_act` places an act by the same segment. Without a height (the legacy
+model's plots) the segment is the radar's foot to the slant range, as before, so the v1 and v2
+worlds, the golden and the paused digests are unchanged (checked), and so is the keep-out
+measurement's probe (`eval/keepout_probe`), which senses with the legacy model. The assumption:
+no aircraft flies above 8,000 m (none any world defines does: a bridge test over every contacts
+file and a test over every v3 family's generated contacts); one that did would sit short along the
+bearing with too small a spread.
+
+- *The tuning sets* (101-220 and the world set on 101-130, every mix of `SEVEN_MIXES`: the world's
+  and Golden Gate's fleet with the MQ-9B at 3,000 m as golden-gate-v3 spawns it, with and without
+  cameras): every class and mix honest before and after (NEES 0.51 to 2.03 before, 0.61 to 2.06
+  after; within two sigmas 84.7 to 100 % both), 25 failures of the criteria both times, every
+  keep-out miss the same line for line. The sets fly nothing high, and their radars plot little
+  where the band binds (the near end leaves the radar's foot only once the slant range passes the
+  radar's height off the band's farthest height: about 8 km for a surface radar, 5 km from 3,000 m,
+  7.6 km from 7,600 m), so little moves: the world set's two hobby drones' mean
+  1-sigma without cameras under the MQ-9B at 7,600 m 470 to 433 m and 2,856 to 1,953 m (the second's
+  NEES 0.06 to 1.02: it sat mid-segment before, near the near end now), at 3,000 m 298 to 260 m and
+  1,615 m unchanged.
+- *The seventh air held-out set* (551-580, `air_calib_physical_held_out_seven`, written before the
+  change and run once after it): every class and mix honest but six, NEES 0.80 to 1.97, within two
+  sigmas 88.7 to 100 %; the six are cautious, not overconfident: the far transit (3,100 m, 14 to 20
+  km from the USV) and the high class (5,500 and 7,000 m) under the USV's radar alone, with its
+  camera and with every sensor, NEES 0.35 to 0.41 and 0.16 to 0.33 with the truth within two sigmas
+  99 to 100 % of the time. Their tracks are much closer than before (the far transit's mean
+  1-sigma under the radar alone 5.3 km before, 1.6 km after; the 5,500 m transit's 3.3 to 2.2 km;
+  the 7,000 m loiter's 3.4 to 2.1 km), but the segment spreads over every height in the band while
+  each case flies at one, so the truth sits well inside it. Keep-outs: six misses 3 s ahead, the
+  approach and break in four mixes (2 to 7 times by up to 57 m, the accepted break lag) and the
+  7,000 m loiter at 80 m/s without cameras (4 and 5 times in 8,091 by up to 43 m); 10 s and more
+  ahead every case held. The tracker alone: ten failures, all in hard turns or loiters (the break,
+  a route, the loiters with every Golden Gate sensor). For attribution only, after that run and
+  with nothing changed after it, the old tracker on the same set: the same six keep-out misses line
+  for line, the same ten tracker-alone failures (their shares within 0.25 points), and one
+  cautious class (the high class under the radar alone, NEES 0.45) where the change has six.
+- *F2* (seeds 6600-6609, both worlds, `none` and the honest ceiling, before and after): the honest
+  ceiling served the drone's need in 8 of 20 (4 before: five gained, one lost). The drone's track
+  before a camera's first look, paired second by second over 2,271 samples (the detections are the
+  same: `none` orders nothing): its error's median 163 m both times, its 90th percentile 2,241 to
+  1,126 m, more than a kilometre off 676 to 290 samples; on the 730 samples more than 0.5 km off
+  along REAPER 1's line before, median 2,004 to 874 m, 90th percentile 2,762 to 1,466 m. The
+  geometry alone (17.14's estimate, the drone at 100 m and plot noise ignored) said 634 and 1,263:
+  the slant range widened by two sigmas moves the near end in by a few hundred metres.
+
 ## Python
 
 `eval/headless/sensing.py` (`SenseModel`, through `murmur-headless --sense`, or the `sense`
@@ -1118,6 +1180,12 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   classification times, the misclassification rates per level and the size-class thresholds
   are estimates. The physical radars have no elevation beam: a 2D radar sees an aircraft at
   any elevation, and a camera cued by it searches up to the slant range.
+- An unranged air track's bearing segment assumes every aircraft flies in the band of 10 to
+  8,000 m (murmur-m4fc): one above it would sit short along the bearing with too small a spread
+  (no world has one; the tests that say so guard it), and the segment's spread covers the whole
+  band, so a track of an aircraft at one height is cautious (the seventh air held-out set's far
+  and high transits, NEES 0.16 to 0.41). The segment is laid on a flat earth, as the cameras'
+  search: 40 km out the earth's bulge moves its near end some tens of metres.
 - The tracker's two models are constant-velocity: through a hard turn (a break at 11 m/s^2,
   the tightest loiter at 6) seen only by bearings they lag, and a keep-out 3 s ahead can miss by
   tens of metres (the second air held-out set's approach and break, above). A coordinated-turn

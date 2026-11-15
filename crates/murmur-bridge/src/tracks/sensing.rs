@@ -305,10 +305,12 @@ pub struct Detection {
     /// When the fix was taken, by the clock of the truth it was drawn from (the message's
     /// `t`); None: unknown (the tracker then dates it by its arrival).
     pub measured_t: Option<f64>,
-    /// A 2D radar's plot of an aircraft: where the radar was (lat, lon). The radar measured
-    /// the slant range and the bearing, not the height, so the plot (`lat`, `lon`) is at the
-    /// slant range on the bearing: the aircraft is on that bearing, no farther out.
-    pub slant_from: Option<(f64, f64)>,
+    /// A 2D radar's plot of an aircraft: where the radar was. The radar measured the slant range
+    /// and the bearing, not the height, so the plot (`lat`, `lon`) is at the slant range on the
+    /// bearing: the aircraft is on that bearing, no farther out, and with the radar's own height
+    /// (the physical model's) no nearer than an aircraft in the band of heights aircraft fly in
+    /// would be ([`SlantFrom::ground_range_m`]).
+    pub slant_from: Option<SlantFrom>,
     /// The physical model's identification evidence for `label`; None from the legacy model.
     pub look: Option<Look>,
     /// A sweeping radar's plot: its revolution, s (the physical model's radars plot a contact
@@ -316,6 +318,68 @@ pub struct Detection {
     /// tracker time-aligns them: `model::Track::update`). None: a sensor that reports every tick
     /// (the legacy model's radars, whose pairs the tracker takes as it always has).
     pub scan_s: Option<f64>,
+}
+
+/// The band of heights above the sea an aircraft whose height no sensor measured may fly at, m:
+/// the physical model's camera cued to such a track searches it in elevation (`physical::Cue`,
+/// murmur-7vp), and the tracker bounds a 2D radar's bearing segment by it
+/// ([`SlantFrom::ground_range_m`], murmur-m4fc) [E here: the ceiling is above the service
+/// ceilings of the light aircraft and helicopters the air kinds stand for, 4 to 6 km, and the
+/// 7,000 m the engagement scenarios' highest aircraft fly; the floor is just off the surface]. An
+/// assumption, not a measurement: no contact the worlds define flies above the ceiling (guarded by
+/// `tracks::tests::no_contact_a_world_defines_flies_above_the_air_ceiling` and the v3 families'
+/// own test), and one that did would be placed short along a radar's bearing with too small a
+/// spread, so that keep-outs drawn from its track would be too tight for it.
+pub const AIR_FLOOR_M: f64 = 10.0;
+pub const AIR_CEILING_M: f64 = 8_000.0;
+
+/// Where a 2D radar was when it plotted an aircraft ([`Detection::slant_from`]): the plot is at the
+/// slant range on the bearing from here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlantFrom {
+    pub lat: f64,
+    pub lon: f64,
+    /// The radar's height above the sea, m: the physical model's (its observer's sensor height).
+    /// None from the legacy model, whose plots the tracker reads without a height, as it always
+    /// has (so the v1 and v2 worlds decide as before).
+    pub alt_m: Option<f64>,
+}
+
+impl SlantFrom {
+    pub fn new((lat, lon): (f64, f64), alt_m: Option<f64>) -> SlantFrom {
+        SlantFrom { lat, lon, alt_m }
+    }
+
+    /// The ground ranges from the radar, near and far, m, that an aircraft plotted `rho` metres out
+    /// (the slant range, its 1-sigma `sigma`) can be at, the slant range taken `k` sigmas either
+    /// way. Without the radar's height: from the radar's foot to the slant range, whatever the
+    /// aircraft's height (`(0, rho + k sigma)`, as before murmur-m4fc). With it (the owner's
+    /// decision of 2026-11-15, DECISIONS.md): an aircraft in the band [`AIR_FLOOR_M`] to
+    /// [`AIR_CEILING_M`] is `sqrt(rho^2 - dz^2)` out, `dz` its height off the radar's, so farthest at
+    /// the band's height nearest the radar's (the slant range itself for a radar flying in the
+    /// band) and nearest at the band's height farthest from it (the ceiling for a radar on the
+    /// water or below 4 km, the floor above that). The slant range's error is carried through the
+    /// geometry: the near end from the slant range `k` sigmas short, the far end from it `k` sigmas
+    /// long (near the near end the ground range moves many times as far as the slant range does).
+    /// A plot the band cannot explain (no farther out than a radar above the ceiling is from the
+    /// band) is read without it. Flat earth, as the cameras' search (`physical::Cue::at_height`):
+    /// 40 km out the earth's bulge moves the near end some tens of metres.
+    pub fn ground_range_m(&self, rho: f64, sigma: f64, k: f64) -> (f64, f64) {
+        let far = rho + k * sigma;
+        let Some(h) = self.alt_m else {
+            return (0.0, far);
+        };
+        // the radar's height off the band's nearest height (0 inside it) and its farthest
+        let dz_near = (AIR_FLOOR_M - h).max(h - AIR_CEILING_M).max(0.0);
+        let dz_far = (h - AIR_FLOOR_M).max(AIR_CEILING_M - h);
+        if far <= dz_near {
+            return (0.0, far);
+        }
+        let hi = if dz_near > 0.0 { (far * far - dz_near * dz_near).sqrt() } else { far };
+        let short = (rho - k * sigma).max(0.0);
+        let lo = (short * short - dz_far * dz_far).max(0.0).sqrt();
+        (lo, hi)
+    }
 }
 
 /// The AIS message as received: identity only, nothing about its truthfulness.
@@ -563,7 +627,7 @@ pub fn detect(
                     },
                     domain: c.domain,
                     measured_t: None,
-                    slant_from: slant.then(|| o.believed()),
+                    slant_from: slant.then(|| SlantFrom::new(o.believed(), None)),
                     look: None,
                     scan_s: None,
                 });

@@ -10,11 +10,14 @@
 //! ([`process_noise`], [`SOJOURN_S`]). Every detection is a position measurement with its
 //! sensor's 1-sigma, an AIS report's course and speed a velocity measurement, and a 2D radar's
 //! fix of an aircraft (it measured the slant range and bearing, not the height) the bearing
-//! line it lies on, no farther out than the slant range: one radar alone does not range an
-//! aircraft, so a track no other fix has ranged within [`RANGE_FRESH_S`] is the middle of that
-//! segment with its spread and no velocity ([`Model::reset_to_segment`]), and a ranged one
-//! loses its along-line knowledge as an aircraft turning hard would ([`ALONG_Q`]) once only
-//! bearings come; the track never invents its height. The physical model's radars sweep, plotting
+//! line it lies on, no farther out than the slant range and, where the plot gives the radar's
+//! own height (the physical model's), no nearer than an aircraft in the band of heights aircraft
+//! fly in would be ([`super::sensing::SlantFrom::ground_range_m`], murmur-m4fc): one radar alone
+//! does not range an aircraft, so a track no other fix has ranged within [`RANGE_FRESH_S`] is the
+//! middle of that segment with its spread and no velocity ([`Model::reset_to_segment`]), and a
+//! ranged one loses its along-line knowledge as an aircraft turning hard would ([`ALONG_Q`]) once
+//! only bearings come; the track never gives a height (the band bounds where the aircraft can be,
+//! it measures nothing of where it is). The physical model's radars sweep, plotting
 //! an aircraft once a scan, so two radars' bearings of it come seconds apart: such a pair ranges
 //! it only when, time-aligned, it still crosses as well as two simultaneous bearings at
 //! [`CROSSING_DEG`] ([`Bearing::aligned`]), never after a reset to one radar's segment has
@@ -62,7 +65,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::physical::signature::size_class_of;
-use super::sensing::{AisHeard, Detection, Level, SensorType, family};
+use super::sensing::{AisHeard, Detection, Level, SensorType, SlantFrom, family};
 use super::truth::Domain;
 use crate::clock::round;
 
@@ -176,10 +179,11 @@ const NIS_JUMP: f64 = 9.21;
 /// The same for a measurement of one dimension (a 2D radar's bearing line): chi-square with 1
 /// degree of freedom, 99%.
 const NIS_JUMP_1: f64 = 6.63;
-/// A 2D radar's slant range bounds an aircraft's ground range from above, give or take this
-/// many of the radar's own sigmas (the segment an unranged track is on).
-const SLANT_SIGMAS: f64 = 2.0;
-/// A ranged track's estimate is moved back to the slant range only beyond this many of the
+/// A 2D radar's slant range bounds an aircraft's ground range from above (and, with the radar's
+/// height, from below), the slant range taken this many of the radar's own sigmas either way (the
+/// segment an unranged track is on; the physical model's `observe_act` places an act by it too).
+pub(crate) const SLANT_SIGMAS: f64 = 2.0;
+/// A ranged track's estimate is moved back onto the segment only beyond this many of the
 /// radar's own sigmas (about one fix in 700 of a low aircraft, whose slant range is its ground
 /// range, crosses 3 sigmas by noise: within it, the bound says nothing a Gaussian would not).
 const SLANT_CLAMP_SIGMAS: f64 = 3.0;
@@ -230,8 +234,10 @@ const ALONG_Q: f64 = 80.0;
 /// A track that knows an aircraft's range only from a 2D radar is at the middle of the bearing
 /// segment the slant range bounds, with a 1-sigma of the segment's length over this: its ends
 /// are 1.5 sigmas out (a uniform spread's own sigma would put them at 1.73, where a low
-/// aircraft, whose slant range is about its ground range, always is).
-const SEGMENT_SIGMAS: f64 = 3.0;
+/// aircraft, whose slant range is about its ground range, always is; with the radar's height, a
+/// low aircraft is at the far end under a radar on the water and toward the near end under one
+/// flying high, an aircraft at the radar's own height at the far end).
+pub(crate) const SEGMENT_SIGMAS: f64 = 3.0;
 
 /// The reported covariance is the filter's widened by the recent fixes' consistency: their
 /// normalized distance from the mixture's prediction (expected 2), averaged with this weight
@@ -514,17 +520,19 @@ impl Model {
     }
 
     /// One radar's bearing alone does not range an aircraft: the track is on the bearing line
-    /// from the radar at `o` (unit direction `w`), at most `hi` metres out (its ground range is
-    /// no more than its slant range, whatever its height), at the segment's middle give or take
-    /// its spread ([`SEGMENT_SIGMAS`]), and its velocity is unknown again (none, give or take
-    /// `vel_sigma` each way, nothing correlated): a velocity from bearings at a range it does
-    /// not know would be wrong by as much as the range is (found while fixing the review of
-    /// 10-07: one kept from such bearings, 100 m/s off, carried a small UAS's track 1.9 km in
-    /// 10 s once EO/IR ranged it again). The across-line estimate (the bearing's) is kept.
-    fn reset_to_segment(&mut self, o: [f64; 2], w: [f64; 2], hi: f64, vel_sigma: f64) {
+    /// from the radar at `o` (unit direction `w`), between `lo` and `hi` metres out (its ground
+    /// range is no more than its slant range, whatever its height, and with the radar's height no
+    /// less than an aircraft at the band's farthest height from it would be:
+    /// [`Slant::segment`]), at the segment's middle give or take its spread ([`SEGMENT_SIGMAS`]),
+    /// and its velocity is unknown again (none, give or take `vel_sigma` each way, nothing
+    /// correlated): a velocity from bearings at a range it does not know would be wrong by as much
+    /// as the range is (found while fixing the review of 10-07: one kept from such bearings, 100
+    /// m/s off, carried a small UAS's track 1.9 km in 10 s once EO/IR ranged it again). The
+    /// across-line estimate (the bearing's) is kept.
+    fn reset_to_segment(&mut self, o: [f64; 2], w: [f64; 2], (lo, hi): (f64, f64), vel_sigma: f64) {
         let mu = self.x[0] * w[0] + self.x[1] * w[1] - (w[0] * o[0] + w[1] * o[1]);
-        let spread = hi / SEGMENT_SIGMAS;
-        let dx = 0.5 * hi - mu;
+        let spread = (hi - lo) / SEGMENT_SIGMAS;
+        let dx = 0.5 * (lo + hi) - mu;
         self.x[0] += w[0] * dx;
         self.x[1] += w[1] * dx;
         let u = [w[1], -w[0]];
@@ -542,13 +550,15 @@ impl Model {
     }
 
     /// A ranged track (another sensor's fix, or another radar's bearing across this one, within
-    /// [`RANGE_FRESH_S`]) kept on the segment the slant range bounds: an estimate more than
-    /// [`SLANT_CLAMP_SIGMAS`] of the radar's own error beyond the slant range (or behind the
-    /// radar) is moved to that bound and its spread along the line widened by the move, its
-    /// velocity untouched (a constraint, not a measurement: it says where the aircraft is not).
-    fn keep_on_segment(&mut self, o: [f64; 2], w: [f64; 2], rho: f64, sigma_r: f64) {
+    /// [`RANGE_FRESH_S`]) kept on the segment the slant range bounds (`lo` to `hi` metres out, the
+    /// slant range taken [`SLANT_CLAMP_SIGMAS`] of the radar's own error `sigma_r` either way:
+    /// [`Slant::clamp`]): an estimate beyond its far end, or nearer than its near end by as much
+    /// again (behind the radar, without the radar's height), is moved to that bound and its spread
+    /// along the line widened by the move, its velocity untouched (a constraint, not a
+    /// measurement: it says where the aircraft is not).
+    fn keep_on_segment(&mut self, o: [f64; 2], w: [f64; 2], (lo, hi): (f64, f64), sigma_r: f64) {
         let mu = self.x[0] * w[0] + self.x[1] * w[1] - (w[0] * o[0] + w[1] * o[1]);
-        let (lo, hi) = (-SLANT_CLAMP_SIGMAS * sigma_r, rho + SLANT_CLAMP_SIGMAS * sigma_r);
+        let lo = lo - SLANT_CLAMP_SIGMAS * sigma_r;
         if (lo..=hi).contains(&mu) {
             return;
         }
@@ -659,21 +669,36 @@ impl Bearing {
 
 /// A 2D radar's fix of an aircraft, in metres east and north of the track's estimate: the
 /// radar at `o`, the unit direction `w` of its bearing, its plot `rho` metres out (the slant
-/// range).
+/// range), and where the plot says the radar was (`from`: its height, when the plot gives one).
 #[derive(Debug, Clone, Copy)]
 struct Slant {
     o: [f64; 2],
     w: [f64; 2],
     rho: f64,
+    from: SlantFrom,
 }
 
 impl Slant {
     /// From the fix at `z` (east, north m) and the radar at `o`.
-    fn new(o: [f64; 2], z: [f64; 2]) -> Slant {
+    fn new(o: [f64; 2], z: [f64; 2], from: SlantFrom) -> Slant {
         let (we, wn) = (z[0] - o[0], z[1] - o[1]);
         let rho = we.hypot(wn);
         let w = if rho > 1e-6 { [we / rho, wn / rho] } else { [0.0, 1.0] };
-        Slant { o, w, rho }
+        Slant { o, w, rho, from }
+    }
+
+    /// The segment of the bearing an unranged track is on, near and far, m from the radar: the
+    /// ground ranges an aircraft plotted at this slant range can be at, the slant range taken
+    /// [`SLANT_SIGMAS`] of the radar's 1-sigma `sigma` either way (`(0, rho + 2 sigma)` without the
+    /// radar's height).
+    fn segment(&self, sigma: f64) -> (f64, f64) {
+        self.from.ground_range_m(self.rho, sigma, SLANT_SIGMAS)
+    }
+
+    /// The same, the slant range taken [`SLANT_CLAMP_SIGMAS`] either way: what a ranged estimate
+    /// is kept within ([`Model::keep_on_segment`]).
+    fn clamp(&self, sigma: f64) -> (f64, f64) {
+        self.from.ground_range_m(self.rho, sigma, SLANT_CLAMP_SIGMAS)
     }
 
     /// The bearing as a measurement: the contact on the line through the radar along `w`, its
@@ -1037,18 +1062,20 @@ impl Track {
     pub fn new(id: String, no: u64, d: &Detection, now: f64) -> Track {
         let r = d.sigma_m * d.sigma_m;
         // a 2D radar's fix of an aircraft says only that it is on the bearing line within the
-        // slant range: the track starts in the middle of that segment, with its spread
-        // (`Model::reset_to_segment`)
+        // segment the slant range bounds: the track starts in the middle of that segment, with its
+        // spread (`Model::reset_to_segment`)
         let (lat, lon, pos) = match d.slant_from {
-            Some((olat, olon)) => {
+            Some(from) => {
+                let (olat, olon) = (from.lat, from.lon);
                 let m_per_lon = 111_320.0 * olat.to_radians().cos();
-                let s = Slant::new([0.0, 0.0], [(d.lon - olon) * m_per_lon, (d.lat - olat) * 111_320.0]);
-                let hi = s.rho + SLANT_SIGMAS * d.sigma_m;
-                let a = (hi / SEGMENT_SIGMAS).powi(2);
+                let s = Slant::new([0.0, 0.0], [(d.lon - olon) * m_per_lon, (d.lat - olat) * 111_320.0], from);
+                let (lo, hi) = s.segment(d.sigma_m);
+                let a = ((hi - lo) / SEGMENT_SIGMAS).powi(2);
                 let (u, w) = ([s.w[1], -s.w[0]], s.w);
+                let mid = 0.5 * (lo + hi);
                 (
-                    olat + 0.5 * hi * w[1] / 111_320.0,
-                    olon + 0.5 * hi * w[0] / m_per_lon,
+                    olat + mid * w[1] / 111_320.0,
+                    olon + mid * w[0] / m_per_lon,
                     [
                         [a * w[0] * w[0] + r * u[0] * u[0], a * w[0] * w[1] + r * u[0] * u[1]],
                         [a * w[0] * w[1] + r * u[0] * u[1], a * w[1] * w[1] + r * u[1] * u[1]],
@@ -1117,9 +1144,9 @@ impl Track {
     fn first_fix(&mut self, d: &Detection, now: f64) {
         let t_fix = d.measured_t.unwrap_or(now);
         match d.slant_from {
-            Some((olat, olon)) => {
-                let m_per_lon = 111_320.0 * olat.to_radians().cos();
-                let s = Slant::new([0.0, 0.0], [(d.lon - olon) * m_per_lon, (d.lat - olat) * 111_320.0]);
+            Some(from) => {
+                let m_per_lon = 111_320.0 * from.lat.to_radians().cos();
+                let s = Slant::new([0.0, 0.0], [(d.lon - from.lon) * m_per_lon, (d.lat - from.lat) * 111_320.0], from);
                 self.bearings.push(Bearing { uid: d.uid, t: t_fix, w: s.w, sigma: d.sigma_m });
             }
             None => {
@@ -1263,10 +1290,10 @@ impl Track {
         let r = d.sigma_m * d.sigma_m;
         // a position, or, from a 2D radar's fix of an aircraft, its bearing line (the plot is at
         // the slant range, which the unmeasured height lengthens: only the bearing locates it,
-        // and the slant range bounds how far out along it)
+        // and the slant range bounds how far out along it, with the radar's height how near too)
         let slant = d
             .slant_from
-            .map(|(olat, olon)| Slant::new([(olon - self.lon) * m_per_lon, (olat - self.lat) * 111_320.0], z));
+            .map(|f| Slant::new([(f.lon - self.lon) * m_per_lon, (f.lat - self.lat) * 111_320.0], z, f));
         let me = match &slant {
             Some(s) => s.line(r),
             None => Meas::position(z, r),
@@ -1341,9 +1368,9 @@ impl Track {
             }
             if let Some(s) = &slant {
                 if ranged {
-                    m.keep_on_segment(s.o, s.w, s.rho, d.sigma_m);
+                    m.keep_on_segment(s.o, s.w, s.clamp(d.sigma_m), d.sigma_m);
                 } else {
-                    m.reset_to_segment(s.o, s.w, s.rho + SLANT_SIGMAS * d.sigma_m, initial_vel_sigma(self.domain));
+                    m.reset_to_segment(s.o, s.w, s.segment(d.sigma_m), initial_vel_sigma(self.domain));
                 }
             }
         }
@@ -2165,22 +2192,40 @@ mod segment_tests {
 
     const NORTH: [f64; 2] = [0.0, 1.0];
 
+    /// The radar's plot without a height (the legacy model's), or with one at `alt_m`.
+    fn from(alt_m: Option<f64>) -> SlantFrom {
+        SlantFrom::new((0.0, 0.0), alt_m)
+    }
+
     /// The slant bound is a constraint with its uncertainty (the review of 10-07): an estimate
     /// within three of the radar's sigmas beyond the slant range is left alone; one beyond it is
     /// moved to that bound, its spread along the line widened by the move, its velocity and its
-    /// spread across the line untouched.
+    /// spread across the line untouched; with the radar's height, one nearer than the segment's
+    /// near end by more than as much is moved out to it (murmur-m4fc).
     #[test]
     fn the_slant_bound_moves_only_an_estimate_beyond_three_sigmas_and_widens_it() {
+        let clamp = |rho: f64, alt: Option<f64>| from(alt).ground_range_m(rho, 30.0, SLANT_CLAMP_SIGMAS);
         // slant range 920 m, the radar's sigma 30 m: 1,000 m is 80 m beyond, within 90
         let mut m = model();
-        m.keep_on_segment([0.0, 0.0], NORTH, 920.0, 30.0);
+        m.keep_on_segment([0.0, 0.0], NORTH, clamp(920.0, None), 30.0);
         assert_eq!(m, model());
         // slant range 800 m: 200 m beyond, moved back 110 m to 890 m
         let mut m = model();
-        m.keep_on_segment([0.0, 0.0], NORTH, 800.0, 30.0);
+        m.keep_on_segment([0.0, 0.0], NORTH, clamp(800.0, None), 30.0);
         assert!((m.x[1] - 890.0).abs() < 1e-9 && m.x[0] == 0.0, "{:?}", m.x);
         assert!((m.c[1][1] - (100.0 + 110.0 * 110.0)).abs() < 1e-9 && m.c[0][0] == 100.0, "{:?}", m.c);
         assert_eq!((m.x[2], m.x[3], m.c[2][2], m.c[3][3]), (0.0, 50.0, 4.0, 4.0), "the velocity is not dragged");
+        // with the radar's height (3,000 m) a slant range of 5,500 m puts the near end at
+        // sqrt(5,410^2 - 5,000^2) = 2,066 m: the estimate 1,000 m out is moved out to 90 m short
+        // of it, its spread along the line widened by the move; without the height it stays
+        let near = (5_410f64.powi(2) - 5_000f64.powi(2)).sqrt() - 90.0;
+        let mut m = model();
+        m.keep_on_segment([0.0, 0.0], NORTH, clamp(5_500.0, Some(3_000.0)), 30.0);
+        assert!((m.x[1] - near).abs() < 1e-6 && m.x[0] == 0.0, "{:?}", m.x);
+        assert!((m.c[1][1] - (100.0 + (near - 1_000.0).powi(2))).abs() < 1e-6, "{:?}", m.c);
+        let mut m = model();
+        m.keep_on_segment([0.0, 0.0], NORTH, clamp(5_500.0, None), 30.0);
+        assert_eq!(m, model());
     }
 
     /// A track no fix has ranged for `RANGE_FRESH_S` is the segment again: its middle, a third of
@@ -2190,11 +2235,57 @@ mod segment_tests {
     fn a_lapsed_track_is_the_segment_again_with_no_velocity() {
         let mut m = model();
         m.x[0] = 12.0;
-        m.reset_to_segment([0.0, 0.0], NORTH, 3_000.0, 60.0);
+        m.reset_to_segment([0.0, 0.0], NORTH, (0.0, 3_000.0), 60.0);
         assert!((m.x[1] - 1_500.0).abs() < 1e-9 && (m.x[0] - 12.0).abs() < 1e-9, "{:?}", m.x);
         assert!((m.c[1][1] - 1_000.0 * 1_000.0).abs() < 1e-6 && (m.c[0][0] - 100.0).abs() < 1e-9, "{:?}", m.c);
         assert_eq!((m.x[2], m.x[3]), (0.0, 0.0));
         assert_eq!((m.c[2][2], m.c[3][3], m.c[0][2], m.c[1][3]), (3_600.0, 3_600.0, 0.0, 0.0));
+        // a segment off the radar (its height known): its middle and a third of its length
+        let mut m = model();
+        m.reset_to_segment([0.0, 0.0], NORTH, (2_900.0, 5_800.0), 60.0);
+        assert!((m.x[1] - 4_350.0).abs() < 1e-9 && (m.c[1][1] - 966.666_666_666_666_6f64.powi(2)).abs() < 1e-3, "{:?} {:?}", m.x, m.c);
+    }
+
+    /// murmur-m4fc: the ground ranges a 2D radar's plot of an aircraft allows. Without the radar's
+    /// height, the radar's foot to the slant range (as before); with it, every aircraft in the
+    /// band of heights is inside the segment, its far end the slant range for a radar flying in the
+    /// band, its near end set by the band's farthest height from the radar's, the slant range's
+    /// error carried through; a plot the band cannot explain is read without it.
+    #[test]
+    fn the_segment_is_bounded_by_the_radar_s_height_and_the_band() {
+        use super::super::sensing::{AIR_CEILING_M, AIR_FLOOR_M};
+        assert_eq!(from(None).ground_range_m(5_000.0, 50.0, 2.0), (0.0, 5_100.0));
+        // REAPER 1 at 3,000 m and a drone at 100 m, 5 km out: the band's far height is the ceiling
+        // (5,000 m above it), the near end 2.9 km; the old segment's middle was 2.9 km out
+        let rho = 5_000f64.hypot(2_900.0);
+        let (lo, hi) = from(Some(3_000.0)).ground_range_m(rho, 0.0, 2.0);
+        assert!((lo - (rho * rho - 5_000.0 * 5_000.0).sqrt()).abs() < 1e-6 && hi == rho, "{lo} {hi}");
+        assert!((0.5 * (lo + hi) - 5_000.0).abs() < 700.0 && (lo..=hi).contains(&5_000.0));
+        // a surface radar (its mast 10 m up): the far end the slant range, the near end the
+        // radar's foot while the slant range is under the ceiling's height, beyond it off the foot
+        assert_eq!(from(Some(10.0)).ground_range_m(7_000.0, 0.0, 2.0), (0.0, 7_000.0));
+        let (lo, hi) = from(Some(10.0)).ground_range_m(12_000.0, 0.0, 2.0);
+        assert!((lo - (12_000f64.powi(2) - 7_990f64.powi(2)).sqrt()).abs() < 1e-6 && hi == 12_000.0, "{lo} {hi}");
+        // the slant range's error: the near end from it short, the far end from it long
+        let (lo, hi) = from(Some(3_000.0)).ground_range_m(8_000.0, 100.0, 2.0);
+        assert!((lo - (7_800f64.powi(2) - 5_000f64.powi(2)).sqrt()).abs() < 1e-6 && hi == 8_200.0, "{lo} {hi}");
+        // a radar above the band (the RQ-4's 18,000 m): both ends off the foot, an aircraft at the
+        // ceiling the farthest out; a plot nearer than the band could be is read without it
+        let (lo, hi) = from(Some(18_000.0)).ground_range_m(30_000.0, 0.0, 2.0);
+        assert!((hi - (30_000f64.powi(2) - 10_000f64.powi(2)).sqrt()).abs() < 1e-6, "{hi}");
+        assert!((lo - (30_000f64.powi(2) - 17_990f64.powi(2)).sqrt()).abs() < 1e-6, "{lo}");
+        assert_eq!(from(Some(18_000.0)).ground_range_m(9_000.0, 100.0, 2.0), (0.0, 9_200.0));
+        // every height in the band, from radars at every height, is inside its segment
+        for rh in [0.0, 5.0, 10.0, 60.0, 300.0, 1_500.0, 3_000.0, 4_000.0, 5_000.0, 7_600.0, 8_000.0, 12_000.0, 18_000.0] {
+            for g in [50.0f64, 500.0, 3_000.0, 8_000.0, 20_000.0, 60_000.0] {
+                for k in 0..=20 {
+                    let h = AIR_FLOOR_M + (AIR_CEILING_M - AIR_FLOOR_M) * f64::from(k) / 20.0;
+                    let rho = g.hypot(h - rh);
+                    let (lo, hi) = from(Some(rh)).ground_range_m(rho, 0.0, 2.0);
+                    assert!(lo - 1e-6 <= g && g <= hi + 1e-6, "radar {rh} m, aircraft {h} m {g} m out: [{lo}, {hi}]");
+                }
+            }
+        }
     }
 
     /// Bearings alone do not see a manoeuvre along the line: the widening adds white-noise

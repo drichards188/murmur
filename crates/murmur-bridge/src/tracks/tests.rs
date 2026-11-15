@@ -586,6 +586,56 @@ fn a_hostile_act_is_observed_by_the_sensors_that_could_see_its_author() {
     assert!(tracks.take_acts().is_empty());
 }
 
+/// murmur-m4fc's assumption held: the tracker bounds a 2D radar's bearing segment of an aircraft by
+/// the band of heights aircraft fly in (`sensing::AIR_CEILING_M`), so no aircraft any contacts file
+/// defines (sim/scenarios, every situation's and world's among them) flies above its ceiling or
+/// below its floor, at its own height or its kind's default (sim/contacts.toml; the contacts
+/// process's 300 m for a kind without one). A contact's orders only ever take it lower (a dive to
+/// its target), and our own aircraft (the MQ-9B's 7,600 m, the RQ-4's 18,000) are not contacts. The
+/// v3 families' generated contacts have their own test (eval/headless/tests/test_v3_families.py).
+#[test]
+fn no_contact_a_world_defines_flies_above_the_air_ceiling() {
+    use super::sensing::{AIR_CEILING_M, AIR_FLOOR_M};
+    use std::path::PathBuf;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |p: &std::path::Path| -> toml::Table { std::fs::read_to_string(p).expect("read").parse().unwrap_or_else(|e| panic!("{}: {e}", p.display())) };
+    let kinds = read(&root.join("sim/contacts.toml"));
+    let kind_alt = |kind: &str| kinds.get(kind).and_then(|k| k.get("alt_m")).and_then(toml::Value::as_float);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("sim/scenarios"))
+        .expect("sim/scenarios")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    files.sort();
+    let (mut aircraft, mut bad) = (0, Vec::new());
+    for p in &files {
+        let Some(contacts) = read(p).get("contact").and_then(toml::Value::as_array).cloned() else {
+            continue;
+        };
+        for c in contacts.iter().filter(|c| c.get("domain").and_then(toml::Value::as_str) == Some("air")) {
+            let kind = c.get("kind").and_then(toml::Value::as_str).unwrap_or("");
+            let alt = c
+                .get("alt_m")
+                .and_then(|a| a.as_float().or_else(|| a.as_integer().map(|i| i as f64)))
+                .or_else(|| kind_alt(kind))
+                .unwrap_or(300.0);
+            aircraft += 1;
+            if !(AIR_FLOOR_M..=AIR_CEILING_M).contains(&alt) {
+                bad.push(format!("{}: {} ({kind}) at {alt} m", p.display(), c.get("id").and_then(toml::Value::as_str).unwrap_or("?")));
+            }
+        }
+    }
+    assert!(files.len() > 10 && aircraft > 20, "{} files, {aircraft} aircraft", files.len());
+    assert!(bad.is_empty(), "aircraft outside the band the tracker assumes ({AIR_FLOOR_M} to {AIR_CEILING_M} m):\n{}", bad.join("\n"));
+    // and every air kind's default height is inside it
+    for (name, k) in &kinds {
+        if k.get("domain").and_then(toml::Value::as_str) == Some("air") {
+            let alt = kind_alt(name).unwrap_or(300.0);
+            assert!((AIR_FLOOR_M..=AIR_CEILING_M).contains(&alt), "{name}'s default height {alt} m");
+        }
+    }
+}
+
 /// Rules 9's act sensing for an aircraft (the review of 10-07): a 2D radar measures its slant
 /// range and bearing, not its height, so alone it places the author as the tracker reads such a
 /// fix, at the middle of the bearing segment with a third of its length for its error, not at
@@ -650,7 +700,8 @@ fn legacy_fixes_carry_the_observers_navigation_error() {
                 assert!((de + 250.0).abs() < 0.5 && (dn - 600.0).abs() < 0.5, "{:?} moved {de:.1} m east, {dn:.1} m north", x.sensor);
             }
             if let Some(from) = y.slant_from {
-                assert_eq!(from, off.believed(), "a 2D radar's plot laid off from where it believes it is");
+                assert_eq!((from.lat, from.lon), off.believed(), "a 2D radar's plot laid off from where it believes it is");
+                assert_eq!(from.alt_m, None, "the legacy model's plot gives no radar height");
             }
         }
     }

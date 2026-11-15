@@ -69,8 +69,10 @@ use self::geometry::{Grid, K_OPTICAL, K_RADIO, M_PER_DEG, en, visible_height_m};
 use self::signature::{AisClass, Signature, family_confusion, signature, size_class};
 use self::spec::{EoSensor, EsmSensor, RadarSensor, Resolved, SonarMode, SonarSensor, resolve};
 use super::sensing::{
-    ActFix, ActObservation, AisHeard, Detection, Level, Look, Observer, SearchArea, SensorType, confusion, family, normal, uniform,
+    AIR_CEILING_M, AIR_FLOOR_M, ActFix, ActObservation, AisHeard, Detection, Level, Look, Observer, SearchArea, SensorType, SlantFrom,
+    confusion, family, normal, uniform,
 };
+use super::model::{SEGMENT_SIGMAS, SLANT_SIGMAS};
 use super::truth::{ContactTruth, Domain, Sensing};
 use crate::geo::haversine_m;
 
@@ -96,13 +98,6 @@ const CUE_FRESH_S: f64 = 10.0;
 /// the boresight (the contact stays well inside the field), and slews (and settles) only when
 /// the cue leaves it: it does not chase a track's every update [E] (murmur-7vp).
 const CUE_DEADBAND: f64 = 0.25;
-/// The band of heights an aircraft whose height no sensor measured may fly at, m: a camera cued
-/// to it searches in elevation from just above the surface to the ceiling, or to the height its
-/// 2D radar plot's slant range allows if lower [E here: the ceiling is above the service
-/// ceilings of the light aircraft and helicopters the air kinds stand for, 4 to 6 km, and the
-/// 7,000 m the engagement scenarios' highest aircraft fly] (murmur-7vp).
-const AIR_FLOOR_M: f64 = 10.0;
-const AIR_CEILING_M: f64 = 8_000.0;
 /// Each bar of a cue's elevation search is stared at this long once the gimbal has settled, s
 /// [E]: about the time to detect a clear contact (tau 3.4 s), as a search step's dwell.
 const BAR_STARE_S: f64 = 4.0;
@@ -660,12 +655,11 @@ impl Engine {
         // the scanning and listening sensors first: their fixes cue this tick's cameras
         let scanned = self.pass(&mut shards, st, sun, observers, &targets, false);
         let mut out = in_observer_order(observers.len(), &shards, scanned);
-        let heights: HashMap<u64, f64> = observers.iter().map(|o| (o.uid, sensor_height_m(o))).collect();
-        self.cue_from(&out, st.s, &heights);
+        self.cue_from(&out, st.s);
         let first_eo = out.len();
         let looked = self.pass(&mut shards, st, sun, observers, &targets, true);
         out.extend(in_observer_order(observers.len(), &shards, looked));
-        self.cue_from(&out[first_eo..], st.s, &heights);
+        self.cue_from(&out[first_eo..], st.s);
         self.forget(st.s, contacts, &mut shards);
         self.own.extend(shards.into_iter().map(|sh| (sh.uid, sh.own)));
         out
@@ -725,8 +719,9 @@ impl Engine {
     /// Track positions to cue cameras to: every fix this tick, the contact's last. An aircraft's
     /// height is what a height-finding radar measured within [`CUE_FRESH_S`], else unknown (a 2D
     /// radar's, a camera's and ESM's fixes give none); a 2D radar's plot of it keeps the radar
-    /// (`heights`: each observer's sensor height), its slant range being on the plot's bearing.
-    fn cue_from(&mut self, dets: &[Detection], s: f64, heights: &HashMap<u64, f64>) {
+    /// (where it was and its sensor height, as the plot says), its slant range being on the plot's
+    /// bearing.
+    fn cue_from(&mut self, dets: &[Detection], s: f64) {
         for d in dets {
             let alt = match d.alt_m {
                 Some(a) => Some((a, s)),
@@ -735,7 +730,7 @@ impl Engine {
                 }
                 None => Some((0.0, s)),
             };
-            let slant = d.slant_from.map(|(lat, lon)| (lat, lon, heights.get(&d.uid).copied().unwrap_or(0.0)));
+            let slant = d.slant_from.map(|f| (f.lat, f.lon, f.alt_m.unwrap_or(0.0)));
             self.cues.insert(d.contact_id.clone(), Cue { lat: d.lat, lon: d.lon, alt, slant, s });
         }
     }
@@ -976,7 +971,7 @@ impl Sense<'_> {
                 ais: None,
                 domain: t.c.domain,
                 measured_t: None,
-                slant_from: slant.then(|| o.believed()),
+                slant_from: slant.then(|| SlantFrom::new(o.believed(), Some(h_s))),
                 look: Some(Look { level: Level::Detect, confidence: 0.5 * (1.0 - (-dwell / 90.0).exp()) }),
                 scan_s: Some(r.scan_s),
             });
@@ -1684,8 +1679,10 @@ fn label_at(st: &Step, uid: u64, si: usize, sensor: SensorType, t: &Target, leve
 
 /// Rules 9 under the physical model: an act is observed by the sensors that detected its
 /// author this tick (radar, EO/IR, sonar; not AIS nor ESM), each observer's best fix placing it
-/// (a 2D radar's bearing segment read at its middle, as the legacy `observe_act`); the observer
-/// with the smallest error places the act. None: nobody saw it.
+/// (a 2D radar's plot of an aircraft as the tracker reads it: the middle of its bearing segment,
+/// bounded by the radar's height and the band aircraft fly in, [`SlantFrom::ground_range_m`],
+/// with a third of the segment's length for its error); the observer with the smallest error
+/// places the act. None: nobody saw it.
 pub fn observe_act(detections: &[Detection], actor: &str) -> Option<ActObservation> {
     /// An observer's best fix (lat, lon, its 1-sigma) and its sensors that saw the act.
     type ObserverFix = ((f64, f64, f64), Vec<String>);
@@ -1697,12 +1694,12 @@ pub fn observe_act(detections: &[Detection], actor: &str) -> Option<ActObservati
         }
         let name = format!("{}:{}", d.uid, d.sensor.as_str());
         let fix = match d.slant_from {
-            Some((olat, olon)) => {
-                let (de, dn) = en(olat, olon, d.lat, d.lon);
-                let hi = de.hypot(dn) + 2.0 * d.sigma_m;
-                let b = de.atan2(dn);
-                let m_per_lon = M_PER_DEG * olat.to_radians().cos();
-                (olat + 0.5 * hi * b.cos() / M_PER_DEG, olon + 0.5 * hi * b.sin() / m_per_lon, (hi / 3.0).max(d.sigma_m))
+            Some(from) => {
+                let (de, dn) = en(from.lat, from.lon, d.lat, d.lon);
+                let (lo, hi) = from.ground_range_m(de.hypot(dn), d.sigma_m, SLANT_SIGMAS);
+                let (mid, b) = (0.5 * (lo + hi), de.atan2(dn));
+                let m_per_lon = M_PER_DEG * from.lat.to_radians().cos();
+                (from.lat + mid * b.cos() / M_PER_DEG, from.lon + mid * b.sin() / m_per_lon, ((hi - lo) / SEGMENT_SIGMAS).max(d.sigma_m))
             }
             None => (d.lat, d.lon, d.sigma_m),
         };

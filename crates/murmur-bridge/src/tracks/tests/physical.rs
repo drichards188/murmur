@@ -16,6 +16,7 @@ use super::super::physical::{Engine, Step, radar, signature, sonar};
 use super::super::sensing::{Detection, Level, Look, Observer, SearchArea, SensorSpec, SensorType};
 use super::super::truth::{ContactTruth, Domain, Sensing};
 use super::{BASE, at, catalog, contact};
+use crate::geo::haversine_m;
 
 const NM: f64 = 1852.0;
 
@@ -386,6 +387,55 @@ fn run_moving(e: &mut Engine, obs: &[Observer], n: i64, motion: impl Fn(i64) -> 
     out
 }
 
+/// murmur-m4fc (eval/SCORING-V3.md 17.14): the MQ-9B's radar alone, 3,000 m up, plots a hobby drone
+/// 100 m up and 5 km out at its slant range (5.8 km), and the plot says how high the radar was. The
+/// track is the bearing segment the radar's height and the band of heights aircraft fly in allow
+/// (2.9 to 5.8 km out), not the slant range's whole (0 to 5.8 km): it sits within a kilometre of
+/// the drone, which is inside its two sigmas, where the whole segment's middle was 2 km short; an
+/// act the drone committed would be placed on the same segment.
+#[test]
+fn an_airborne_radar_s_own_height_bounds_a_low_drone_s_segment() {
+    let radar: Vec<SensorSpec> = sensors_of("mq9b_armed").into_iter().filter(|s| s.kind == SensorType::Radar).collect();
+    let reaper = Observer { uid: 1, lat: BASE.0, lon: BASE.1, alt_msl: 3_000.0, sensors: radar, ..Observer::default() };
+    let drone = |s: i64| {
+        let a = 0.05 * s as f64;
+        let (lat, lon) = at(BASE.0, BASE.1, 100.0 * a.sin(), 5_000.0 + 100.0 * a.cos());
+        let mut c = contact("drone", "small_drone", Domain::Air, lat, lon);
+        (c.alt_m, c.speed_mps, c.course_deg) = (100.0, 5.0, (90.0 - a.to_degrees()).rem_euclid(360.0));
+        (c, lat, lon)
+    };
+    let sensing = day();
+    let mut e = Engine::new(None);
+    let (mut track, mut errs, mut plots) = (None::<Track>, Vec::new(), 0);
+    for s in 0..120 {
+        let (c, lat, lon) = drone(s);
+        let st = Step { seed: 7, tick: s, s: s as f64, t: 1_781_467_800.0 + s as f64, misclassification_rate: 0.0, sensing: &sensing };
+        let dets = e.step(&st, std::slice::from_ref(&reaper), std::slice::from_ref(&c));
+        // an act the drone committed now would be placed on the same segment (rules 9)
+        if let Some(act) = super::super::physical::observe_act(&dets, "drone") {
+            let off = haversine_m(act.lat, act.lon, lat, lon);
+            assert!(off < 1_000.0 && off < 2.0 * act.sigma_m && act.sigma_m < 1_500.0, "the act {off:.0} m off, sigma {}", act.sigma_m);
+        }
+        for mut d in dets {
+            assert_eq!(d.sensor, SensorType::Radar);
+            assert!(d.slant_from.is_some_and(|f| f.alt_m == Some(3_000.0)) && d.alt_m.is_none(), "{d:?}");
+            d.measured_t = Some(st.t);
+            plots += 1;
+            match &mut track {
+                None => track = Some(Track::new("T-0001".into(), 1, &d, st.t)),
+                Some(t) => t.update(&d, st.t),
+            }
+            let t = track.as_ref().expect("a track");
+            let err = haversine_m(t.lat, t.lon, lat, lon);
+            errs.push((err, t.sigma_m));
+        }
+    }
+    assert!(plots >= 10, "{plots} plots");
+    let worst = errs.iter().map(|e| e.0).fold(0.0, f64::max);
+    assert!(worst < 1_000.0, "the track up to {worst:.0} m off the drone");
+    assert!(errs.iter().all(|&(err, sigma)| err < 2.0 * sigma && sigma < 1_500.0), "{errs:?}");
+}
+
 /// A 2D radar's plot of an aircraft carries no elevation (murmur-7vp): a USV's camera cued by
 /// its own navigation radar to a light aircraft 1,500 m up and 5 km out, 17 degrees above the
 /// sea where the plot is (the wide field reaches 6 degrees either side of its middle), searches
@@ -402,7 +452,8 @@ fn a_camera_cued_by_a_2d_radar_finds_an_aircraft_in_elevation_and_identifies_it(
     };
     let dets = run_moving(&mut Engine::new(None), std::slice::from_ref(&o), 120, plane);
     let radar = dets.iter().find(|d| d.sensor == SensorType::Radar).expect("the radar holds it");
-    assert!(radar.slant_from.is_some() && radar.alt_m.is_none(), "{radar:?}");
+    // the plot gives the radar's own height (its mast), not the aircraft's (murmur-m4fc)
+    assert!(radar.slant_from.is_some_and(|f| f.alt_m.is_some_and(|h| (0.0..20.0).contains(&h))) && radar.alt_m.is_none(), "{radar:?}");
     let eo: Vec<&Detection> = dets.iter().filter(|d| d.sensor == SensorType::EoIr).collect();
     assert!(eo.iter().any(|d| d.look.is_some_and(|l| l.level == Level::Identify) && d.label.as_deref() == Some("light_aircraft")), "{eo:?}");
     // never an altitude from the camera: the tracker's facts stay 2D

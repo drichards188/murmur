@@ -478,7 +478,13 @@ re-baked grids `cc2f4833...` and `7db52eef...` (5,773), the Crissy Field station
 `96b9fd5b...` and `14e63b06...` (5,775), the fleet, traffic and orders re-laid on the fixed grids
 `8aecd040...` and `7be051d7...` (6,063), and KESTREL 1's orbit moved 600 m south, so its return
 home to the airfield clears the towers' no-go boxes, the pair above. Compare a change to the
-physical step with the new pair.
+physical step with the new pair. On 2026-11-15 main's code (e4ad278) gave record `24e88ab6...` and
+audit `96a2942d...` (6,099 events: changes after the pair above had moved it); with a 2D radar's
+bearing segment bounded by the radar's height (murmur-m4fc) it gives record `97380e7d...` and audit
+`9abb1bdd...` (6,099 events), the same twice. The same events and decisions: only the four logged
+track pictures differ, by millimetres in two aircraft's camera-held tracks (T-0007, T-0024) whose
+history has a 2D radar's segment in it, and the decisions' `tracks_sha256` with them. Compare with
+this pair.
 
 **Saturation's size, synthetic** (`tracks::tests::sense_par::sense_par_bench`, release: 3,602 of
 ours in Saturation's mix, 1,700 X10s at 100 m, 1,300 Pumas at 800 m, 200 Saildrones, 300

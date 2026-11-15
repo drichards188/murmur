@@ -678,7 +678,14 @@ meaningful.
   `air_tune_grid`, ignored tests), compared with verbatim copies of
   the tracker before it (`tracks/tests/before_oho/`: never edit them). A 2D radar plots an
   aircraft at its slant range (`Detection::slant_from`): a test that reads such a fix's
-  `lat`/`lon` as the aircraft's position is wrong by its height's share.
+  `lat`/`lon` as the aircraft's position is wrong by its height's share. The physical model's
+  plot also says how high the radar was (`SlantFrom::alt_m`; the legacy model's none), and the
+  tracker bounds an unranged track's bearing segment by it and the band aircraft fly in,
+  `sensing::AIR_FLOOR_M` to `AIR_CEILING_M` (10 to 8,000 m, shared with the cameras' elevation
+  search; murmur-m4fc): no contact may fly above the ceiling (guarded by
+  `no_contact_a_world_defines_flies_above_the_air_ceiling` and the v3 families' own test), or its
+  track sits short along the bearing with too small a spread. Physical air held-out sets 221-580
+  are spent (551-580 by murmur-m4fc): the next takes 581 on.
 - Two sensing models (docs/SENSING.md): `physical` (the default, live and in new worlds) and
   `legacy`, chosen by the contacts scenario's `[sensing] model` or `MURMUR_SENSE_MODEL` (which
   wins); v1 and v2 worlds and the eval stacks are pinned to `legacy` by that variable
@@ -699,8 +706,9 @@ meaningful.
   murmur-0b8, whose manoeuvre model it did not confirm, and `air_calib_physical_held_out_four`,
   341-370, with the surface's own `calib_physical_held_out`, 371-400, run once for sensing round
   3, and 401-490 for the ground calibration (murmur-e3b; ground tuning sets 491-520); 221-490
-  are spent, and 521-550 for the air velocity change (rules 18, murmur-vni), so a new physical
-  check takes a fresh set from 551) are evaluations: never
+  are spent, 521-550 for the air velocity change (rules 18, murmur-vni) and 551-580 for the radar
+  height's segment (murmur-m4fc), so a new physical check takes a fresh set from 581) are
+  evaluations: never
   tune the sensing model or the tracker on them. Sea clutter (round 3, murmur-qlt): the grazing
   angle is the spherical earth's to the nadir, a radar's `cell_m` its range resolution, its
   `doppler` mode clears a surface contact moving along its line of sight past the clutter's band;

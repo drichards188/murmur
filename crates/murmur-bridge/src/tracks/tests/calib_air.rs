@@ -143,6 +143,19 @@
 //!     at 5,500 and 7,000 m). The change is developed on the tuning sets (101-220, and the world
 //!     tuning set on 101-130) only, and the new set is run once, after it
 //!     ([`air_calib_physical_held_out_seven`]).
+//! 21. The change (a physical 2D radar's plot carries the radar's sensor height, and the segment
+//!     runs from the band's farthest height from it to its nearest: `sensing::SlantFrom::
+//!     ground_range_m`) left the tuning sets on [`SEVEN_MIXES`] as they were: every class and mix
+//!     honest, 25 failures of the criteria before and after, every keep-out miss the same. The
+//!     seventh set's one run: every class and mix honest but six, all cautious (the far transit and
+//!     the high class under the USV's radar alone, with its camera and with every sensor: NEES 0.16
+//!     to 0.41, the truth within two sigmas 99 to 100 %); keep-outs 3 s ahead missed the approach
+//!     and break in four mixes (by up to 57 m) and the 7,000 m loiter without cameras (by up to 43
+//!     m), 10 s ahead and more every case held; the tracker alone failed ten times, in hard turns
+//!     and loiters. For attribution only, after that run and changing nothing, the old tracker on
+//!     the same set: the same keep-out misses and tracker-alone failures, and one cautious pair (the
+//!     high class under the radar alone, 0.45). docs/SENSING.md, "A 2D radar's bearing segment
+//!     bounded by the radar's height".
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -198,7 +211,7 @@ pub const AIR_PHYSICAL_HELD_OUT_SIX_SEEDS: RangeInclusive<u64> = 521..=550;
 /// ([`physical_held_out_seven_cases`]): written before murmur-m4fc's tracker change (a 2D radar's
 /// bearing segment bounded by the radar's own height and the band aircraft fly in), run once after
 /// it. 221-550 were spent; the air took the first fresh set, so the surface's and the ground's next
-/// sets start at 581 (581-610, 611-640).
+/// sets start at 581 (581-610, 611-640). Spent: the next physical check takes a fresh set from 581.
 pub const AIR_PHYSICAL_HELD_OUT_SEVEN_SEEDS: RangeInclusive<u64> = 551..=580;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
@@ -1892,7 +1905,8 @@ fn a_2d_radar_fix_of_an_aircraft_gives_no_altitude_and_one_radar_does_not_range_
                 d.measured_t = Some(now);
                 if d.sensor == SensorType::Radar && !height {
                     // the plot is at the slant range from the radar, farther than the aircraft
-                    let (olat, olon) = d.slant_from.expect("a 2D radar's plot of an aircraft says where the radar was");
+                    let from = d.slant_from.expect("a 2D radar's plot of an aircraft says where the radar was");
+                    let (olat, olon) = (from.lat, from.lon);
                     let plot = haversine_m(LonLat::new(olon, olat), LonLat::new(d.lon, d.lat));
                     let ground = haversine_m(LonLat::new(olon, olat), LonLat::new(lon, lat));
                     assert!(d.alt_m.is_none() && (plot - d.range_m).abs() < 5.0 * d.sigma_m && d.range_m > ground, "{plot} {} {ground}", d.range_m);
@@ -1933,7 +1947,7 @@ fn a_2d_radar_fix_of_an_aircraft_gives_no_altitude_and_one_radar_does_not_range_
 /// which plot every tick, keep the rule as it was for a pair seconds apart.
 #[test]
 fn two_sweeping_radars_bearings_seconds_apart_are_time_aligned() {
-    use crate::tracks::sensing::Detection;
+    use crate::tracks::sensing::{Detection, SlantFrom};
     // an aircraft 1,500 m up, 2 km north and 1.5 km east of radar A (at the origin); radar B 3 km
     // east of A: the bearings cross at about 33 degrees
     let (truth_e, truth_n, alt) = (1500.0, 2000.0, 1500.0);
@@ -1957,7 +1971,7 @@ fn two_sweeping_radars_bearings_seconds_apart_are_time_aligned() {
             ais: None,
             domain: Domain::Air,
             measured_t: Some(T0 + t),
-            slant_from: Some((olat, olon)),
+            slant_from: Some(SlantFrom::new((olat, olon), None)),
             look: None,
             scan_s: scan,
         }
