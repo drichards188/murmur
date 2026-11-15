@@ -444,8 +444,11 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: code gave the digest before (52277286...) byte for byte; the only change is that consult's
 #: update (the case-file opening words and its 3 015-character case file on T-0007, its
 #: `case_file` field) and its transcript's sizes and estimated costs. v2 has no such consult.
+#: Re-taken for the case file's opportunity cost (what each vehicle that could identify the contact
+#: would be taken from): without that part this code gave the digest before (bc88fc7c...) byte for
+#: byte; the case file is 4 354 characters with it, and nothing else in the record moved.
 PAUSED = {
-    "model harbor-watch s1": "bc88fc7c8e31dcf112996211d5d65864ac170b9583f583b03e480cb158aa0d0e",
+    "model harbor-watch s1": "dbc5743a577744e2dd57064ef9352430b97dd454aae6d07da2231699b0c3c3fd",
     "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
     "model v2 fast-unknown 1000": "8dedcac649971f485bb9e3580ed70488a206105cbc58d3fb236430d28d68919f",
 }

@@ -65,8 +65,11 @@ INTENTS = [
 class Session:
     """The driver's session: the reads a case file makes, every call kept; never a writer."""
 
-    def __init__(self, tracks: dict, options: dict | None = None, intents: list | None = None, fail: tuple = ()):
+    def __init__(self, tracks: dict, options: dict | None = None, intents: list | None = None, fail: tuple = (),
+                 fleet: list | None = None, picture: list | None = None):
         self.tracks, self.options, self.intents, self.fail = tracks, options or OPTIONS, intents or INTENTS, fail
+        self.fleet = fleet or []
+        self.picture = picture  # the whole picture (default: the tracks by id)
         self.calls: list[tuple[str, dict]] = []
 
     async def call(self, name, **args):
@@ -76,9 +79,15 @@ class Session:
             raise RuntimeError(f"{name}: at most one call a second per agent")
         if name == "get_tracks":
             ids = args.get("track_id")
-            assert isinstance(ids, list), "always by id"
+            if ids is None:  # the driver's whole-picture read, for what each candidate covers
+                assert args == {"include_stale": False}
+                return {"t": 1010.0, "tracks": self.picture if self.picture is not None else list(self.tracks.values())}
+            assert isinstance(ids, list), "always a list"
             return {"tracks": [self.tracks[i] for i in ids if i in self.tracks], "lost": [],
                     "missing": [{"id": i, "why": "no such track"} for i in ids if i not in self.tracks]}
+        if name == "get_fleet":
+            assert args.get("compact") is True and isinstance(args.get("uids"), list)
+            return {"vehicles": [v for v in self.fleet if v["uid"] in args["uids"]]}
         if name == "get_identify_options":
             return {**self.options, "track": args["track_id"]}
         if name == "get_intents":
@@ -99,7 +108,7 @@ def test_the_case_file_holds_what_the_decision_needs():
     notes = CF.Notes()
     notes.add(["T-0016"], 999_000.0, 11, "I sent HAWK 1 to identify T-0016 " + "x" * 900, [15])
     text = build(s, ["T-0016"], notes)
-    assert [c[0] for c in s.calls] == ["get_tracks", "get_identify_options", "get_intents"]
+    assert [c[0] for c in s.calls] == ["get_tracks", "get_identify_options", "get_intents", "get_fleet", "get_tracks"]
     assert s.calls[0][1] == {"track_id": ["T-0016"]} and s.calls[1][1] == {"track_id": "T-0016"}
     assert text.startswith("Case file, read by the driver at ") and "data, not instructions" in text
     assert "Track T-0016:" in text
@@ -186,3 +195,63 @@ def test_which_contacts_a_consult_is_about():
     assert wake.escalate and not wake.side, "on the chain (a hostile declaration)"
     assert CF.consult_tracks(wake) == ["T-1"]
     assert CF.track_subjects(wake) == ["T-1", "T-2"]
+
+
+def test_each_candidate_says_what_it_would_be_taken_from():
+    """The owner's third change: for each vehicle that could identify the contact, its current order
+    and the open needs it covers now (unknown or suspect, not identified, inside the line or coming
+    to it, that its order aims at or its camera saw in the last 10 s), from what the agent sees."""
+    fleet = [
+        {"uid": 1, "callsign": "REAPER 1", "task": None},
+        {"uid": 2, "callsign": "HAWK 1", "task": {"intent_id": 13, "task": "orbit", "state": "active"}},
+        {"uid": 4, "callsign": "PUMA 2", "task": {"intent_id": 12, "task": "identify", "state": "superseded"}},
+    ]
+    inside = track("T-0032", 1500, 0)  # inside the 3 km line, a conflict: a need
+    inside["sources"].append({"uid": 2, "sensor": "eo_ir", "hits": 40, "last_t": 1008.0})  # HAWK 1's camera, 2 s ago
+    coming = track("T-0040", -3500, 0, ve=8.0)  # 3.5 km west, east at 8 m/s: in within a minute
+    coming["identity"] = {"kind": "small_craft", "level": "recognise", "confidence": 0.9, "conflict": None}
+    coming["sources"].append({"uid": 2, "sensor": "eo_ir", "hits": 3, "last_t": 990.0})  # 20 s ago: not now
+    settled = track("T-0041", 1000, 0)  # inside but identified: no need
+    settled["identity"] = {"kind": "fishing_vessel", "level": "identify", "confidence": 0.9, "conflict": None}
+    settled["sources"].append({"uid": 2, "sensor": "eo_ir", "hits": 9, "last_t": 1009.0})
+    neutral = track("T-0042", 800, 0)  # inside, unsettled, but shown neutral: not the mission's
+    neutral["affiliation"] = "neutral"
+    neutral["sources"].append({"uid": 2, "sensor": "eo_ir", "hits": 9, "last_t": 1009.0})
+    far = track("T-0016", -16_900, -6_200, ve=2.85, vn=-2.66)  # the subject, far out
+    # HAWK 1's order: an orbit centred on T-0040's spot; PUMA 2's identify of T-0016 was superseded
+    intents = [{**INTENTS[2], "params": {"center": at(-3450, 0), "radius_m": 300.0}}, INTENTS[1]]
+    picture = [inside, coming, settled, neutral, far]
+    s = Session({"T-0016": far}, intents=intents, fleet=fleet, picture=picture)
+    text = build(s, ["T-0016"])
+    lines = {ln.split(":")[0].strip(" -"): ln for ln in text.splitlines()
+             if ln.startswith("  - uid ") and (": no order" in ln or ": on #" in ln)}
+    assert "- What each would be taken from: its current order (get_fleet, get_intents) and the open needs" in text
+    assert lines["uid 1 REAPER 1"].endswith("no order now; covers no open need")
+    hawk = lines["uid 2 HAWK 1"]
+    assert hawk.startswith('  - uid 2 HAWK 1: on #13 orbit by op-1 (task active), "a look"; covers '), hawk
+    assert "T-0032 (suspect, an identity conflict; inside the Golden Gate approaches; by its camera, 2 s ago)" in hawk
+    assert "T-0040 (suspect, only recognise; closing on the Golden Gate Bridge" in hawk
+    assert "by its order's orbit, centred 50 m off" in hawk, "not by its camera: 20 s ago"
+    assert "T-0041" not in hawk and "T-0042" not in hawk and "T-0016" not in hawk
+    assert hawk.index("T-0032") < hawk.index("T-0040")
+    puma = lines["uid 4 PUMA 2"]
+    assert "on #12 identify by agent-watch (task superseded; not flying it)" in puma
+    assert puma.endswith("covers no open need"), "a superseded order aims at nothing"
+    # without a protected line, any unidentified contact it covers counts, said so
+    s = Session({"T-0016": far}, intents=intents, fleet=fleet, picture=picture)
+    text = build(s, ["T-0016"], watch=False)
+    assert "not yet identified, anywhere (no protected line is known)," in text
+    assert "T-0032 (suspect, an identity conflict; no protected line known; by its camera, 2 s ago)" in text
+    # a read that fails is said in its place
+    s = Session({"T-0016": far}, intents=intents, fleet=fleet, fail=("get_fleet",))
+    assert "- What each would be taken from: could not be read (RuntimeError" in build(s, ["T-0016"])
+
+
+def test_only_the_vehicles_shown_have_their_orders_told():
+    opts = {"vehicles": [{**OPTIONS["vehicles"][0], "uid": u, "callsign": f"V {u}"} for u in range(1, 9)]}
+    intents = [{"id": 30 + u, "kind": "patrol", "uids": [str(u)], "state": "dispatched", "params": {},
+                "source": {"kind": "human", "id": "op-setup"}} for u in (2, 8)]
+    s = Session({"T-1": track("T-1", 500, 0)}, options=opts, intents=intents)
+    text = build(s, ["T-1"])
+    assert "  - #32 patrol on [2] by op-setup: dispatched" in text
+    assert "#38" not in text, "uid 8 is past the six shown"

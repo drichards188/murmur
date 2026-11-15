@@ -14,6 +14,11 @@ agent, never the model, and puts it at the end of the consult's update:
 - `get_identify_options` for it: who could identify it, passing and soonest first (the first
   `OPTIONS_MAX`). Not on a consult of the engagement chain, whose first read is
   `get_nomination_options`: both share the bridge's one dry run a second per agent;
+- what each of those vehicles would be taken from (`opportunity`, the owner's third change):
+  its current order, and the open needs it covers now, the contacts shown unknown or suspect and
+  not yet identified, inside the protected line or coming to it, that its order aims at or its
+  camera saw in the last `classifier_fresh_s` (the playbook's 10 s); from `get_fleet` compact for
+  those vehicles and a whole-picture `get_tracks` the driver reads and the model never sees;
 - the open intents (anyone's) on the contact or on those vehicles: an identify or engagement of
   it, an orbit centred on it (within its radius or 500 m), any order of a candidate vehicle;
 - what earlier consults of this run concluded about the same contact (`Notes`: each consult's
@@ -33,6 +38,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
+from playbook.beliefs import NOT_RUNNING
+
 from .picture import OPEN, distance_m, hms, quote
 from .stakes import GATED, GATED_FLAPPING, km
 
@@ -43,6 +50,8 @@ KEEP = 12
 ENTRY_MAX = 8000
 OPTIONS_MAX = 6
 INTENTS_MAX = 8
+#: open needs listed per candidate vehicle
+NEEDS_MAX = 4
 #: earlier consults told per contact, and how much of each one's text
 NOTES_PER_TRACK = 3
 NOTE_CHARS = 500
@@ -238,6 +247,128 @@ def intent_line(i: dict[str, Any], track: str) -> str:
             + (f" ({', '.join(what)})" if what else "") + reason)
 
 
+def unsettled(t: dict[str, Any], settled: float) -> str | None:
+    """Why a contact is not shown identified, or None: its kind short of the identification level
+    (recognition will do under water), or below the playbook's `classification_settled`, or in
+    conflict."""
+    ident = t.get("identity") if isinstance(t.get("identity"), dict) else {}
+    level, conf = ident.get("level"), ident.get("confidence")
+    if ident.get("conflict"):
+        return "an identity conflict"
+    enough = ("recognise", "identify") if t.get("domain") == "subsurface" else ("identify",)
+    if level not in enough:
+        return f"only {level or 'detected'}"
+    if not isinstance(conf, (int, float)) or conf < settled:
+        return f"{ident.get('kind')} at {conf if conf is not None else '?'}, under {settled:g}"
+    return None
+
+
+def _declared(t: dict[str, Any]) -> str | None:
+    d = t.get("declared")
+    return d.get("affiliation") if isinstance(d, dict) else (d if isinstance(d, str) else None)
+
+
+def covers(uid: int, order: dict[str, Any] | None, task: dict[str, Any] | None, tracks: list[dict[str, Any]],
+           t_now: float, fresh_s: float) -> dict[str, str]:
+    """The contacts a vehicle covers now, each with how: the one its running order aims at (an
+    identify or a track of it, an orbit centred within its radius or 500 m of it), and those its
+    camera saw within `fresh_s`. `order` is its current intent (get_intents), `task` the compact
+    fleet entry's current task."""
+    out: dict[str, str] = {}
+    running = isinstance(task, dict) and task.get("state") not in NOT_RUNNING
+    p = (order or {}).get("params") if isinstance((order or {}).get("params"), dict) else {}
+    aim = str(p.get("track") or p.get("track_id") or "") if running else ""
+    c = p.get("center") if running else None
+    for t in tracks:
+        tid = str(t.get("id"))
+        how = []
+        if aim and tid == aim:
+            how.append(f"its order's {order.get('kind')}")
+        w = t.get("predicted") or t.get("position")
+        if (isinstance(c, (list, tuple)) and len(c) == 2 and isinstance(w, (list, tuple)) and len(w) == 2):
+            try:
+                d = distance_m(float(c[0]), float(c[1]), float(w[0]), float(w[1]))
+                if d <= max(float(p.get("radius_m") or 0.0), LOOK_M):
+                    how.append(f"its order's orbit, centred {d:.0f} m off")
+            except (TypeError, ValueError):
+                pass
+        for s in t.get("sources") or []:
+            if (isinstance(s, dict) and _uids([s.get("uid")]) == [uid] and s.get("sensor") == "eo_ir"
+                    and isinstance(s.get("last_t"), (int, float)) and t_now - s["last_t"] <= fresh_s):
+                how.append(f"its camera, {max(0.0, t_now - s['last_t']):.0f} s ago")
+                break
+        if how:
+            out[tid] = "; ".join(how)
+    return out
+
+
+async def opportunity(session: Any, options: dict[str, Any], intents: list[dict[str, Any]], watch: Any,
+                      subject: str) -> list[str]:
+    """For each candidate in the identify options shown (bd murmur-5xaf, the owner's third change):
+    its current order and the open needs it covers now, the contacts it would leave: shown unknown
+    or suspect (or declared hostile), not shown identified, inside the protected line or coming to
+    it (the stakes gate's `matters`; every such contact when no line is known), that its order
+    aims at or its camera saw within the playbook's `classifier_fresh_s`. From what the agent sees
+    (get_fleet compact for the candidates, the whole get_tracks picture read by the driver, the
+    intents already read), never the truth."""
+    cands = [u for o in (options.get("vehicles") or [])[:OPTIONS_MAX] if isinstance(o, dict)
+             for u in _uids([o.get("uid")])]
+    if not cands:
+        return []
+    th = watch.cfg.t if watch is not None else {}
+    settled = float(th.get("classification_settled", 0.6))
+    fresh_s = float(th.get("classifier_fresh_s", 10.0))
+    try:
+        fleet = {u: v for v in (await session.call("get_fleet", compact=True, uids=cands)).get("vehicles") or []
+                 if isinstance(v, dict) for u in _uids([v.get("uid")])}
+        pic = await session.call("get_tracks", include_stale=False)
+    except Exception as e:  # noqa: BLE001 (the case file goes without it)
+        return [f"- What each would be taken from: could not be read ({type(e).__name__}: {str(e)[:160]})."]
+    t_now = float(pic.get("t") or 0.0)
+    by_id = {int(i["id"]): i for i in intents if isinstance(i, dict) and isinstance(i.get("id"), int)}
+    needs: dict[str, str] = {}
+    tracks = [t for t in pic.get("tracks") or [] if isinstance(t, dict) and t.get("id") is not None]
+    for t in tracks:
+        if not (t.get("affiliation") in ("unknown", "suspect") or _declared(t) == "hostile"):
+            continue
+        why = unsettled(t, settled)
+        if why is None:
+            continue
+        s = watch.of_track(t) if watch is not None else None
+        if watch is not None and (s is None or not s.matters):
+            continue
+        where = s.why if s is not None else "no protected line known"
+        needs[str(t["id"])] = f"{t.get('affiliation')}, {why}; {where}"
+    scope = ("inside the protected line or coming to it" if watch is not None
+             else "anywhere (no protected line is known)")
+    out = [f"- What each would be taken from: its current order (get_fleet, get_intents) and the open needs it "
+           f"covers now, contacts shown unknown or suspect and not yet identified, {scope}, that its order aims "
+           f"at or its camera saw in the last {fresh_s:.0f} s:"]
+    for u in cands:
+        v = fleet.get(u) or {}
+        task = v.get("task") if isinstance(v.get("task"), dict) else None
+        order = by_id.get(_uids([task.get("intent_id")])[0]) if task and _uids([task.get("intent_id")]) else None
+        who = f"uid {u} {v.get('callsign') or ''}".strip()
+        if task is None:
+            doing = "no order now"
+        else:
+            src = ((order or {}).get("source") or {}).get("id") or "?"
+            head = str((order or {}).get("rationale") or "").strip().splitlines()[:1]
+            said = f", {quote(head[0], 100)}" if head and head[0] else ""
+            doing = (f"on #{task.get('intent_id')} {task.get('task')} by {src} (task {task.get('state')}"
+                     f"{'; not flying it' if task.get('state') in NOT_RUNNING else ''}){said}")
+        cov = covers(u, order, task, tracks, t_now, fresh_s)
+        open_ = [(tid, how) for tid, how in cov.items() if tid in needs]
+        if open_:
+            shown = [f"{tid}{' (this contact)' if tid == subject else ''} ({needs[tid]}; by {how})"
+                     for tid, how in open_[:NEEDS_MAX]]
+            more = f"; and {len(open_) - NEEDS_MAX} more" if len(open_) > NEEDS_MAX else ""
+            out.append(f"  - {who}: {doing}; covers {'; '.join(shown)}{more}")
+        else:
+            out.append(f"  - {who}: {doing}; covers no open need")
+    return out
+
+
 async def build(session: Any, tracks: list[str], watch: Any, notes: Notes, now: float,
                 identify: bool = True) -> str | None:
     """The case file for a consult about `tracks` (`consult_tracks`), or None when there is none
@@ -291,8 +422,10 @@ async def build(session: Any, tracks: list[str], watch: Any, notes: Notes, now: 
         if tr in options:
             sec.append("- Who could identify it (get_identify_options, passing and soonest first):")
             sec += [f"  - {ln}" for ln in options_lines(options[tr])]
-            cands = {u for o in options[tr].get("vehicles") or [] if isinstance(o, dict)
+            # the vehicles shown (the first OPTIONS_MAX): their orders are the ones told
+            cands = {u for o in (options[tr].get("vehicles") or [])[:OPTIONS_MAX] if isinstance(o, dict)
                      for u in _uids([o.get("uid")])}
+            sec += await opportunity(session, options[tr], intents, watch, tr)
         elif tr in opt_note:
             sec.append(f"- Who could identify it: {opt_note[tr]}.")
         where = None

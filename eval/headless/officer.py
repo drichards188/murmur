@@ -33,8 +33,9 @@ that can be imported is:
   mission verbatim); a consult about a contact (an identity conflict, one coming and going, one
   that has come to matter to the watch) is told `CONSULT_HEAD_CASE` instead, and its update ends
   with the driver's case file (agents/watch/casefile.py, bd murmur-5xaf: the track's entry by id,
-  where it stands against the protected line, get_identify_options for it, the open intents on it
-  or those vehicles, earlier consults' conclusions on it), read at the wake's instant through the
+  where it stands against the protected line, get_identify_options for it and what each of those
+  vehicles would be taken from, the open intents on it or those vehicles, earlier consults'
+  conclusions on it), read at the wake's instant through the
   officer's session (on the paused clock its identify read spends that instant's dry run, so the
   consult's own get_identify_options there is refused, as the opening words say); a failed turn
   backs its lane off by `Officer.failed`;

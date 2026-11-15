@@ -3544,6 +3544,10 @@ for the shipped officer, live and headless alike:
    open intents on it or on those vehicles, and what earlier consults of the watch concluded
    about it. The opening words say the file is there and how to read more without the whole
    picture.
+3. **Show the opportunity cost.** For each vehicle that could identify the contact, the case
+   file says its current order and the open needs it covers now: the contacts not yet
+   identified, inside the protected line or coming to it, that its order aims at or its camera
+   is looking at (the smoke's consults sent HAWK 1 off its look at one contact to another).
 
 Chosen in building the gate (agents/watch/stakes.py, agents/README.md "When it wakes"):
 
@@ -3591,3 +3595,11 @@ backend"):
   conclusions of 500 characters each, 16 000 characters in all (a whole-picture read was 76 000 to
   100 000). Earlier conclusions are each consult's final text, kept per contact under every track
   its escalation named, the chain's included. A read that fails is said in its place.
+- **An open need** is a contact shown unknown or suspect (or declared hostile) and not shown
+  identified: its kind short of the identification level (recognition will do under water, as
+  in scoring v3's mission), under the playbook's `classification_settled` (0.6), or in conflict;
+  inside the protected line or coming to it as the gate judges (anywhere, said so, when no line
+  is known). A vehicle covers one when its running order aims at it (an identify or track of it,
+  an orbit centred within its radius or 500 m of it) or its camera saw it within the playbook's
+  `classifier_fresh_s` (10 s). All of it from what the agent sees: `get_fleet` compact for the
+  candidates and a whole-picture `get_tracks` the driver reads, which the model never receives.

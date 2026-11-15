@@ -532,11 +532,18 @@ shows. `AI=none`: no AI ("None").
   and surest 12 when there are more); `get_identify_options` for it (the first six, passing and
   soonest first; for the first contact only, and not on a consult of the engagement chain,
   since the bridge allows an agent one dry run a second and the chain's first read is
-  `get_nomination_options`; the opening words say another in the same second is refused); the
+  `get_nomination_options`; the opening words say another in the same second is refused); for
+  each of those vehicles, what it would be taken from: its current order (`get_fleet` compact,
+  its intent from `get_intents`) and the open needs it covers now, the contacts shown unknown or
+  suspect and not yet identified (short of the identification level, recognition under water,
+  under the playbook's 0.6, or in conflict), inside the protected line or coming to it as the
+  gate judges, that its running order aims at (an identify of it, an orbit centred within its
+  radius or 500 m) or its camera saw in the last 10 s (the playbook's `classifier_fresh_s`), four
+  at most each, from a whole-picture read the driver makes and the model never sees; the
   open intents, anyone's, on it (an identify or engagement of it, an orbit centred within its
   radius or 500 m of it) or on those vehicles; and what earlier consults of the watch concluded
   about it (the last three, each trimmed to 500 characters, with their proposals). At most
-  16 000 characters in all (Harbor watch's paused model episode: 3 015); a read that fails is
+  16 000 characters in all (Harbor watch's paused model episode: 4 354); a read that fails is
   said in its place. The engagement chain's consults and those about our own vehicles are
   briefed as before. The `wake` line names it (`case_file`: its tracks and characters).
 
