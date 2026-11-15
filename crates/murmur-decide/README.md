@@ -2500,7 +2500,7 @@ Rules versions:
   `tests/rules32.rs`; the bridge's `tracks::tests::reach` holds the fact to the display's figures
   and the catalog's on a clear day, its decision tests the tick's preparation. Rules 32 was built
   in stages behind `RULES_NEWEST` and made the default last; tests written for rules 31 on the
-  physical reaches decide under it by name. Fixtures (a clean build of the branch):
+  physical reaches decide under it by name. Fixtures (a clean build of `677a8a1`):
   `tests/data/audit/v32-engagement-scenario-01.jsonl` (no reach now: as rules 31 decided it),
   `v32-identify-in-fog-refused-until-it-lifts-scenario-146.jsonl` (relabelled rules 31, its reach
   now is caught, and with it taken out its refusal).

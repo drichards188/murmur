@@ -1461,7 +1461,12 @@ old where it was 13 s. Rules 31 (an identify order sized by the track's shown si
 murmur-8vj8) re-took it for `run.started` alone, to record `c93ac2ac...`, audit `0c4e58e1...`, 152
 events: with `RULES_VERSION` put back to 30 the code gave `5b24cdab...`, `ab7609a1...` byte for
 byte, and the new audit log with its `rules_version` put back to 30 hashes to `ab7609a1...` too;
-Harbor watch runs the legacy sensing model, whose facts carry no reaches by size class.
+Harbor watch runs the legacy sensing model, whose facts carry no reaches by size class. Rules 32 (a
+sensor's reach under the conditions now, bd murmur-ahss) re-took it for `run.started` alone, to
+record `1a7d4115...`, audit `34c3911e...`, 152 events: the new record with its audit log's
+`rules_version` put back to 31 hashes to `c93ac2ac...` and `0c4e58e1...` byte for byte (the
+playbook's tool list names the tools only, so the two descriptions rules 32 rewrote move nothing
+here); the legacy model has no reach now.
 
 ### 17.3 The bake tool
 

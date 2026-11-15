@@ -24,7 +24,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 89] = [
+const LOGS: [(&str, u32); 91] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -250,13 +250,18 @@ const LOGS: [(&str, u32); 89] = [
     // orbit of 788 m, its camera's reach of a small drone, identified)
     ("v31-engagement-scenario-01.jsonl", IDENTIFY_CLASS_SINCE),
     ("v31-identify-a-small-drone-close-in-scenario-144.jsonl", IDENTIFY_CLASS_SINCE),
+    // rules 32 (a sensor's reach under the conditions now; a clean build of 677a8a1,
+    // bd murmur-ahss): scenario 01 (no reach now: as rules 31 decided it) and 146 (PUMA 1 refused
+    // an identify order in fog of 50 m visibility, sent once it thins to 1.2 km)
+    ("v32-engagement-scenario-01.jsonl", REACH_NOW_SINCE),
+    ("v32-identify-in-fog-refused-until-it-lifts-scenario-146.jsonl", REACH_NOW_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v31-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v32-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2230,6 +2235,57 @@ fn a_class_sized_identify_order_is_caught_under_older_rules() {
     }
     let r = with(&rechain(&ls), RulesAccepted::Exactly(IDENTIFY_CLASS_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// Rules 32: scenario 146's log relabelled rules 31 carries what no build of rules 31 logged (a
+/// vehicle's sensors' reach now) and is caught; with it taken out, its refusal in the fog (where
+/// rules 31 sends PUMA 1 to the clear day's 788 m orbit) still gives it away; under its own rules
+/// it replays.
+#[test]
+fn a_reach_now_is_caught_under_older_rules() {
+    let ls = lines(&fixture("v32-identify-in-fog-refused-until-it-lifts-scenario-146.jsonl"));
+    let v32 = format!("\"rules_version\":{REACH_NOW_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v32));
+    assert!(
+        ls.iter().any(|l| l.contains("\"reach_now\":{\"value\":{\"alt_m\":150.0,\"visibility_m\":50.0")),
+        "the reach now is logged"
+    );
+    old[0] = old[0].replacen(&v32, &format!("\"rules_version\":{IDENTIFY_CLASS_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(IDENTIFY_CLASS_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.starts_with("a vehicle's sensors' reach under the conditions now")), "{w:?}");
+    let stripped: Vec<String> = old.iter().map(|l| without_reach_now(l)).collect();
+    assert!(!stripped.iter().any(|l| l.contains("reach_now")));
+    let w: Vec<String> = whats(&with(&rechain(&stripped), RulesAccepted::Exactly(IDENTIFY_CLASS_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.starts_with("check results differ")), "{w:?}");
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(REACH_NOW_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// A log line without rules 32's key: each vehicle's `reach_now` fact (a nested object).
+fn without_reach_now(line: &str) -> String {
+    const KEY: &str = ",\"reach_now\":{";
+    let mut out = line.to_string();
+    while let Some(i) = out.find(KEY) {
+        let open = i + KEY.len() - 1;
+        let mut depth = 0;
+        let mut end = out.len();
+        for (j, c) in out[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.replace_range(i..end, "");
+    }
+    out
 }
 
 /// A log line without rules 31's keys: each camera's `size_class` reaches (a flat object) and a

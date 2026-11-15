@@ -460,10 +460,17 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: 2e88861d..., e6b82375...) byte for byte, and each new record with its audit log's `run.started`
 #: `rules_version` put back to 30 gives them too, so that is the only change. These worlds run the
 #: legacy sensing model, whose facts carry no reaches by size class, so no identify plan moved.
+#: Re-taken for decision rules 32 (bd murmur-ahss, a sensor's reach under the conditions now): with
+#: `get_sensor_reach`'s and `get_identify_options`' descriptions put back (they now say the engine
+#: judges by the reach now) this code gave records whose audit log's `run.started` `rules_version`
+#: put back to 31 gives the digests before (baa79be0..., 946853d8..., d436a1b7...) byte for byte, so
+#: the changes are that version and, for the model, the two descriptions in its tool list (its
+#: prompt sizes and token estimates); the playbook's moved by the version alone. These worlds run
+#: the legacy sensing model, which has no reach now, so no decision moved.
 PAUSED = {
-    "model harbor-watch s1": "baa79be04dd189b17ecaa92a8aff776e7928436dc33c09359501c7d8d8b495b3",
-    "playbook v2 fast-unknown 1000": "946853d81f5d48b3f5fa8c62858c42c4aca7397a9e2d4b8a6e06b425584fae42",
-    "model v2 fast-unknown 1000": "d436a1b722ddb4bcf4f6dda83a3f4a7c65a3a1f17de1330d25592b97889e0221",
+    "model harbor-watch s1": "f1026e2fd33846d77b3b23175b554bb0ab7d505fea98576d137656adcf16bb55",
+    "playbook v2 fast-unknown 1000": "fd7d8c828ad4b87e24e48f18c05365ee1a1f60007bba5d1cc98dc0a238cedce7",
+    "model v2 fast-unknown 1000": "b9a7f3a0a044f55599bf4984a4e58df7ad0fdccb92c7bb747c813ad07413604a",
 }
 
 
