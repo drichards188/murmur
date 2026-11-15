@@ -1909,3 +1909,62 @@ playbook 2.
 why the model misses drones (with the consult's case file and stakes gate, bd murmur-5xaf, and the
 focused track read, murmur-8mu3), the families left out for the budget (F1, F6, F8, F12, F13), night
 situations, and consults on against off.
+
+### 17.11 Why the model missed the drones (2026-11-15, bd murmur-t971)
+
+**Coverage.** 17.10's F2 records, read again, nothing run: 20 model episodes (10 a world, seeds
+6600-6609, all by day, local 08:47 to 16:28) beside their `none`, `playbook` and `oracle-v3-shown`
+twins. What the model was told (each wake's update), what it said and called, its identify orders'
+geometry against the drone's truth, and the picture's track of the drone. **Model results only**;
+one replicate a situation, so counts, not rates.
+
+**The drone in the picture.** A track 2 to 10 s after the drone sets out, 61 to 162 s (median 108)
+before it comes within 3 km: kind `small_air` at 0.01, mostly by REAPER 1's radar, often with ESM.
+For its first 60 to 100 s the track has no velocity and its position is off by up to 1.8 to 3.5 km
+(three San Diego tracks measured; section 15's dev median 0.7 km), until a camera sees it. Where the
+drone was identified (any agent), the nearest camera that looked was within about 1.2 km of it,
+mostly 300 to 700 m.
+
+**What the model did, by situation.**
+
+| | situations | what happened |
+|---|---|---|
+| served | 1 | an FVR-90 already near identified it before the need (as with no agent) |
+| waited | 12 | at first sight it said the drone was outside 3 km and it would act once it closed; nothing woke it then; 3 of the 12 acted after the deadline |
+| sent a look early | 5 | an identify 4 to 8 s after the track appeared; none identified it |
+| blocked | 2 | only the armed REAPER 1 passed and it declined (1); at the line every option failed the geofence, link or reserve checks (1) |
+
+**The causes, in the order they bind.**
+1. **The identify order's geometry (the engine).** `identify::plan` sizes the orbit from the camera's
+   reach against its domain's reference contact (`tracks::reach`: an unknown kind, 3 m across for the
+   air), not the track's size class: a small drone is 0.35 m. So PUMA's and KESTREL's standoffs are
+   1.4 and 1.7 km, past the about 1 km within which a Puma identifies a drone by day (13.6 item 1),
+   and REAPER 1's is 8.9 km from 3 km up. `get_identify_options` showed all of them as passing (REAPER
+   1 with a reach of 13.5 km). The 5 early looks came no closer than 5.5 and 9.4 km (REAPER 1, twice)
+   and 670, 730 and 1,120 m (the small aircraft, briefly, while the orbit followed a track jumping by
+   kilometres). With the tool as it is, acting at first sight would not have served these.
+2. **No wake at the line (the officer).** No trigger fires when an unresolved contact comes within
+   the circle or is about to (agents/watch/wake.py): the stakes judge of bd murmur-5xaf knows the
+   geometry but gates only consults. In the 12 waits the model was woken 49 more times before the
+   deadline for other changes; in 45 it called no tool, and in none did it read the drone's track
+   again.
+3. **What the update says (the officer and the feed).** A track with no velocity is fed as
+   `speed_mps` 0.0 (tracks/model.rs) and the update prints "0.0 m/s course None": the model read one
+   as "not moving, so it may be clutter". The update gives no position uncertainty. San Diego's brief
+   names "the bay entrance off Ballast Point" without a point: the model put the drone "2 to 4 km from
+   Ballast Point depending on where you put the bay entrance", and at another 15 s before it crossed,
+   "4 to 5 km from the entrance".
+4. **Judgment (the model).** With the 30 s air grace it quoted itself, it waited on an unknown air
+   contact 1 to 2 km outside the line, which a drone at 25 m/s covers in 40 to 80 s; the honest
+   ceiling assumes exactly that and acts. It is entangled with 2 and 3 and cannot be told apart from
+   them on these records.
+
+**The bar.** The pilot's ceiling (`oracle-v3-shown`, 11 of 20) reads the drone's true route once the
+picture shows it. The realistic ceiling, from the picture alone (`oracle-v3-honest`), served 6 of 20
+on section 15's dev seeds; it did not run on these.
+
+**So a later paid run should test** the officer and the tool fixed, not the model again as it was:
+cause 1 (bd murmur-8vj8), cause 2 (murmur-1h2r) and the feed's half of 3 (murmur-jhgn), each free to
+build and check (the honest ceiling on these seeds gives the bar, the playbook and `none` the floor);
+the brief's centre is the owner's choice (murmur-isxg: it changes the mission text and its hash).
+Then the 20 F2 situations again, about US$16 at 17.10's US$0.80 an episode.
