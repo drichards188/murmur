@@ -440,8 +440,12 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: its AIS, 1.3 km outside the 3 km circle and not closing) is a routine wake, its `gated` line
 #: saying why, and at 544 s, once T-0007 matters with its conflict standing, a
 #: `track.conflict_matters` wake goes to the consult; v2 fast-unknown has no conflict to gate.
+#: Harbor watch's re-taken for the consult's case file (bd murmur-5xaf): with no case file this
+#: code gave the digest before (52277286...) byte for byte; the only change is that consult's
+#: update (the case-file opening words and its 3 015-character case file on T-0007, its
+#: `case_file` field) and its transcript's sizes and estimated costs. v2 has no such consult.
 PAUSED = {
-    "model harbor-watch s1": "5227728669e9f53021a4ea2890eb19b5cbcab9bdd9f7f8be86403fe00b3e0581",
+    "model harbor-watch s1": "bc88fc7c8e31dcf112996211d5d65864ac170b9583f583b03e480cb158aa0d0e",
     "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
     "model v2 fast-unknown 1000": "8dedcac649971f485bb9e3580ed70488a206105cbc58d3fb236430d28d68919f",
 }

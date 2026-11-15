@@ -30,7 +30,14 @@ that can be imported is:
   nomination (`Poller.blocking`; the headless simulator computes none, so its updates have
   none), `CONSULT_HEAD` for a consult and the note the routine model gets about it afterwards,
   under `build_prompt` (agents/watch/prompt.md and the situation's brief, a v2 or v3 world's
-  mission verbatim); a failed turn backs its lane off by `Officer.failed`;
+  mission verbatim); a consult about a contact (an identity conflict, one coming and going, one
+  that has come to matter to the watch) is told `CONSULT_HEAD_CASE` instead, and its update ends
+  with the driver's case file (agents/watch/casefile.py, bd murmur-5xaf: the track's entry by id,
+  where it stands against the protected line, get_identify_options for it, the open intents on it
+  or those vehicles, earlier consults' conclusions on it), read at the wake's instant through the
+  officer's session (on the paused clock its identify read spends that instant's dry run, so the
+  consult's own get_identify_options there is refused, as the opening words say); a failed turn
+  backs its lane off by `Officer.failed`;
 - **which model**: the `claude` row of `watch_officer.DEFAULTS` (routine `sonnet` at
   `medium`, consult `opus` at `high`) as API ids (`API_MODELS`), overridable by the episode's
   options and the environment (`ModelConfig.resolve`); a wake goes to the stronger model when
@@ -97,6 +104,7 @@ import watch_officer as WO  # noqa: E402  (agents/watch_officer.py)
 from playbook.beliefs import NOT_RUNNING, RECOVERING_MODES  # noqa: E402
 from playbook.plays.safety import STUCK_KINDS  # noqa: E402
 from watch.backend import ToolCall, Turn, excerpt  # noqa: E402
+from watch import casefile  # noqa: E402
 from watch.picture import NoChangesTool, Poller, compose, render_mine  # noqa: E402
 from watch.stakes import watch_of  # noqa: E402
 from watch.wake import Budgets, Wake, Waker  # noqa: E402
@@ -842,6 +850,9 @@ class WatchOfficer:
         self.lanes = {"routine": WO.Lane(), "consult": WO.Lane()}
         self.crashes: list[float] = []
         self.consult_notes: list[str] = []
+        # what each consult concluded, per contact, for the next case file about it (bd murmur-5xaf)
+        self.consult_by_track = casefile.Notes()
+        self._case_info: dict[str, Any] | None = None  # the wake in progress's case file, for its record
         self.connected = False
         self.connect_delay = 2.0
         self.next_poll: float | None = None
@@ -1023,8 +1034,15 @@ class WatchOfficer:
         # the headless simulator does not compute it, so its updates go out without it
         text = compose(wake, mine, self.budget_line(wake), notes, bnow, first=wake.reason == "start",
                        blocking=self.blocking())
+        self._case_info = None
         if escalate:
-            text = WO.CONSULT_HEAD.format(why="; ".join(wake.escalate_why), agent=AGENT) + text
+            # Officer.do_wake: a consult about a contact gets the driver's case file, read now
+            case = self.case_file(wake, bnow)
+            head = WO.CONSULT_HEAD_CASE if case else WO.CONSULT_HEAD
+            text = head.format(why="; ".join(wake.escalate_why), agent=AGENT) + text
+            if case:
+                text += "\n\n" + case
+                self._case_info = {"tracks": casefile.consult_tracks(wake)[:casefile.MAX_SUBJECTS], "chars": len(case)}
         model = self.cfg.strong_model if escalate else self.cfg.model
         effort = self.cfg.strong_effort if escalate else self.cfg.effort
         lane = "consult" if escalate else "routine"
@@ -1098,11 +1116,13 @@ class WatchOfficer:
                     model: str, effort: str, text: str, clock: list[float], o: "OpenTurn | None") -> dict[str, Any]:
         self.wall_s += turn.duration_s
         ids, self._wake_proposed = self._wake_proposed, []
+        case_info, self._case_info = (self._case_info if escalate else None), None
         served = sorted({m for c in calls for m in c["served"]})
         rec = {
             "n": wake.n, "t": round(t0, 3), "clock": clock, "reason": wake.reason, "why": wake.why,
             "lane": lane, "escalate_why": wake.escalate_why if escalate else [], "model": model, "effort": effort,
             "served": served, "changes": len(wake.changes), **({"gated": wake.gated} if wake.gated else {}),
+            **({"case_file": case_info} if case_info else {}),
             "update": text, "stop": turn.stop, "error": turn.error,
             "text": (turn.text or "")[:TEXT_MAX],
             "tool_calls": [{"name": c.name, "input": c.input, "is_error": c.is_error, "result": c.result}
@@ -1174,6 +1194,7 @@ class WatchOfficer:
                 f"While you were not woken, the senior watch officer ({', '.join(served) or model}) handled update "
                 f"{wake.n} ({'; '.join(wake.escalate_why)}). Its tool calls: {names}. It proposed: {said}. "
                 f"It said: {(turn.text or '').strip()[:800]}")
+            self.consult_by_track.add(casefile.track_subjects(wake), bend, wake.n, turn.text or "", ids)
         else:
             self.consult_notes = []
         return None
@@ -1194,6 +1215,19 @@ class WatchOfficer:
             if not is_error and isinstance(body, dict):
                 out[key] = list(body.get(field_) or [])
         return out
+
+    def case_file(self, wake: Wake, bnow: float) -> str | None:
+        """Officer.case_file: the case file for a consult about a contact, read at this instant
+        through the officer's own session (its reads are the agent's, never logged), or None."""
+        tracks = casefile.consult_tracks(wake)
+        if not tracks:
+            return None
+        try:
+            return self.run(casefile.build(self.poller.session, tracks, self.watch, self.consult_by_track, bnow,
+                                           identify=wake.side))
+        except Exception as e:  # noqa: BLE001 (the consult goes ahead without it)
+            self.log.write("case_file.error", n=wake.n, error=f"{type(e).__name__}: {e}")
+            return None
 
     def blocking(self) -> list[dict[str, Any]]:
         """Officer.blocking: the review items that alone hold up a nomination now (get_inbox's

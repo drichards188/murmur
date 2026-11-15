@@ -66,6 +66,13 @@ class FakeSession:
             return {"policy": {"rules": {"reserve_pct": 20}, "approval": {"expire_s": 120}}}
         if name == "get_areas":
             return {"t": now, "areas": []}
+        # a consult's case file (agents/watch/casefile.py)
+        if name == "get_identify_options":
+            return {"t": now, "track": args.get("track_id"), "vehicles": [
+                {"uid": 4, "callsign": "HAWK 4", "platform": "skywatch", "passed": True, "failing": [], "standoff_m": 300.0,
+                 "reach_m": 500.0, "transit_s": 40.0, "link": {"holds": True, "sentence": "HAWK 4's link holds."}}]}
+        if name == "get_intents":
+            return {"t": now, "intents": []}
         raise AssertionError(f"unexpected read {name}")
 
     async def propose(self, *a, **k):
@@ -100,6 +107,12 @@ class ScriptedPoller:
 
     async def node_losses(self):
         return []
+
+    async def stakes(self, watch, now=None):
+        return []  # Poller.stakes has its own tests (test_watch_stakes.py)
+
+    def watch_gated(self, tracks, now):
+        self.gated = getattr(self, "gated", []) + list(tracks)
 
     async def blocking(self):
         # what waits for a person alone, from `blocking_from` on (s after the start)
@@ -211,6 +224,47 @@ def test_what_waits_for_a_person_is_told_and_ties_the_note(fake_claude, tmp_path
     assert "Waiting on the operator" not in wakes[0]["update"], "the start: nothing waits yet"
     assert "- D-1 on track T-0009:" in wakes[-1]["update"] and "name it by its id" in wakes[-1]["update"]
     assert turns[-1]["blocking"] == ["D-1"], turns[-1]
+
+
+def test_a_spoof_far_out_is_routine_and_one_near_gets_a_consult_with_its_case_file(fake_claude, tmp_path):
+    """bd murmur-5xaf: with the situation's watch area, an identity conflict 20 km out wakes the
+    routine model (the wake line says why); one inside goes to the consult, whose update says the
+    case file is there and ends with it (the track's entry, where it stands, who could identify it);
+    the routine model is told what the consult did, and the next case file on the track would hold
+    its conclusion."""
+    from playbook.config import make
+    from watch.stakes import watch_of
+
+    now = time.time()
+    far = {"kind": "track.identity_conflict", "track": "T-0010", "conflict": "AIS says cargo but sonar says ferry",
+           "position": [-122.70, 37.70], "speed_mps": 4.0, "course_deg": 225.0, "as_of": now}
+    near = {"kind": "track.identity_conflict", "track": "T-0009", "conflict": "AIS says tanker but radar sees a small boat",
+            "position": [-122.479, 37.817], "speed_mps": 8.1, "course_deg": 82.0, "as_of": now}
+    o = officer(tmp_path, fake_claude, [(0.8, far), (2.0, near)], seconds=5.0)
+    o.watch = watch_of(make(SHADOW_CONFIG, "test"))
+    o.waker.stakes = o.watch.gate
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    assert [w["escalated"] for w in wakes] == [False, False, True, False][:len(wakes)] and len(wakes) >= 3
+    gated = wakes[1]
+    assert gated["why"] == ["an identity conflict (possible AIS spoof)"] and gated["model"] == "sonnet"
+    assert gated["gated"][0].startswith("track T-0010: ") and "outside the Gate" in gated["gated"][0]
+    assert "Case file" not in gated["update"]
+    assert o.poller.gated == ["T-0010"], "the driver reads it again until it matters"
+    consult = wakes[2]
+    assert consult["model"] == "opus" and "gated" not in consult
+    assert "The driver has read a case file for you" in consult["update"]
+    case = consult["update"].split("\n\nCase file, read by the driver at ", 1)[1]
+    assert "Track T-0009:" in case and "inside the Gate" in case
+    assert "- Its entry, as get_tracks gives it: {\"id\":\"T-0009\"" in case
+    assert "  - uid 4 HAWK 4 (skywatch): passes; there in about 40 s" in case
+    assert consult["case_file"] == {"tracks": ["T-0009"], "chars": len("Case file, read by the driver at " + case)}
+    reads = o.poller.session.calls
+    assert "get_identify_options" in reads and "get_intents" in reads
+    assert o.consult_by_track.of("T-0009"), "its conclusion is kept for the next case file on T-0009"
+    if len(wakes) > 3:
+        assert "the senior watch officer (claude-opus-5-5) handled update 3" in wakes[3]["update"]
 
 
 def test_a_limit_with_an_early_reset_waits_resumes_and_tells_the_model_again(fake_claude, tmp_path, monkeypatch):

@@ -3537,8 +3537,15 @@ for the shipped officer, live and headless alike:
    model; the wake line says why (`gated`) and no escalation is spent. The engagement chain
    (a hostile declaration, a nomination becoming possible, an armed platform's lost link with an
    engagement in play) and every other escalating trigger are unchanged.
+2. **Brief the consult with a case file.** Before a consult about a contact, the driver (never
+   the model) reads what the decision needs through the bridge's read tools and puts it at the
+   end of the update: the contact's whole `get_tracks` entry (by `track_id`, murmur-8mu3),
+   where it stands against the protected line on its course, `get_identify_options` for it, the
+   open intents on it or on those vehicles, and what earlier consults of the watch concluded
+   about it. The opening words say the file is there and how to read more without the whole
+   picture.
 
-Chosen in building it (agents/watch/stakes.py, agents/README.md "When it wakes"):
+Chosen in building the gate (agents/watch/stakes.py, agents/README.md "When it wakes"):
 
 - **Where the watch is**: the situation's `[playbook]` watch areas and protected points, which
   the situation runner already writes into the AI's directory (`playbook.json`, now also passed
@@ -3563,3 +3570,24 @@ Chosen in building it (agents/watch/stakes.py, agents/README.md "When it wakes")
   one of our vehicles", since every conflicted contact is within a sensor's reach of one of ours
   (that is how it was seen: T-0016, 18 km out, was called a patrol boat by a buoy's sonar), so
   it would need a threat distance of its own and a fleet read per judgment.
+
+Chosen in building the case file (agents/watch/casefile.py, agents/README.md "How it runs each
+backend"):
+
+- **Which consults**: those whose escalation names a contact of the gate's kinds (an identity
+  conflict, one coming and going, one that has come to matter), at most two contacts each. The
+  engagement chain's consults and those about our own vehicles are briefed as before: the chain's
+  first read is `get_nomination_options`, which shares the bridge's one dry run a second per
+  agent with `get_identify_options`, and on the headless paused clock a whole consult happens in
+  that second. For the same reason only the first contact's identify options are read, and the
+  opening words say that another call in the same second is refused (`preview_intent` checks one
+  vehicle without it).
+- **The protected line** is the same watch areas and protected points the gate reads: for each
+  area, inside or how far outside its edge and when the contact's course brings it in (looked
+  for up to 3 hours, beyond the gate's 10 minutes, so the consult sees how far off "not yet" is);
+  for each point, the distance now, the closest approach and when; then the gate's own verdict.
+- **Bounds**: the entry's sources and looks cut to the latest and surest 12 when there are more
+  (Saturation's tracks have thousands), six identify options, eight intents, three earlier
+  conclusions of 500 characters each, 16 000 characters in all (a whole-picture read was 76 000 to
+  100 000). Earlier conclusions are each consult's final text, kept per contact under every track
+  its escalation named, the chain's included. A read that fails is said in its place.

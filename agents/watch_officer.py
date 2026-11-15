@@ -9,7 +9,8 @@ It reads the picture as agent `--agent` (its key from --key or MURMUR_AGENT_KEY 
 credentials run), wakes the model when something worth a look changed (the trigger table in
 agents/watch/wake.py) or on a slow heartbeat, gives the stronger model the consequential
 moments (engagement chain, a lost link on an armed platform, a suspected spoof where the watch
-is: `--watch-config`, agents/watch/stakes.py), enforces
+is: `--watch-config`, agents/watch/stakes.py; a consult about a contact is briefed with the
+driver's case file, agents/watch/casefile.py), enforces
 budgets, and writes every turn to the situation log (JSONL; agents/watch/situation.py lists
 its lines). The model proposes through the same tools as any agent: it cannot approve or
 sign anything, and humans sign every effect.
@@ -44,6 +45,7 @@ from watch.backend import BackendCrashed, LimitReached, LockdownBreach, Prefligh
 from watch.claude import ClaudeBackend, ClaudeConfig  # noqa: E402
 from watch.codex import CodexBackend, CodexConfig  # noqa: E402
 from watch.limits import LimitHit  # noqa: E402
+from watch import casefile  # noqa: E402
 from watch.picture import NoChangesTool, Poller, compose, render_mine  # noqa: E402
 from watch.situation import SituationLog  # noqa: E402
 from watch.wake import Budgets, Waker, Wake  # noqa: E402
@@ -58,6 +60,19 @@ CONSULT_HEAD = (
     "routine watch officer handles everything else and will be told what you did. Read the "
     "picture yourself before you act; your own earlier proposals (agent {agent}) are in "
     "get_intents with mine.\n\n")
+# a consult about a contact, briefed with the driver's case file (agents/watch/casefile.py, bd
+# murmur-5xaf): it says the file is there, where, and how to read more without the whole picture
+CONSULT_HEAD_CASE = (
+    "You are consulted as the senior watch officer for one consequential moment: {why}. The "
+    "routine watch officer handles everything else and will be told what you did. The driver has "
+    "read a case file for you through the same tools, just now, at the end of this update: the "
+    "track's entry, where it stands against the protected line, who could identify it, the open "
+    "orders on it and on those vehicles, and what earlier consults concluded about it. Start from "
+    "it, and read more only if you need to: get_tracks takes track_id (a list of ids) or near "
+    "[lon, lat] with radius_m, and the whole picture is large. The driver's read of "
+    "get_identify_options used this second's dry run (one a second per agent), so another in the "
+    "same second is refused; preview_intent checks one vehicle without it. Your own earlier "
+    "proposals (agent {agent}) are in get_intents with mine.\n\n")
 
 
 class Stopped(Exception):
@@ -153,6 +168,8 @@ class Officer:
         self.stop = asyncio.Event()
         self.stop_reason: str | None = None
         self.consult_notes: list[str] = []
+        # what each consult concluded, per contact, for the next case file about it
+        self.consult_by_track = casefile.Notes()
         self.crashes: list[float] = []
         self.strong_blocked_until = 0.0
         self.init_logged = False
@@ -373,15 +390,23 @@ class Officer:
         blocking = await self.blocking()
         text = compose(wake, mine, self.budget_line(wake), notes, now, first=wake.reason == "start",
                        blocking=blocking)
+        case = None
         if escalate:
-            text = CONSULT_HEAD.format(why="; ".join(wake.escalate_why), agent=self.args.agent) + text
+            # a consult about a contact: the driver's case file at the end of its update
+            case = await self.case_file(wake, now)
+            head = CONSULT_HEAD_CASE if case else CONSULT_HEAD
+            text = head.format(why="; ".join(wake.escalate_why), agent=self.args.agent) + text
+            if case:
+                text += "\n\n" + case
         cfg = self.backend.cfg
         model = cfg.strong_model if escalate else cfg.model
         effort = cfg.strong_effort if escalate else cfg.effort
         self.log.write("wake", n=wake.n, reason=wake.reason, why=wake.why, escalated=escalate,
                        escalate_why=wake.escalate_why if escalate else [], model=model, effort=effort,
                        update=text, changes=wake.changes, cursor=self.poller.cursor,
-                       **({"gated": wake.gated} if wake.gated else {}))
+                       **({"gated": wake.gated} if wake.gated else {}),
+                       **({"case_file": {"tracks": casefile.consult_tracks(wake)[:casefile.MAX_SUBJECTS],
+                                         "chars": len(case)}} if case else {}))
         deadline = min(now + self.args.turn_timeout_s, self.until)
         try:
             if escalate:
@@ -447,6 +472,7 @@ class Officer:
                 f"While you were not woken, the senior watch officer ({turn.model or model}) handled update "
                 f"{wake.n} ({'; '.join(wake.escalate_why)}). Its tool calls: {calls}. It proposed: {ids}. "
                 f"It said: {(turn.text or '').strip()[:800]}")
+            self.consult_by_track.add(casefile.track_subjects(wake), now, wake.n, turn.text or "", turn.proposals())
         else:
             self.consult_notes = []
         if turn.stop == "budget":
@@ -459,6 +485,20 @@ class Officer:
                            max_budget_usd=cap)
             return "budget"
         return None
+
+    async def case_file(self, wake: Wake, now: float) -> str | None:
+        """The case file for a consult about a contact (agents/watch/casefile.py), or None (a
+        consult with no contact of the gate's kinds, or a read that cannot start). Its identify read
+        is left out on the engagement chain, whose nomination read shares the dry run."""
+        tracks = casefile.consult_tracks(wake)
+        if not tracks:
+            return None
+        try:
+            return await casefile.build(self.poller.session, tracks, self.watch, self.consult_by_track, now,
+                                        identify=wake.side)
+        except Exception as e:  # noqa: BLE001 (the consult goes ahead without it)
+            self.log.write("case_file.error", n=wake.n, error=f"{type(e).__name__}: {e}")
+            return None
 
     async def blocking(self) -> list[dict]:
         """The review items that alone hold up a nomination now (`Poller.blocking`), or none

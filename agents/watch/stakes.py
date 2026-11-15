@@ -161,8 +161,9 @@ class Watch:
                 "protected": [p["name"] for p in self.cfg["protected"]], "cpa_alert_m": t["cpa_alert_m"],
                 "tcpa_max_s": t["tcpa_max_s"]}
 
-    def _line(self, a: dict[str, Any], where: tuple[float, float], vel: tuple[float, float] | None) -> Line:
-        h = self.horizon_s
+    def _line(self, a: dict[str, Any], where: tuple[float, float], vel: tuple[float, float] | None,
+              horizon_s: float | None = None) -> Line:
+        h = self.horizon_s if horizon_s is None else float(horizon_s)
         moving = vel is not None and math.hypot(*vel) >= float(self.cfg.t["holding_mps"])
         if "polygon" in a:
             ring = [(float(p[0]), float(p[1])) for p in a["polygon"]]
@@ -193,12 +194,15 @@ class Watch:
                     enters = t1
         return Line(a["name"], inside, d - r, enters, h, radius_m=r, center=c)
 
-    def standing(self, where: tuple[float, float], vel: tuple[float, float] | None) -> Standing:
-        """A contact at `where` with velocity `vel` (east, north m/s) against the watch."""
-        lines = [self._line(a, where, vel) for a in self.cfg["watch_area"]]
+    def standing(self, where: tuple[float, float], vel: tuple[float, float] | None,
+                 horizon_s: float | None = None) -> Standing:
+        """A contact at `where` with velocity `vel` (east, north m/s) against the watch. Each watch
+        area's way in is looked for within `horizon_s` (default the playbook's `tcpa_max_s`, the
+        gate's horizon; the case file looks further to say when)."""
+        lines = [self._line(a, where, vel, horizon_s) for a in self.cfg["watch_area"]]
         interest = interest_of(_Where(where, vel), self.cfg)  # type: ignore[arg-type]
         closing = closing_alert(interest, self.cfg)
-        h = self.horizon_s
+        h = self.horizon_s if horizon_s is None else float(horizon_s)
         alert = float(self.cfg.t["cpa_alert_m"])
         inside = [ln for ln in lines if ln.inside]
         coming = sorted((ln for ln in lines if not ln.inside and ln.enters_s is not None), key=lambda ln: ln.enters_s)

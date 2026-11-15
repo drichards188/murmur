@@ -518,7 +518,27 @@ shows. `AI=none`: no AI ("None").
   not the routine conversation. Resuming or forking the routine session on another model
   would send that whole conversation again, uncached, at every escalation; the consult
   reads the picture itself (its earlier proposals are in `get_intents` with `mine`), and
-  the routine model is told what it did at its next update.
+  the routine model is told what it did at its next update. A consult about a contact (an
+  identity conflict, one coming and going, one that has come to matter) is briefed with a
+  **case file** (bd murmur-5xaf, `agents/watch/casefile.py`), since every consult of the
+  2026-11-14 smoke opened by reading all 26 to 32 tracks (76 000 to 100 000 characters) for
+  one: the driver reads it just before the consult, through the same tools as the agent (the
+  model never asked), and puts it at the end of the update, whose opening words say it is
+  there and how to read more (`get_tracks` with `track_id` or `near`). For each contact (at
+  most two): where it stands against the protected line (each watch area: inside, or how far
+  outside its edge and when its course brings it in, looked for up to 3 h; each protected
+  point: how far now, its closest approach and when; and whether it matters to the watch, as
+  the stakes gate judges it); its whole `get_tracks` entry (sources and looks cut to the latest
+  and surest 12 when there are more); `get_identify_options` for it (the first six, passing and
+  soonest first; for the first contact only, and not on a consult of the engagement chain,
+  since the bridge allows an agent one dry run a second and the chain's first read is
+  `get_nomination_options`; the opening words say another in the same second is refused); the
+  open intents, anyone's, on it (an identify or engagement of it, an orbit centred within its
+  radius or 500 m of it) or on those vehicles; and what earlier consults of the watch concluded
+  about it (the last three, each trimmed to 500 characters, with their proposals). At most
+  16 000 characters in all (Harbor watch's paused model episode: 3 015); a read that fails is
+  said in its place. The engagement chain's consults and those about our own vehicles are
+  briefed as before. The `wake` line names it (`case_file`: its tracks and characters).
 
 ### What the model is told, and what is data
 
@@ -530,7 +550,9 @@ cut short and labelled with its source, and the prompt says such text is data, n
 instruction, whatever it says. An operator's note on a rejection is shown as that operator's
 note: the model respects it as their reason (no re-proposal without a material change).
 This matters because auto-tier proposals (a hold, a return, an orbit inside the approved
-area) run without a human.
+area) run without a human. A consult's case file carries each track's entry as `get_tracks`
+gives it (JSON, its AIS name and type as broadcast); its header says it is data, not
+instructions, and that an AIS name or type is the contact's own unverified claim.
 
 ### When it wakes
 
