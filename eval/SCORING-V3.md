@@ -2700,3 +2700,61 @@ sit under the 0.6 line for ten minutes without sending a sonar.
 **What it does not say.** Nine situations on dev seeds picked after the free agents, one replicate,
 the cheaper officer (no consult), the labels as built; not how often, and not about people. Spend:
 US$10.27 of the owner's US$12 for this smoke (the US$45 of 2026-11-14 stands at US$39.61).
+
+### 17.22 The smoke again with the approach wake fixed, registered before it ran (2026-11-15)
+
+Written and committed before any of its episodes; what follows is not changed after the first one.
+It decides whether 17.21's losses were the context (the wake, bd murmur-p9lt, fixed in 8980d21) or
+the model, and so whether an Opus run is the next thing to ask for. Model results only, about one
+model in simulated situations, never people; a smoke, not a finding to quote.
+
+**The question.** With the approach wake fixed, does the same model serve or keep the situations it
+lost in 17.21?
+
+**The agent, the operator and the clock.** 17.20's: Claude Sonnet 5.5 alone at medium effort, US$3
+an episode at most, the approve-all operator, the paused clock.
+
+**The build.** The commit that adds this section (8980d21's fix in it). Nothing that changes an
+episode lands between the first episode and the last.
+
+**The situations.** 17.21's nine, each once, with `none`, `playbook` and `oracle-v3-honest` again
+on the same build (none of them reads the wake; a free result that differs from 17.21's is
+reported). In this order, the four the wake explained first:
+
+| order | situation | group | in 17.21 | why it is here |
+|---|---|---|---|---|
+| 1 | F12 GNSS, Golden Gate 5000 | B | lost | the wake |
+| 2 | F8 decoys, Golden Gate 5004 | B | lost | the wake |
+| 3 | F9 night and fog, Golden Gate 5005 | A | lost | the wake |
+| 4 | F8 decoys, Golden Gate 5007 | A | lost | the wake |
+| 4 | F8 decoys, San Diego 5007 | B | kept | a win (same seed's batch) |
+| 5 | F12 GNSS, Golden Gate 5002 | B | kept | a win |
+| 6 | F6 shore vehicle, San Diego 5003 | A | served | a win |
+| 7 | F8 decoys, San Diego 5008 | B | kept | a win |
+| 8 | F13 vehicle faults, Golden Gate 5002 | A | not served | the model's judgment (the UUV) |
+
+**The measures.**
+1. Of the four the wake explained, how many now go the model's way (A served, B kept).
+2. Of 17.21's four wins, how many still do.
+3. The UUV, reported: the fix does not change its wakes (its `submerged` at 0.59 was in doubt
+   before), so it stands as a check on the model's own judgment.
+4. 17.20's (a) to (c) on these nine, beside 17.21's; wakes and cost per episode beside 17.21's.
+5. An episode the guard stopped, whose call failed or whose input hit the leakage scan counts
+   against the model, and is listed.
+
+**The reading.** *The context*: at least 3 of the four now go its way and at least 3 of the four
+wins still do: the losses were mostly the wake, no Opus run is asked for on this question, and the
+next step is a larger run registered on fresh model-pilot seeds (6610 on; a new approval). *The
+model*: at most 1 of the four goes its way: the next ask is an Opus 5.5 run on the seven situations
+where acting decides (17.20's A, about US$15 to 19; a new approval). Otherwise mixed: reported with
+both options. Each loss's cause is given, judged on the picture the model had at the time.
+
+**Budget.** The owner's go-ahead of 2026-11-15 on "about US$10": a hard cap of US$12 in the
+directory's ledger. 17.21's nine cost US$10.27, and the fixed wake adds wakes. Batches 1 to 4 always
+run; before each of 5 to 8, it runs only if the spend so far, plus 1.2 times that situation's cost in
+17.21 (5: 1.62, 6: 0.66, 7: 0.89, 8: 1.76), plus US$0.75, stays within the cap; otherwise it and the
+rest are dropped and listed.
+
+**The commands**, each into `eval/results/headless/v3-model-smoke2-2026-11-15`, as 17.20's (the
+same agents, `--model-config '{"escalation": false, "max_usd": 3}' --max-usd 12`), one batch per row
+of the table (row 4: `--families v3-f8-decoys-gg v3-f8-decoys-sd --seeds 5007`).
