@@ -3744,3 +3744,35 @@ computation. Chosen in building it:
   a shorter orbit passes other checks a far one failed. On F2 (5000-5004, all by day but one fog):
   77 day candidates newly refused, a boat's camera that identifies no small drone 300 m up.
   Model agents, which send identify orders, are what F9 now scores fairly.
+
+## 2026-11-16: Thresholds are the scenario's (murmur-u1q4)
+
+The owner's decision, after the F8 night rerun (eval/SCORING-V3.md 17.26) lost a boat because an
+identify order ended at 0.11 identity confidence and told the model "identified", while the brief
+it is graded by counts 0.6 (murmur-mdm2), and two audits found about a dozen thresholds defined in
+several places, some differently ("cater all thresholds to the scenario, because otherwise we are
+all over the place"; "scoring needs to be catered to the scenario defined thresholds, the agents
+need to be briefed on the scenario thresholds"). The design and the research behind it are in
+docs/SCENARIO-SETTINGS.md. Chosen:
+
+- **One source per scenario: its policy file**, standing values in `sim/policy.toml` and a
+  scenario's supplement (`extends`) setting only what it changes, merged by the Rust loader and
+  logged merged, so every record carries the values it ran under. Real operations work the same
+  way: standing rules of engagement tailored per operation, identification criteria in the
+  operation's orders.
+- **A floor no scenario loosens silently.** Two human signers, never the proposer, never
+  automatic; an engagement identity bar at least the watch bar and at the identification level;
+  no watch domain satisfied by detection alone. Loosening anything else in the engagement rules
+  is named with a reason and logged (the `scripted_acts` precedent), as loosening some measures
+  takes higher approval in practice.
+- **"Identified" means one thing everywhere**: the kind at the domain's level, from the domain's
+  sensor, at the scenario's bar, without a conflict. An identify order runs until then or its
+  time on station, and every message states the confidence and the bar.
+- **No neutral call by classification before the bar.** One reserve (the engine's: left after a
+  task), its number in the brief. One approach horizon for the officer's wake and the scoring
+  (300 s, the scoring's registered value).
+- **The brief is the scenario's ROE card**, rendered from the settings; the scoring grades each
+  record against its own logged values (records before rules 33 against the frozen v0 values) and
+  every report states them.
+- Built as decision rules 33 in seven stages; v1 and v2 keep their meaning through a legacy
+  supplement.
