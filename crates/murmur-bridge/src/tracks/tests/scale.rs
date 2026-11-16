@@ -125,7 +125,7 @@ fn picture_scale() {
             match what {
                 "message" => drop(tracks.message(now)),
                 "facts" => drop(tracks.facts(now)),
-                "levels" => drop(tracks.levels()),
+                "levels" => drop(tracks.levels(true)),
                 _ => drop(tracks.api_json(now)),
             }
         }
@@ -154,7 +154,7 @@ fn picture_scale() {
     // the decision layer's snapshot: facts, ais, levels
     let facts = time("facts (decision snapshot)", 15, || tracks.facts(now));
     time("ais (decision snapshot)", 15, || tracks.ais());
-    time("levels (decision snapshot)", 15, || tracks.levels());
+    time("levels (decision snapshot)", 15, || tracks.levels(true));
     time("api_json (GET /api/tracks)", 3, || tracks.api_json(now));
     time("  of it under the lock (a copy)", 3, || lock(&tracks.inner).tracks.values().cloned().collect::<Vec<Track>>());
     // what the engine does with the facts, outside this lock: a clone (each `world.tracks

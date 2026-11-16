@@ -294,6 +294,7 @@ pub mod identify;
 pub mod ids;
 pub mod intent;
 pub mod keepout;
+pub mod legacy;
 pub mod loadout;
 pub mod mines;
 pub mod lost;

@@ -84,6 +84,55 @@ pub(super) fn meanwhile_alerts(
 }
 
 impl Decision {
+    /// Rules 33 (`murmur_decide::rules::IDENTIFY_CRITERIA_SINCE`): where each identify order still
+    /// looking stands (`ids`: only these; none: all), by intent: the vehicle sent's best own look
+    /// since it went out against its track's criteria (`murmur_decide::identify::Progress`, its
+    /// words naming the look's confidence and the bar), for MCP `get_intents` and
+    /// `explain_intent`. Read-only, never logged; nothing under older rules, so nothing a digest of
+    /// theirs reads moves.
+    pub fn identify_progress(&self, ids: Option<&[IntentId]>) -> std::collections::BTreeMap<u64, Value> {
+        let mut out = std::collections::BTreeMap::new();
+        if !self.rules.identify_criteria() {
+            return out;
+        }
+        // the orders still looking, read under the engine's lock, judged outside it
+        let looking: Vec<(IntentId, String, murmur_decide::Uid, murmur_decide::identify::Run)> = {
+            let core = self.lock();
+            core.engine
+                .intents()
+                .filter(|i| ids.is_none_or(|ids| ids.contains(&i.id())))
+                .filter(|i| i.state() == murmur_decide::State::Dispatched)
+                .filter_map(|i| {
+                    let run = i.identify_run().filter(|r| r.ended.is_none())?;
+                    let track = track_of(i.spec())?;
+                    let uid = i.spec().uids.first()?;
+                    Some((i.id(), track.to_string(), uid.clone(), run.clone()))
+                })
+                .collect()
+        };
+        let Some(tracks) = self.tracks().filter(|_| !looking.is_empty()) else {
+            return out;
+        };
+        let mut world = murmur_decide::WorldSnapshot::new(self.clock.now());
+        // its domain and identity are read, never its sources (Saturation's are most of a picture)
+        world.tracks = tracks.facts_without_sources(world.t.0 as f64 / 1000.0);
+        world.track_levels = tracks.levels(true);
+        let fleet = self.fleet();
+        for (id, track, uid, run) in looking {
+            let who = uid
+                .as_str()
+                .parse::<crate::vehicle::Uid>()
+                .ok()
+                .and_then(|u| fleet.get(&u))
+                .and_then(|c| alerts::callsign(c))
+                .unwrap_or_else(|| format!("vehicle {uid}"));
+            if let Some(p) = murmur_decide::identify::progress(&track, &world, &run, &uid, &self.rules, &who) {
+                out.insert(id.0, serde_json::to_value(p).unwrap_or(Value::Null));
+            }
+        }
+        out
+    }
+
     /// Rules 21: step the identify orders still looking (the engine logs each step before
     /// anything goes out) and send what each step calls for.
     pub(super) fn step_identify(&self, core: &mut Core) {
@@ -113,6 +162,8 @@ impl Decision {
                 IdentifyEvent::Return(o) => self.follow_identify(core, o, false, "its look ended"),
                 // rules 23: another vehicle identified its track; the order goes on (logged)
                 IdentifyEvent::Meanwhile { .. } => {}
+                // rules 33: its own vehicle named it below the criteria; the order goes on (logged)
+                IdentifyEvent::Named { .. } => {}
             }
         }
     }

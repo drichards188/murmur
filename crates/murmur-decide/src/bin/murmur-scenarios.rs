@@ -28,12 +28,20 @@
 //! `sim/areas`.
 //!
 //! Exit status: 0 every scenario ended as designed, 1 some did not, 2 usage or a scenario
-//! could not be loaded.
+//! could not be loaded. A scenario designed for newer rules (`min_rules`) than `--rules` asks for,
+//! that those rules can't set up (rules 33: a policy whose scenario settings they do not read), is
+//! skipped, saying why.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use murmur_decide::scenario::{RunOptions, files, run_file};
+
+/// Whether scenario `f` is designed for newer decision rules (`min_rules`) than `--rules` asks.
+fn newer_than_asked(f: &Path, opts: &RunOptions) -> bool {
+    let min = murmur_decide::scenario::load(f).ok().and_then(|sc| sc.min_rules);
+    matches!((opts.rules_version, min), (Some(asked), Some(min)) if min > asked)
+}
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -136,6 +144,12 @@ fn main() -> ExitCode {
     for f in &all {
         let r = match run_file(f, &root, &opts) {
             Ok(r) => r,
+            // a scenario designed for newer rules than `--rules` asks for, that those rules can't
+            // set up (rules 33: a policy whose scenario settings older rules do not read): skipped
+            Err(e) if newer_than_asked(f, &opts) => {
+                println!("skip {}: {e}", f.display());
+                continue;
+            }
             Err(e) => {
                 eprintln!("murmur-scenarios: {e}");
                 return ExitCode::from(2);

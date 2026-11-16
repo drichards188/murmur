@@ -1,0 +1,58 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md): what counts as identified is the domain's. HUNTER 1 is sent
+# to identify a contact its sonar holds under water, shown only as `subsurface` (a detection's size
+# class). The scenario's criteria for the subsurface domain are a recognition, by sonar, at 0.6
+# (the policy's `[watch.domain.subsurface]`): at 30 s HUNTER 1's sonar recognises it as submerged at
+# 0.70, and the order ends identified on that look, saying the criterion. The runner's legacy
+# reaches let the order be planned on HUNTER 1's EO/IR's `range_m` (the physical model gives no
+# camera a reach under water, so there an identify order on a subsurface track is refused: a
+# sonar-planned look is left for later).
+title = "An identify order on a submerged contact ends on a recognition by sonar"
+invariant = "identify"
+attack = "none: the order as designed"
+expect = "done"
+expect_identify = [
+  "ended done: track T-0001 identified as submerged at 0.70 by HUNTER 1's sonar (the bar is 0.6, recognition by sonar); it was subsurface (detect) before; holding: no order to go back to",
+]
+min_rules = 33
+end_s = 40
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"      # radar, EO/IR, AIS, sonar
+callsign = "HUNTER 1"
+at = [-122.4930, 37.8180]   # west of the bridge, mid-strait
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # under water west of the bridge
+affiliation = "unknown"
+identity = "subsurface"
+identity_confidence = 0.5
+domain = "subsurface"
+sources = ["hunter-1:sonar"]
+level = "detect"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["hunter-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 30                   # its sonar recognises it
+action = "track"
+id = "T-0001"
+identity = "submerged"
+identity_confidence = 0.7
+level = "recognise"
+level_by = ["hunter-1:sonar"]

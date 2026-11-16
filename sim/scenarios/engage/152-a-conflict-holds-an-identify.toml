@@ -1,0 +1,75 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md): an identity in conflict is not an identification. A boat
+# west of the bridge broadcasts AIS that names it a fishing vessel; PUMA 1 is sent for a look of
+# its own. At 30 s its camera identifies a small fast boat at 0.80, above the bar, and the tracker
+# raises its identity conflict (AIS against the camera): the look is logged as a naming that falls
+# short and the order goes on (rules 32 ended it, saying the look contradicted the identity before:
+# `--rules 32`). At 60 s the boat's AIS is no longer heard (its transponder off) and the tracker
+# drops the conflict; the camera's look then meets every criterion and the order ends identified,
+# saying the look differs from the identity before.
+title = "A conflict holds an identify order until it clears"
+invariant = "identify"
+attack = "a boat whose AIS says one thing and our camera another"
+expect = "done"
+expect_identify = [
+  "named: PUMA 1 named it small_fast_boat at 0.80, not yet identified (its identity is in conflict: AIS says fishing_vessel (F/V SEA LION) but eo_ir identifies it as small_fast_boat); it goes on",
+  "ended done: track T-0001 identified as small_fast_boat at 0.80 by PUMA 1's eo_ir (the bar is 0.6, identification by EO/IR); it differs from its identity before, fishing_vessel (identify); holding: no order to go back to",
+]
+min_rules = 33
+end_s = 80
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+callsign = "PUMA 1"
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, about 1 km south of the Puma
+affiliation = "unknown"
+identity = "fishing_vessel"
+identity_confidence = 0.9
+sources = ["ais"]
+level = "identify"
+level_by = ["ais"]          # identified by its AIS alone
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 30                   # our camera identifies it, and not as its AIS says
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.8
+level = "identify"
+level_by = ["puma-1:eo_ir"]
+level_conflict = "AIS says fishing_vessel (F/V SEA LION) but eo_ir identifies it as small_fast_boat"
+
+[[step]]
+at_s = 45
+action = "expect"
+task_state = "dispatched"   # held by the conflict
+
+[[step]]
+at_s = 60                   # its AIS no longer heard: the conflict dropped
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.8
+level = "identify"
+level_by = ["puma-1:eo_ir"]

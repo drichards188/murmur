@@ -346,6 +346,33 @@ fn identity_confidence_grows_with_dwell_and_independent_sensors() {
     assert!(tracks.tracks_json(T0).is_empty(), "no sensors, no tracks");
 }
 
+/// Rules 33: the decision snapshot's own looks carry their sensor, level and confidence only when
+/// asked (`levels(true)`, the decision rules' `identify_criteria`); without, each look is rules
+/// 23's, when and as what, and serializes as it always did.
+#[test]
+fn the_own_looks_details_go_to_the_decisions_only_under_rules_33() {
+    let (lat, lon) = at(BASE.0, BASE.1, 1_000.0, 0.0);
+    let boat = contact("f", "fishing_vessel", Domain::Surface, lat, lon);
+    let one = observer(1, BASE.0, BASE.1, 0.0, &[(SensorType::EoIr, 5_000.0)]);
+    let tracks = Tracks::new(catalog(), settings());
+    for s in 0..60 {
+        tracks
+            .on_truth_with(truth(f64::from(s), vec![boat.clone()]), std::slice::from_ref(&one), T0 + f64::from(s))
+            .expect("ok");
+    }
+    let before = tracks.levels(false);
+    let l = before.get("T-0001").expect("a level");
+    let o = l.own.get("1").expect("observer 1's look");
+    assert_eq!((o.kind.as_deref(), o.sensor.as_ref(), o.level, o.confidence), (Some("fishing_vessel"), None, None, None));
+    assert!(!serde_json::to_string(l).expect("json").contains("\"sensor\""));
+    let now = tracks.levels(true);
+    let o = now.get("T-0001").and_then(|l| l.own.get("1")).expect("observer 1's look");
+    assert_eq!((o.sensor.as_deref(), o.level), (Some("eo_ir"), Some(murmur_decide::identify::Level::Identify)));
+    let conf = o.confidence.expect("its confidence");
+    assert!(conf > 0.5 && conf < 1.0, "{conf}");
+    assert_eq!(o.t, before["T-0001"].own["1"].t, "the same look");
+}
+
 #[test]
 fn uncertainty_and_staleness_grow_with_age_and_tracks_drop() {
     let (lat, lon) = at(BASE.0, BASE.1, 2_000.0, 0.0);

@@ -22,9 +22,10 @@
 //!   has. Its timer is ignored: the region holds from the first second.
 //! - **D, adrift or falling**: presumed lost, or past the endurance its last battery report
 //!   leaves; alone, with a `mobility` damage report (it cannot run its order). On the surface a
-//!   disc growing at [`SURFACE_DRIFT_MPS`], under water at [`SUBSURFACE_DRIFT_MPS`], on the
-//!   ground [`GROUND_DRIFT_M`], a fixed wing its glide from its last altitude, a rotary its
-//!   fall, an airship the wind.
+//!   disc growing at [`SURFACE_DRIFT_MPS`], under water at [`SUBSURFACE_DRIFT_MPS`] (rules 33:
+//!   the policy's `[rules.silent] drift_mps`, [`RulesConfig::silent_drift`]), on the ground
+//!   [`GROUND_DRIFT_M`], a fixed wing its glide from its last altitude, a rotary its fall, an
+//!   airship the wind.
 //! - **F, nothing known**: no order, circle or stillness to go on (or its order ended so that
 //!   what it does now is not known): anywhere its top speed reaches since its last report (the
 //!   owner's decision 3: catalog `max_mps`, else the domain's).
@@ -61,27 +62,24 @@ use crate::world::{LostLinkAction, VehicleFacts, WorldSnapshot};
 pub const PATH_TOLERANCE_M: f64 = 50.0;
 /// A hold's disc before its braking and its report interval, m (GUESS).
 pub const HOLD_RADIUS_M: f64 = 10.0;
-/// How fast the water carries a vessel that makes no way, m/s: the Gate's spring current
-/// (GUESS; tidewater's field at the Gate reaches 2.3 m/s).
-pub const SURFACE_DRIFT_MPS: f64 = 2.5;
-/// How fast the water carries a submerged vehicle that makes no way, m/s: the surface's (the spec's
-/// 1.0 GUESS was too little for the headless check: the simulator's water runs the surface current
-/// at every depth, docs/HEADLESS.md 17.4, and a vehicle near the surface meets it).
-pub const SUBSURFACE_DRIFT_MPS: f64 = SURFACE_DRIFT_MPS;
+/// How fast the water carries a vessel (a submerged vehicle) that makes no way, m/s, under rules
+/// below 33 ([`crate::legacy`], where the reasons are); from rules 33 the policy's
+/// `[rules.silent] drift_mps` ([`RulesConfig::silent_drift`]).
+pub use crate::legacy::{SUBSURFACE_DRIFT_MPS, SURFACE_DRIFT_MPS};
 /// How far a ground vehicle that makes no way may still end up, m (GUESS).
 pub const GROUND_DRIFT_M: f64 = 10.0;
 /// A fixed wing without power glides this many metres for each metre of altitude (GUESS).
 pub const GLIDE_RATIO: f64 = 10.0;
 /// A rotary wing without power falls this many metres sideways for each metre (GUESS).
 pub const ROTARY_FALL_RATIO: f64 = 1.0;
-/// How fast the wind carries an airship that makes no way, m/s (GUESS; the Gate's world draws
-/// 3 to 8 m/s at the bridge).
-pub const AIR_DRIFT_MPS: f64 = 10.0;
+/// How fast the wind carries an airship that makes no way, m/s, under rules below 33
+/// ([`crate::legacy`]); from rules 33 `[rules.silent] drift_mps.air`.
+pub use crate::legacy::AIR_DRIFT_MPS;
 
 /// `[rules.silent]` (rules 33, [`crate::rules::SCENARIO_SETTINGS_SINCE`], policy schema 8): the
 /// scenario's figures for a silent vehicle, today's constants by default. Parsed, bounded and
-/// logged from rules 33; nothing reads them yet (stage S3 of docs/SCENARIO-SETTINGS.md), and under
-/// older rules the constants stand whatever a file says.
+/// logged from rules 33, when a silent vehicle's region reads them ([`RulesConfig::silent_drift`]);
+/// under older rules the constants stand whatever a file says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SilentRules {
@@ -100,11 +98,19 @@ pub struct SilentDrift {
 }
 
 impl Default for SilentDrift {
+    /// The standing values (`sim/policy.toml`'s `[rules.silent]`): what older rules decide by.
     fn default() -> Self {
+        SilentDrift::legacy()
+    }
+}
+
+impl SilentDrift {
+    /// What rules below 33 decide by: the constants ([`crate::legacy`]).
+    pub fn legacy() -> SilentDrift {
         SilentDrift {
-            surface: SURFACE_DRIFT_MPS,
-            subsurface: SUBSURFACE_DRIFT_MPS,
-            air: AIR_DRIFT_MPS,
+            surface: crate::legacy::SURFACE_DRIFT_MPS,
+            subsurface: crate::legacy::SUBSURFACE_DRIFT_MPS,
+            air: crate::legacy::AIR_DRIFT_MPS,
         }
     }
 }
@@ -630,6 +636,8 @@ struct Kin {
     home: Option<LonLat>,
     /// how far the water or the wind carries it over the span, m
     drift: f64,
+    /// how fast the water or the wind carries it, m/s (the figure its words say)
+    drift_mps: f64,
     /// how fast it may go on its own, m/s
     top: f64,
     /// its altitude when last heard (an aircraft's glide or fall), m
@@ -666,25 +674,21 @@ pub fn top_speed(v: &VehicleFacts) -> f64 {
 }
 
 /// How fast the water or the wind may carry one of ours beyond its own speed, m/s: the current
-/// on the water (both the surface's figure: the simulator's water runs it at every depth), the
-/// wind for an airship, nothing else.
-pub fn carried_mps(v: &VehicleFacts) -> f64 {
-    let p = v.platform.as_ref();
-    match (p.map(|p| p.domain), engage::platform_autopilot(v)) {
-        (Some(Domain::Surface), _) => SURFACE_DRIFT_MPS,
-        (Some(Domain::Subsurface), _) => SUBSURFACE_DRIFT_MPS,
-        (_, Some(AutopilotKind::Blimp)) => AIR_DRIFT_MPS,
-        _ => 0.0,
-    }
+/// on the water (both the surface's figure under rules below 33: the simulator's water runs it at
+/// every depth), the wind for an airship, nothing else; rules 33, the policy's `[rules.silent]
+/// drift_mps` ([`RulesConfig::silent_drift`]).
+pub fn carried_mps(v: &VehicleFacts, cfg: &RulesConfig) -> f64 {
+    drift_mps(v, &cfg.silent_drift())
 }
 
-/// Its drift speed when it makes no way (D), m/s: the water's, the wind's for an airship.
-fn drift_mps(v: &VehicleFacts) -> f64 {
+/// Its drift speed when it makes no way (D), m/s: the water's, the wind's for an airship, by
+/// `drift`'s figures.
+fn drift_mps(v: &VehicleFacts, drift: &SilentDrift) -> f64 {
     let p = v.platform.as_ref();
     match (p.map(|p| p.domain), engage::platform_autopilot(v)) {
-        (Some(Domain::Surface), _) => SURFACE_DRIFT_MPS,
-        (Some(Domain::Subsurface), _) => SUBSURFACE_DRIFT_MPS,
-        (_, Some(AutopilotKind::Blimp)) => AIR_DRIFT_MPS,
+        (Some(Domain::Surface), _) => drift.surface,
+        (Some(Domain::Subsurface), _) => drift.subsurface,
+        (_, Some(AutopilotKind::Blimp)) => drift.air,
         _ => 0.0,
     }
 }
@@ -732,7 +736,8 @@ pub fn region(
     // diameter to the side)
     let h = PATH_TOLERANCE_M + moving * interval_s / 2.0 + 2.0 * turn_r;
     // the water (the wind for an airship) against its own speed
-    let carried = carried_mps(v);
+    let figures = cfg.silent_drift();
+    let carried = drift_mps(v, &figures);
     let (cross, swept) = if carried <= 0.0 {
         (0.0, 0.0)
     } else if cruise > carried {
@@ -753,7 +758,8 @@ pub fn region(
         HOLD_RADIUS_M + moving * interval_s / 2.0 + moving * moving / (2.0 * BRAKE_MPS2) + 2.0 * turn_r
     };
     let home = v.home.as_ref().map(|h| h.value);
-    let drift = drift_mps(v) * span;
+    let drift_speed = drift_mps(v, &figures);
+    let drift = drift_speed * span;
     let reach_mps = top + carried;
     let k = Kin {
         p0,
@@ -767,6 +773,7 @@ pub fn region(
         min_turn,
         home,
         drift,
+        drift_mps: drift_speed,
         top,
         alt: v.alt_msl_m.as_ref().map(|a| a.value.max(0.0)),
         cross,
@@ -915,10 +922,11 @@ fn all_actions(a: Option<AutopilotKind>, domain: Domain) -> Vec<LostLinkAction> 
 fn drift_part(k: &Kin, why: &str) -> Part {
     let alt = k.alt;
     let (r, what) = match (k.domain, k.autopilot) {
-        (Domain::Surface, _) => (k.drift, format!("adrift at up to {SURFACE_DRIFT_MPS} m/s since its last report ({why})")),
-        (Domain::Subsurface, _) => (k.drift, format!("adrift at up to {SUBSURFACE_DRIFT_MPS} m/s since its last report ({why})")),
+        (Domain::Surface | Domain::Subsurface, _) => {
+            (k.drift, format!("adrift at up to {} m/s since its last report ({why})", k.drift_mps))
+        }
         (Domain::Ground, _) => (GROUND_DRIFT_M, format!("within {GROUND_DRIFT_M:.0} m of where it was last heard ({why})")),
-        (Domain::Air, Some(AutopilotKind::Blimp)) => (k.drift, format!("carried by the wind at up to {AIR_DRIFT_MPS} m/s ({why})")),
+        (Domain::Air, Some(AutopilotKind::Blimp)) => (k.drift, format!("carried by the wind at up to {} m/s ({why})", k.drift_mps)),
         (Domain::Air, _) => match alt {
             Some(a) => {
                 let ratio = if k.fixed_wing { GLIDE_RATIO } else { ROTARY_FALL_RATIO };

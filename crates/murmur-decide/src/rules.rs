@@ -309,10 +309,28 @@ pub const RULES_NEWEST: u32 = SCENARIO_SETTINGS_SINCE;
 /// of it is logged and [`crate::watch::WatchSettings::legacy`] is what they meant, whatever the file
 /// says: a run of older rules refuses a policy whose `[watch]` (the area aside) or new keys differ
 /// from the standing values ([`crate::Policy::fits_rules`]). Stage S2 parses, bounds, logs and
-/// replays them; the decisions that read them come in S3 and S4. Every gate of that change reads
-/// this constant, never a literal (the held branch `rules33-class-reach` numbers itself 33 too: the
-/// one that lands second renumbers here).
+/// replays them; in S3 the engine reads them ([`IDENTIFY_CRITERIA_SINCE`],
+/// [`ENGAGE_IDENTITY_LEVEL_SINCE`], out of view, the silent drift); the bridge's readers come in
+/// S4. Every gate of that change reads this constant, never a literal (the held branch
+/// `rules33-class-reach` numbers itself 33 too: the one that lands second renumbers here).
 pub const SCENARIO_SETTINGS_SINCE: u32 = 33;
+
+/// Rules 33, stage S3 of docs/SCENARIO-SETTINGS.md: an identify order ends identified only on the
+/// sent vehicle's own look that meets its track's domain criteria in the policy's `[watch]` (the
+/// level at or above the domain's, one of the domain's sensors, never AIS, the confidence at or
+/// above the bar, no identity conflict on the track); a first naming below them is logged
+/// (`identify.step` `named`) and the order goes on; its end and its timeout say the look's
+/// confidence and the bar, and its time on station is `identify_on_station_s`
+/// ([`crate::identify::outcome`]). The bridge's own looks carry their sensor, level and confidence
+/// from this version ([`crate::identify::OwnLook`]), logged with the picture. Named apart from
+/// [`SCENARIO_SETTINGS_SINCE`] so a guard can find every gate of it; the same version.
+pub const IDENTIFY_CRITERIA_SINCE: u32 = SCENARIO_SETTINGS_SINCE;
+
+/// Rules 33, stage S3: an engagement's target must show its identity at `[rules.engage]
+/// min_identity_level` (the floor holds it at `identify`, a kind) as well as at the bar, from the
+/// identity level the picture logs (`track_levels`): a size class at 0.99 is not an
+/// identification ([`crate::engage`]'s `identity_check`).
+pub const ENGAGE_IDENTITY_LEVEL_SINCE: u32 = SCENARIO_SETTINGS_SINCE;
 
 /// The rules version from which a sensor's reach is judged under the conditions where its vehicle
 /// is now (bd murmur-ahss; the owner's "I want those scored" of 2026-11-15 for scoring v3's F9 night
@@ -964,6 +982,23 @@ impl RulesConfig {
         self.silent.clone().unwrap_or_default()
     }
 
+    /// How fast the water or the wind carries one of ours that makes no way, by domain, as these
+    /// rules decide it: the policy's `[rules.silent] drift_mps` from rules 33, before them the
+    /// constants ([`crate::silent::SilentDrift::legacy`]) whatever the file says.
+    pub fn silent_drift(&self) -> crate::silent::SilentDrift {
+        if self.scenario_settings() {
+            self.silent_rules().drift_mps
+        } else {
+            crate::silent::SilentDrift::legacy()
+        }
+    }
+
+    /// Rules 33 ([`IDENTIFY_CRITERIA_SINCE`]): an identify order ends only on the sent vehicle's
+    /// own look meeting its track's domain criteria in the scenario's `[watch]`.
+    pub fn identify_criteria(&self) -> bool {
+        self.rules_version >= IDENTIFY_CRITERIA_SINCE
+    }
+
     /// The policy schema a run under these rules logs (`run.started`'s `policy_schema`): the
     /// schema the rules being built add once a run decides under them, else [`POLICY_SCHEMA`].
     pub fn policy_schema(&self) -> u32 {
@@ -979,6 +1014,8 @@ impl RulesConfig {
         let mut e = self.engage.clone().unwrap_or_default();
         e.rules_version = self.rules_version;
         e.nominate_unconfirmed = self.identification.nominate_unconfirmed();
+        // rules 33: out of view after the scenario's stale time
+        e.stale_s = self.watch().stale_s;
         e
     }
 }

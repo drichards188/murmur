@@ -1,0 +1,76 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md; the F8 boat of eval/SCORING-V3.md 17.26, bd murmur-mdm2):
+# PUMA 1 is sent to identify a boat the radar only recognises. At 30 s its camera first names it a
+# small fast boat, at 0.11: rules 32 ended the order there, telling the operator "identified" by a
+# standard the brief does not count (`--rules 32`). Now the scenario's criteria decide (the policy's
+# `[watch]`: a surface contact identified at the identification level, by EO/IR, at 0.6 or more,
+# with no identity conflict): the naming is logged once (`identify.step` `named`) and the order goes
+# on. At 50 s the same camera's look reaches 0.65 and the order ends identified, saying the look's
+# confidence and the criteria. The tamper mirrors every own look's confidence in the log (0.11 to
+# 0.89, 0.65 to 0.35), the pictures' hashes recomputed: replay recomputes the naming and the end
+# from the edited pictures and catches it.
+title = "An identify order goes on past a first naming below the bar"
+invariant = "identify"
+attack = "none: the order as designed; then its looks' confidences edited in the log"
+expect = "done"
+expect_identify = [
+  "named: PUMA 1 named it small_fast_boat at 0.11, not yet identified (the bar is 0.6); it goes on",
+  "ended done: track T-0001 identified as small_fast_boat at 0.65 by PUMA 1's eo_ir (the bar is 0.6, identification by EO/IR); it was small_craft (recognise) before; holding: no order to go back to",
+]
+min_rules = 33
+tamper = "edit_own_confidence"
+end_s = 60
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+callsign = "PUMA 1"
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, about 1 km south of the Puma
+affiliation = "unknown"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 30                   # the camera's first naming, far below the bar
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.11
+level = "identify"
+level_by = ["puma-1:eo_ir"]
+
+[[step]]
+at_s = 35
+action = "expect"
+task_state = "dispatched"   # it goes on
+
+[[step]]
+at_s = 50                   # the same camera, surer now
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.65
+level = "identify"
+level_by = ["puma-1:eo_ir"]

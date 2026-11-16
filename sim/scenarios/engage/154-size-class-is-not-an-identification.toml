@@ -1,0 +1,56 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md, the floor: `[rules.engage] min_identity_level =
+# "identify"`): a drone the radar holds at 0.93 is still only a size class (`small_air`, a
+# detection), not an identification. Declared hostile and nominated for FURY 1's AMRAAM, it is
+# rejected at the identity check, which names the level, the confidence and the bar. Rules 32 read
+# the confidence alone and let a size class at 0.93 through (`--rules 32`: the nomination waits
+# for its signatures).
+title = "A size class at 0.93 is not an identification"
+invariant = "target_identity"
+attack = "a sure size class taken for an identified target"
+expect = "rejected"
+expect_rule = "target_identity"
+min_rules = 33
+end_s = 10
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "fury-1"
+platform = "cca"            # armed: AIM-120C AMRAAM, 1 to 90 km, against aircraft and drones
+callsign = "FURY 1"
+at = [-122.4700, 37.8600]   # north of the bridge
+alt_m = 3000
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge
+affiliation = "suspect"
+identity = "small_air"      # a detection's size class
+identity_confidence = 0.93
+domain = "air"
+alt_m = 300
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "fury-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

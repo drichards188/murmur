@@ -1,0 +1,67 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md): PUMA 1 is sent to identify a boat the radar recognises. Its
+# camera names it a small fast boat at 0.11 at 30 s (a naming that falls short, logged once), and
+# its look grows to 0.45 by 100 s, never reaching the bar. At the order's deadline (its transit and
+# the policy's `identify_on_station_s`, 300 s on station) it ends failed, and the timeout says the
+# vehicle's best look of its own and the criteria it fell short of, so whoever reads it knows what
+# was seen and how far it was from counting. Rules 32 ended the order at 30 s, identified
+# (`--rules 32`).
+title = "An identify order's timeout names its best look"
+invariant = "identify"
+attack = "a camera that never gets sure enough"
+expect = "failed"
+expect_identify = [
+  "named: PUMA 1 named it small_fast_boat at 0.11, not yet identified (the bar is 0.6); it goes on",
+  "ended failed: track T-0001 not identified by the order's deadline; PUMA 1's best look named it small_fast_boat at 0.45 by its eo_ir (the bar is 0.6, identification by EO/IR); holding: no order to go back to",
+]
+min_rules = 33
+end_s = 380
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+callsign = "PUMA 1"
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "unknown"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 30                   # the camera's first naming
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.11
+level = "identify"
+level_by = ["puma-1:eo_ir"]
+
+[[step]]
+at_s = 100                  # surer, never sure enough
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.45
+level = "identify"
+level_by = ["puma-1:eo_ir"]
+
+[[step]]
+at_s = 200
+action = "expect"
+task_state = "dispatched"

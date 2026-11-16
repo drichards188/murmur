@@ -168,7 +168,7 @@ fn the_look_ends_identified_lost_or_out_of_time() {
     assert_eq!(identify::outcome("T-0001", &w, deadline, None), None);
     // rules 22: only a fresh identification by our own sensors, after the order went out
     let sent = T0.plus_ms(1_000);
-    let second = |before| Some(identify::Look { sent_t: sent, before, own: None, meanwhile: &[] });
+    let second = |before| Some(identify::Look { sent_t: sent, before, own: None, meanwhile: &[], criteria: None, named: &[] });
     let mut old = w.clone();
     old.track_levels.insert(
         "T-0001".into(),
@@ -184,14 +184,14 @@ fn the_look_ends_identified_lost_or_out_of_time() {
     // rules 23: only the vehicle sent's own identification; another's is said, not an end
     let puma = uid("puma-1");
     let noted = vec![identify::Noted { by: "hunter-1".into(), kind: Some("ferry".into()), t: T0.plus_ms(5_000) }];
-    let own = |meanwhile| Some(identify::Look { sent_t: sent, before: Some("ferry (identify)"), own: Some(&puma), meanwhile });
+    let own = |meanwhile| Some(identify::Look { sent_t: sent, before: Some("ferry (identify)"), own: Some(&puma), meanwhile, criteria: None, named: &[] });
     let mut other = fresh.clone();
     other.callsigns.insert(uid("puma-1"), "PUMA 1".into());
     other.callsigns.insert(uid("hunter-1"), "HUNTER 1".into());
     let l = other.track_levels.get_mut("T-0001").unwrap();
     l.by = vec!["hunter-1:eo_ir".into()];
     l.conflict = None;
-    l.own.insert("hunter-1".into(), identify::OwnLook { t: T0.plus_ms(5_000), kind: Some("ferry".into()) });
+    l.own.insert("hunter-1".into(), identify::OwnLook { t: T0.plus_ms(5_000), kind: Some("ferry".into()), ..Default::default() });
     assert_eq!(identify::outcome("T-0001", &other, deadline, own(&[])), None);
     let due = identify::meanwhile_due("T-0001", &other, &puma, sent, &[]);
     assert_eq!(due, vec![("hunter-1".to_string(), Some("ferry".to_string()))]);
@@ -203,7 +203,7 @@ fn the_look_ends_identified_lost_or_out_of_time() {
     let mut then = other.clone();
     let l = then.track_levels.get_mut("T-0001").unwrap();
     l.by.push("puma-1:eo_ir".into());
-    l.own.insert("puma-1".into(), identify::OwnLook { t: T0.plus_ms(9_000), kind: Some("ferry".into()) });
+    l.own.insert("puma-1".into(), identify::OwnLook { t: T0.plus_ms(9_000), kind: Some("ferry".into()), ..Default::default() });
     let (k, why) = identify::outcome("T-0001", &then, deadline, own(&noted)).unwrap();
     assert_eq!(k, EndKind::Identified);
     assert_eq!(

@@ -2234,6 +2234,8 @@ impl Decision {
             tracks.as_deref(),
             // rules 30: each vehicle's own lost-link failsafe
             self.rules.node_loss(),
+            // rules 33: each vehicle's own look at a track, how sure and by which sensor
+            self.rules.identify_criteria(),
         );
         // rules 32: each vehicle's sensors' reach now, as the tick last prepared it
         if self.rules.reach_now()

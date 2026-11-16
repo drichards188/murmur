@@ -144,7 +144,11 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # cut), redate_loss (a confirmation's report moved 20 s
                                  # later, everywhere the loss appears),
                                  # and rules 32: edit_reach (every sensor's reach now in the
-                                 # decisions' inputs made a hundred times as long)
+                                 # decisions' inputs made a hundred times as long),
+                                 # and rules 33: edit_own_confidence (every own look's
+                                 # confidence in the pictures mirrored, c to 1 - c, their
+                                 # hashes recomputed), drop_loosened (the policy's named
+                                 # loosenings cut from run.started)
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -207,6 +211,11 @@ min_rules = 30                   # optional: the oldest decision rules it is des
                                  # the current ones; murmur-scenarios --rules N overrides it
 reaches = "physical"             # optional: the sensing model's reaches it is designed for
                                  # (`physical` or `legacy`), whatever --reaches says
+# [since.33]                     # optional: what changes in it under rules 33 or newer (a
+# expect = "failed"              # table per version): any of its keys, each replacing the
+# expect_identify = ["..."]      # file's whole (a list too, `[[since.33.track]]` its tracks),
+                                 # read by a run that decides under that version; a run of the
+                                 # current rules reads the file as it is (its log as it was)
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[carried]]                      # rules 15, optional: an earlier log whose carry failed at
@@ -337,7 +346,12 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess) an
 look ended, and the order sent afterwards taken at once, so the order ends then). A file with
 no nomination ends on its last `task` (`expect`), and `expect_identify` lists what its identify
 orders did, in order (substrings of `t=<s> <id> recentred to [lon, lat]`, `<id> held: ...`,
-rules 23 `<id> meanwhile: ...`, `<id> ended done: ...`). From rules 30 the runner also calls
+rules 23 `<id> meanwhile: ...`, rules 33 `<id> named: ...`, `<id> ended done: ...`). From rules 33
+a track the file names without a `level` is at its label's (a size class's name `detect`, a
+family's `recognise`, a kind's `identify`, as the bridge's tracker gives every named track one;
+none for a label of none of them), which the engagement's identity check reads; and each look of
+`level_by` at recognition or identification is that vehicle's own look, its sensor the label's
+after the colon, its confidence the track's identity confidence then. From rules 30 the runner also calls
 `Engine::step_nodes` every second, before the engagements' step, as the bridge's tick does: a
 loss whose vehicle is heard again is revoked, a presumption cleared, a silent vehicle with
 logged evidence presumed lost.
@@ -494,3 +508,12 @@ logged evidence presumed lost.
 | 146-identify-in-fog-refused-until-it-lifts | identify | rules 32: PUMA 1, 150 m up, sent to identify a `small_air` track in fog of 50 m visibility (its reach now, the vehicle fact `reach_now`), then again once the fog thins to 1.2 km; on the physical reaches; tamper `edit_reach` | rejected (identify: in fog of 50 m visibility PUMA 1's camera identifies a small_air contact only within about 160 m, its tightest orbit keeping it beyond that), then dispatched to an orbit of 599 m (its reach in 1.2 km visibility, 882 m); `--rules 31` sends it at once to the clear day's 788 m; tamper caught |
 | 147-identify-at-night-needs-a-thermal-channel | identify | rules 32: at night, MAGURA 1 (a visible channel only) then PUMA 1 (day and LWIR) sent to identify a `small_surface` boat; on the physical reaches | MAGURA 1 rejected (identify: at night its camera identifies nothing, having no thermal channel), PUMA 1 dispatched to the clear day's orbit, 1,246 m (its LWIR's 2,018 m at night takes nothing from the clear day's 1,793 m); `--rules 31` sends both |
 | 148-assessment-in-fog-sees-nothing | assessment | rules 32: scenario 131's Javelin launch in fog of 50 m visibility, the UGV's sight reaching about 156 m (its `reach_now`); on the physical reaches; tamper `edit_reach` | done (unknown): no sensor of ours covers the effect point 1,450 m off; `--rules 31` assesses it ceased on the clear day's reach; only the observation steps log the reach now; tamper caught |
+| 149-identify-goes-on-past-a-first-naming | identify | rules 33: PUMA 1's camera first names a radar-recognised boat a small fast boat at 0.11 (the F8 boat), then at 0.65; tamper `edit_own_confidence` | done: the naming logged (`named`, "not yet identified (the bar is 0.6); it goes on"), the order ends at 0.65 saying the confidence and the criteria; `--rules 32` ends it at 0.11; tamper caught |
+| 150-identify-a-submerged-contact-by-sonar | identify | rules 33: HUNTER 1 sent to identify a contact its sonar holds under water (`subsurface`, a detection); its sonar recognises it as submerged at 0.70 | done: identified by the subsurface domain's criterion, recognition by sonar (planned on the runner's legacy reaches: the physical model gives no camera a reach under water) |
+| 151-ais-never-ends-an-identify | identify | rules 33: a ship identified by its AIS alone at 0.95; PUMA 1 sent; AIS heard again, then the camera recognises a large vessel at 0.80, then identifies a cargo ship at 0.70 | done: AIS ends nothing, the recognition is a naming that falls short (identification by EO/IR is the criterion), the identification ends it |
+| 152-a-conflict-holds-an-identify | identify | rules 33: the camera identifies a small fast boat at 0.80 against the boat's AIS (a conflict), then the AIS goes quiet and the conflict drops | done: held while in conflict (a naming that falls short), ended once it clears; `--rules 32` ends it at the contradicting look |
+| 153-identify-timeout-names-the-best-look | identify | rules 33: the camera names the boat at 0.11, then 0.45, never the bar | failed at the deadline (its transit and 300 s on station), naming PUMA 1's best look (0.45 by its eo_ir) and the criteria; `--rules 32` ends it at 0.11 |
+| 154-size-class-is-not-an-identification | target_identity | rules 33: a drone the radar holds as `small_air` at 0.93, declared hostile and nominated for FURY 1's AMRAAM | rejected (target_identity: a detection, its size class, not an identification; the bar said); `--rules 32` passes it to the signers |
+| 155-identified-below-the-bar | target_identity | rules 33: a small fast boat identified at 0.55 nominated | rejected (target_identity: below the bar, 0.6, an engagement needs identification at 0.6 or more) |
+| 156-a-stricter-bar-holds-both | target_identity | rules 33: a policy whose bar is 0.75 (policies/bar-075.toml); PUMA 1's look at 0.70, then 0.80; the boat nominated at 0.70 | rejected (target_identity: below the bar, 0.75); the identify order's naming at 0.70 says the bar of 0.75 and its end at 0.80 too |
+| 157-a-named-loosening-and-its-name-dropped | audit | rules 33: a drill's policy lowers the engagement bar to 0.5, named in `loosened` (policies/drill-bar-050.toml); a boat identified at 0.55 engaged; tamper `drop_loosened` | done (ceased): the check passes at the drill's bar, saying it; the loosening's name cut from the logged policy is caught |

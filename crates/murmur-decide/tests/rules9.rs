@@ -268,6 +268,7 @@ fn rule_declaration_off_decides_as_rules_8_did() {
             || text.starts_with("# Rules 30")
             || text.starts_with("# Rules 31")
             || text.starts_with("# Rules 32")
+            || text.starts_with("# Rules 33")
         {
             continue;
         }

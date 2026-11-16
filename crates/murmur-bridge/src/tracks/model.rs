@@ -786,6 +786,18 @@ struct Classifier {
     last_t: f64,
 }
 
+/// Rules 33: one of our vehicles' own look at a track ([`Track::own_marks`]): when it last
+/// looked (s), what it called it, with which sensor, at what level, and the surest it has been of
+/// that label.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwnMark {
+    pub t: f64,
+    pub label: String,
+    pub sensor: SensorType,
+    pub level: Level,
+    pub confidence: f64,
+}
+
 /// One observer's sensor's evidence at one level (the physical model): what it called the
 /// contact and the surest it has been of it.
 #[derive(Debug, Clone, PartialEq)]
@@ -1683,24 +1695,39 @@ impl Track {
     /// Rules 23: each of our vehicles' latest identification by its own sensors (not AIS), by its
     /// uid: when (s) and the kind it gave. The physical model's looks at identification; the
     /// legacy model's EO/IR and sonar sources, each with its sensor type's kind (its classifiers
-    /// pool per type, not per observer).
+    /// pool per type, not per observer). [`Self::own_marks`] without recognitions, as the decision
+    /// snapshot reads it under rules below 33.
+    #[cfg(test)]
     pub fn own_identifications(&self) -> BTreeMap<u64, (f64, String)> {
-        let mut out: BTreeMap<u64, (f64, String)> = BTreeMap::new();
-        let mut note = |u: u64, t: f64, label: &str| {
-            let e = out.entry(u).or_insert((t, label.to_string()));
-            if t > e.0 {
-                *e = (t, label.to_string());
+        self.own_marks(false).into_iter().map(|(u, m)| (u, (m.t, m.label))).collect()
+    }
+
+    /// Rules 33 (`murmur_decide::rules::IDENTIFY_CRITERIA_SINCE`): each of our vehicles' most
+    /// specific own look (not AIS) by its uid, with the sensor that made it, its level and its
+    /// confidence (the surest that look has been of its label): an identification over a
+    /// recognition, then the latest. The physical model's looks; the legacy model's EO/IR and sonar
+    /// sources, each at identification with its sensor type's kind and classifier confidence (its
+    /// classifiers pool per type, not per observer). With `recognitions` false, identifications
+    /// alone: [`Self::own_identifications`], rules 23's.
+    pub fn own_marks(&self, recognitions: bool) -> BTreeMap<u64, OwnMark> {
+        let mut out: BTreeMap<u64, OwnMark> = BTreeMap::new();
+        let mut note = |u: u64, m: OwnMark| {
+            let e = out.entry(u).or_insert_with(|| m.clone());
+            if (m.level, m.t) > (e.level, e.t) {
+                *e = m;
             }
         };
+        let least = if recognitions { Level::Recognise } else { Level::Identify };
         for ((u, s, l), m) in &self.looks {
-            if *l == Level::Identify && *s != SensorType::Ais {
-                note(*u, m.last_t, &m.label);
+            if *l >= least && *s != SensorType::Ais {
+                note(*u, OwnMark { t: m.last_t, label: m.label.clone(), sensor: *s, level: *l, confidence: m.confidence });
             }
         }
         if self.looks.is_empty() {
             for ((u, s), src) in &self.sources {
                 if let Some(c) = self.classifiers.get(s).filter(|_| matches!(s, SensorType::EoIr | SensorType::Sonar)) {
-                    note(*u, src.last_t, &c.label);
+                    let mark = OwnMark { t: src.last_t, label: c.label.clone(), sensor: *s, level: Level::Identify, confidence: self.classifier_conf(*s, c) };
+                    note(*u, mark);
                 }
             }
         }

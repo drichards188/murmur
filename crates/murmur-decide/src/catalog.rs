@@ -624,12 +624,16 @@ impl SizeClass {
     /// contact's domain with `aircraft`, `ground_vehicle` and `submerged` too, the families' words:
     /// read here as the family; [`crate::identify::shown_class`] tells them apart by the level.
     pub fn of_label(label: &str) -> Option<SizeClass> {
+        SizeClass::named(label)
+            .or_else(|| SizeClass::of_family(label))
+            .or_else(|| SizeClass::of_kind(label))
+    }
+
+    /// The size class of a family's label (a recognition's: the bridge's `tracks::sensing::family`);
+    /// none for any other label.
+    pub fn of_family(label: &str) -> Option<SizeClass> {
         use SizeClass::*;
-        if let Some(c) = SizeClass::named(label) {
-            return Some(c);
-        }
         Some(match label {
-            // families
             "large_vessel" => LargeSurface,
             "small_craft" => SmallSurface,
             "aircraft" => LargeAir,
@@ -637,7 +641,15 @@ impl SizeClass {
             "ground_vehicle" => LargeGround,
             "person" => SmallGround,
             "submerged" => Subsurface,
-            // kinds
+            _ => return None,
+        })
+    }
+
+    /// The size class of a kind's label (an identification's: its signature's class in the
+    /// physical model's table); none for any other label.
+    pub fn of_kind(label: &str) -> Option<SizeClass> {
+        use SizeClass::*;
+        Some(match label {
             "cargo_ship" | "tanker" | "ferry" | "patrol_boat" | "fishing_vessel" => LargeSurface,
             "sailboat" | "small_fast_boat" => SmallSurface,
             "light_aircraft" | "helicopter" => LargeAir,

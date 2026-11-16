@@ -420,7 +420,7 @@ fn a_manifest_vehicle_never_heard_carries_its_identity_under_rules_30() {
     world.load_manifest();
     let catalog = Catalog::load(&root().join("sim/platforms.toml")).expect("catalog");
     let areas = AreaSet::empty("test", murmur_decide::Time(0));
-    let at = |node_loss: bool| snapshot::build(&world, &catalog, &areas, murmur_decide::Time(0), None, node_loss);
+    let at = |node_loss: bool| snapshot::build(&world, &catalog, &areas, murmur_decide::Time(0), None, node_loss, false);
     let uid = murmur_decide::Uid::new("2");
     assert!(!at(false).identities.contains_key(&uid), "rules 29: as before");
     let id = at(true).identities.get(&uid).cloned().expect("rules 30: who it is");

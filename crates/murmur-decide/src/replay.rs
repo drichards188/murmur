@@ -2289,6 +2289,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::SCENARIO_SETTINGS_SINCE, "\"min_identity_level\":\"", "an engagement's identity level in the policy"),
     (rules::SCENARIO_SETTINGS_SINCE, "\"default_effect_radius_m\":", "the policy's default effect radius"),
     (rules::SCENARIO_SETTINGS_SINCE, "\"policy_layers\":[", "the files the policy was built from"),
+    (rules::IDENTIFY_CRITERIA_SINCE, "\"sensor\":\"", "the sensor of a vehicle's own look at a track (a decision's fact)"),
+    (rules::IDENTIFY_CRITERIA_SINCE, "\"step\":\"named\"", "an identify order's naming below the scenario's criteria"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2432,6 +2434,20 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
             schema.to_string(),
             crate::rules::POLICY_SCHEMA_NEWEST.to_string(),
         );
+    }
+    // rules 33: a log that carries the scenario's settings names each loosening its policy holds
+    // (a forger who drops `loosened` makes a loosened policy look standing)
+    if policy.watch.is_some() {
+        for key in policy.unnamed_loosenings() {
+            bad(
+                r,
+                first,
+                None,
+                "logged policy loosens a key its `loosened` does not name",
+                key.to_string(),
+                format!("loosened = {{ \"{key}\" = \"<why>\" }}"),
+            );
+        }
     }
     // rules 33: the scenario's settings and the named loosenings are schema 8 (the engagement's
     // two keys are checked with the section's others below)
@@ -4079,8 +4095,10 @@ fn replay_inner<S: AsRef<str>>(
                                 })
                             });
                         let second = policy.as_ref().is_some_and(|p| p.rules.identify_second_look());
+                        // rules 33: the time on station is the scenario's
+                        let rules_now = policy.as_ref().map(|p| p.rules.clone()).unwrap_or_default();
                         crate::identify::Dispatch {
-                            deadline_t: crate::identify::deadline(e.t, &plan),
+                            deadline_t: crate::identify::deadline(e.t, &plan, &rules_now),
                             plan,
                             resumes,
                             sent_t: second.then_some(e.t),
@@ -4109,6 +4127,7 @@ fn replay_inner<S: AsRef<str>>(
                         sent_t: d.sent_t,
                         before: d.before,
                         meanwhile: Vec::new(),
+                        named: Vec::new(),
                     });
                 }
                 if let Some(inputs) = reach_inputs {
@@ -7299,14 +7318,18 @@ fn replay_inner<S: AsRef<str>>(
                 check_plans(&mut r, e, *intent, &w, pol);
                 let mut run = run;
                 // rules 23: the other vehicles' identifications not yet noted, as the engine notes
-                // them before it judges the look (none before rules 23)
+                // them before it judges the look (none before rules 23; rules 33: those that meet
+                // the track's criteria)
+                let criteria = cfg.identify_criteria().then(|| cfg.watch());
                 let due = match (cfg.identify_own_look(), run.sent_t) {
-                    (true, Some(sent_t)) => crate::identify::meanwhile_due(&run.plan.track, &w, uid, sent_t, &run.meanwhile),
+                    (true, Some(sent_t)) => crate::identify::meanwhile_due_by(&run.plan.track, &w, uid, sent_t, &run.meanwhile, criteria),
                     _ => Vec::new(),
                 };
                 match step {
                     crate::identify::Step::Meanwhile { by, identity, detail } => {
-                        let want = due.first().map(|(b, k)| (b.clone(), k.clone(), crate::identify::meanwhile_detail(&w, b, k.as_deref(), uid)));
+                        let want = due
+                            .first()
+                            .map(|(b, k)| (b.clone(), k.clone(), crate::identify::meanwhile_detail_by(&w, &run.plan.track, b, k.as_deref(), uid, criteria)));
                         if !cfg.identify_own_look() {
                             bad(&mut r, e, Some(*intent), "an identification meanwhile noted under rules that end on any", json(&(by, identity)), String::new());
                         } else if want.as_ref() != Some(&(by.clone(), identity.clone(), detail.clone())) {
@@ -7320,6 +7343,26 @@ fn replay_inner<S: AsRef<str>>(
                             );
                         }
                         run.meanwhile.push(crate::identify::Noted { by: by.clone(), kind: identity.clone(), t: e.t });
+                    }
+                    // rules 33: the vehicle sent's own naming below the criteria, as the engine notes
+                    // it once a kind after the identifications meanwhile and before it judges the look
+                    crate::identify::Step::Named { by, identity, detail } => {
+                        let want = crate::identify::Look::of(&run, uid, cfg).and_then(|k| crate::identify::named_due(&run.plan.track, &w, &k));
+                        if !cfg.identify_criteria() {
+                            bad(&mut r, e, Some(*intent), "a naming below the criteria noted under rules that have none", json(&(by, identity)), String::new());
+                        } else if !due.is_empty() {
+                            bad(&mut r, e, Some(*intent), "an identify order's naming logged before an identification meanwhile was noted", json(&due), String::new());
+                        } else if want.as_ref() != Some(&(by.clone(), identity.clone(), detail.clone())) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "an identify order's naming other than its picture says",
+                                json(&(by, identity, detail)),
+                                json(&want),
+                            );
+                        }
+                        run.named.push(crate::identify::Noted { by: by.clone(), kind: identity.clone(), t: e.t });
                     }
                     crate::identify::Step::Recentred { center, radius_m, checks }
                     | crate::identify::Step::Held { center, radius_m, checks, .. } => {
@@ -7363,6 +7406,11 @@ fn replay_inner<S: AsRef<str>>(
                     } => {
                         if !due.is_empty() {
                             bad(&mut r, e, Some(*intent), "an identify order's look ended with an identification meanwhile not noted", json(&due), String::new());
+                        }
+                        // rules 33: and with no naming of its own below the criteria left unnoted
+                        let named = crate::identify::Look::of(&run, uid, cfg).and_then(|k| crate::identify::named_due(&run.plan.track, &w, &k));
+                        if let Some(n) = named {
+                            bad(&mut r, e, Some(*intent), "an identify order's look ended with a naming of its own not noted", json(&n), String::new());
                         }
                         let want = crate::identify::outcome(&run.plan.track, &w, run.deadline_t, crate::identify::Look::of(&run, uid, cfg));
                         let lv = w.track_levels.get(&run.plan.track);

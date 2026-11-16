@@ -416,6 +416,14 @@ pub fn intents(mcp: &Mcp, agent: &AgentId, state: Option<&str>, mine: bool, limi
             i
         })
         .collect();
+    // rules 33: an identify order's best own look so far against the bar (none under older rules)
+    let mut intents = intents;
+    let progress = mcp.decision.identify_progress(None);
+    for i in &mut intents {
+        if let Some(p) = i["id"].as_u64().and_then(|id| progress.get(&id)) {
+            i["identify_progress"] = p.clone();
+        }
+    }
     json!({
         "t": now,
         "count": intents.len(),

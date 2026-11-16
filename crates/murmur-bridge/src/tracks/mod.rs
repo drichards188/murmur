@@ -1735,19 +1735,22 @@ impl Tracks {
     }
 
     /// Rules 21: each live track's identity level and the looks that identified it, for
-    /// `WorldSnapshot::track_levels` (what ends an identify order).
-    pub fn levels(&self) -> BTreeMap<String, murmur_decide::identify::TrackLevel> {
+    /// `WorldSnapshot::track_levels` (what ends an identify order). Rules 33 (`details`, the
+    /// decision rules' `identify_criteria`): each vehicle's own look with its sensor, level and
+    /// confidence, its recognitions too ([`model::Track::own_marks`]); without, as rules 23 had it.
+    pub fn levels(&self, details: bool) -> BTreeMap<String, murmur_decide::identify::TrackLevel> {
         use murmur_decide::identify::{Level as L, TrackLevel};
+        let level_of = |l: sensing::Level| match l {
+            sensing::Level::Detect => L::Detect,
+            sensing::Level::Recognise => L::Recognise,
+            sensing::Level::Identify => L::Identify,
+        };
         let inner = lock(&self.inner);
         inner
             .tracks
             .values()
             .filter_map(|t| {
-                let level = match t.identity().level? {
-                    sensing::Level::Detect => L::Detect,
-                    sensing::Level::Recognise => L::Recognise,
-                    sensing::Level::Identify => L::Identify,
-                };
+                let level = level_of(t.identity().level?);
                 let id = t.identity();
                 Some((
                     t.id.clone(),
@@ -1757,13 +1760,20 @@ impl Tracks {
                         // rules 22: when our own sensors last identified it, and its conflict
                         own_t: t.own_identified_t().map(|s| murmur_decide::Time((s * 1000.0).round() as i64)),
                         conflict: id.conflict,
-                        // rules 23: and each of our vehicles' own latest identification
+                        // rules 23: and each of our vehicles' own latest identification (rules 33:
+                        // its most specific look, how sure and by which sensor)
                         own: t
-                            .own_identifications()
+                            .own_marks(details)
                             .into_iter()
-                            .map(|(u, (s, kind))| {
-                                let at = murmur_decide::Time((s * 1000.0).round() as i64);
-                                (u.to_string(), murmur_decide::identify::OwnLook { t: at, kind: Some(kind) })
+                            .map(|(u, m)| {
+                                let at = murmur_decide::Time((m.t * 1000.0).round() as i64);
+                                let mut look = murmur_decide::identify::OwnLook { t: at, kind: Some(m.label), ..Default::default() };
+                                if details {
+                                    look.sensor = Some(m.sensor.as_str().to_string());
+                                    look.level = Some(level_of(m.level));
+                                    look.confidence = Some(m.confidence);
+                                }
+                                (u.to_string(), look)
                             })
                             .collect(),
                     },

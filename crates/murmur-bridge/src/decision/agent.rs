@@ -250,17 +250,24 @@ impl Decision {
     /// why it needs (or needed) a human, its tasking once dispatched, and a plain-language
     /// summary of where it stands and what would move it.
     pub fn explain_json(&self, id: u64) -> Option<Value> {
+        // rules 33: an identify order's best own look so far against the bar (read before the
+        // engine's lock is taken here; none under older rules)
+        let progress = self.identify_progress(Some(&[IntentId(id)])).remove(&id);
         let core = self.lock();
         let id = IntentId(id);
         let i = core.engine.intent(id)?;
         let tasking = core.taskings.get(&id).map(|t| t.snapshot());
-        Some(json!({
+        let mut out = json!({
             "intent": intent_json(i, core.taskings.get(&id).map(|t| t.id), self.tol()),
             "why_human": why_human(i),
             "summary": explain(i),
             "tasking": tasking,
             "space": core.space_runs.get(&id).map(space::SpaceRun::json),
-        }))
+        });
+        if let Some(p) = progress {
+            out["identify_progress"] = p;
+        }
+        Some(out)
     }
 
     /// `GET /api/space/runs` for agents: every dispatched collect and cover, newest first.

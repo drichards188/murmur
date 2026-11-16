@@ -1,0 +1,83 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md): an identify order is for a look of our own. A ship west of
+# the bridge broadcasts AIS that names it a cargo ship, and the tracker has it identified by AIS
+# alone at 0.95; the surface domain's criteria name AIS among their sensors (a contact that truly
+# broadcasts its own counts as identified for the watch), but never for an identify order. PUMA 1
+# is sent for a look: the AIS heard again at 10 s ends nothing; at 30 s PUMA 1's camera recognises
+# it as a large vessel at 0.80, a recognition where the surface domain counts identification only,
+# logged as a naming that falls short, and the order goes on; at 45 s the camera identifies it as
+# a cargo ship at 0.70 and the order ends identified, agreeing with its identity before.
+title = "AIS never ends an identify order, and a recognition does not either"
+invariant = "identify"
+attack = "none: the order as designed"
+expect = "done"
+expect_identify = [
+  "named: PUMA 1 named it large_vessel at 0.80, a recognition by its eo_ir, not yet identified (the criterion is identification by EO/IR); it goes on",
+  "ended done: track T-0001 identified as cargo_ship at 0.70 by PUMA 1's eo_ir (the bar is 0.6, identification by EO/IR); it agrees with its identity before, cargo_ship (identify); holding: no order to go back to",
+]
+min_rules = 33
+end_s = 60
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+callsign = "PUMA 1"
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, about 1 km south of the Puma
+affiliation = "neutral"
+identity = "cargo_ship"
+identity_confidence = 0.95
+sources = ["ais"]
+level = "identify"
+level_by = ["ais"]          # identified by its AIS alone
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 10                   # its AIS heard again: no look of ours
+action = "track"
+id = "T-0001"
+identity = "cargo_ship"
+identity_confidence = 0.95
+level = "identify"
+level_by = ["ais"]
+
+[[step]]
+at_s = 12
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 30                   # PUMA 1's camera recognises its family
+action = "track"
+id = "T-0001"
+identity = "large_vessel"
+identity_confidence = 0.8
+level = "recognise"
+level_by = ["puma-1:eo_ir"]
+
+[[step]]
+at_s = 35
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 45                   # and identifies its kind
+action = "track"
+id = "T-0001"
+identity = "cargo_ship"
+identity_confidence = 0.7
+level = "identify"
+level_by = ["puma-1:eo_ir"]

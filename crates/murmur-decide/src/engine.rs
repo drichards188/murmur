@@ -495,6 +495,8 @@ pub enum IdentifyEvent {
     Recentre(DispatchOrder),
     Return(DispatchOrder),
     Meanwhile { intent: IntentId, uid: Uid, detail: String },
+    /// Rules 33: the vehicle sent named the track below the criteria; the order goes on (logged).
+    Named { intent: IntentId, uid: Uid, detail: String },
 }
 
 /// Rules 21: what an identify order's moved orbit must pass: the domain rule and the geofence
@@ -4727,6 +4729,16 @@ impl Engine {
                 l.own.clear();
             }
         }
+        // rules 33: an own look's sensor, level and confidence, and the recognitions among them,
+        // facts only rules 33 read (older rules hold an identification alone, without them)
+        if !self.policy.rules.identify_criteria() {
+            for l in w.track_levels.values_mut() {
+                l.own.retain(|_, o| o.level.is_none_or(|lv| lv == crate::identify::Level::Identify));
+                for o in l.own.values_mut() {
+                    o.without_details();
+                }
+            }
+        }
         // rules 32: a vehicle's sensors' reach now, a fact only rules 32 read
         if !self.policy.rules.reach_now() {
             for v in w.vehicles.values_mut() {
@@ -5551,7 +5563,7 @@ impl Engine {
         let identify = match intent.identify_plan() {
             Some(plan) if intent.spec().kind() == TaskKind::Identify => Some(crate::identify::Dispatch {
                 plan: plan.clone(),
-                deadline_t: crate::identify::deadline(t, plan),
+                deadline_t: crate::identify::deadline(t, plan, &self.policy.rules),
                 resumes: self.resumable_on(&uids),
                 // rules 22: a fresh identification after now ends it, compared with this
                 sent_t: self.policy.rules.identify_second_look().then_some(t),
@@ -5590,6 +5602,7 @@ impl Engine {
                 sent_t: d.sent_t,
                 before: d.before,
                 meanwhile: Vec::new(),
+                named: Vec::new(),
             });
         }
         match &order {
@@ -6537,11 +6550,13 @@ impl Engine {
             {
                 // rules 23: the vehicle sent and those that identified its track, by callsign
                 inputs.callsigns = crate::identify::callsigns(world, &uid, inputs.track_levels.get(&run.plan.track));
-                // another vehicle's identification meanwhile: logged, and the order goes on
-                let due = crate::identify::meanwhile_due(&run.plan.track, &inputs, &uid, sent_t, &run.meanwhile);
+                // another vehicle's identification meanwhile: logged, and the order goes on (rules
+                // 33: a look that meets the track's criteria)
+                let criteria = cfg.identify_criteria().then(|| cfg.watch());
+                let due = crate::identify::meanwhile_due_by(&run.plan.track, &inputs, &uid, sent_t, &run.meanwhile, criteria);
                 for (by, kind) in due {
                     let logged = self.log_inputs(&inputs)?;
-                    let detail = crate::identify::meanwhile_detail(&inputs, &by, kind.as_deref(), &uid);
+                    let detail = crate::identify::meanwhile_detail_by(&inputs, &run.plan.track, &by, kind.as_deref(), &uid, criteria);
                     self.emit(EventBody::IdentifyStep {
                         intent: id,
                         uid: uid.clone(),
@@ -6554,6 +6569,24 @@ impl Engine {
                     if let Some(r) = self.get_mut(id)?.identify_run_mut() {
                         r.meanwhile = run.meanwhile.clone();
                     }
+                }
+            }
+            // rules 33: the vehicle's own naming below the criteria: logged once a kind, and the
+            // order goes on
+            let named = crate::identify::Look::of(&run, &uid, &cfg).and_then(|k| crate::identify::named_due(&run.plan.track, &inputs, &k));
+            if let Some((by, kind, detail)) = named {
+                let logged = self.log_inputs(&inputs)?;
+                self.emit(EventBody::IdentifyStep {
+                    intent: id,
+                    uid: uid.clone(),
+                    inputs: logged,
+                    step: crate::identify::Step::Named { by: by.clone(), identity: kind.clone(), detail: detail.clone() },
+                    return_inputs: None,
+                })?;
+                out.push(IdentifyEvent::Named { intent: id, uid: uid.clone(), detail });
+                run.named.push(crate::identify::Noted { by, kind, t: inputs.t });
+                if let Some(r) = self.get_mut(id)?.identify_run_mut() {
+                    r.named = run.named.clone();
                 }
             }
             let look = crate::identify::Look::of(&run, &uid, &cfg);

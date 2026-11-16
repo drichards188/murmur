@@ -686,6 +686,24 @@ impl Policy {
         Ok(())
     }
 
+    /// Rules 33: each [`LOOSENABLE`] key this policy (a merged one, as logged) sets looser than
+    /// the code's defaults that its `loosened` does not name. A file names each loosening it
+    /// makes and its children inherit the names, so a merged policy names every loosening it
+    /// holds; replay holds a log of rules 33 to it (the logged copy is checked, not the files).
+    pub fn unnamed_loosenings(&self) -> Vec<&'static str> {
+        let [nominate, confidence] = LOOSENABLE;
+        let named = |k: &str| self.loosened.as_ref().is_some_and(|l| l.get(k).is_some_and(|why| !why.trim().is_empty()));
+        let mut out = Vec::new();
+        if self.identification.as_ref().is_some_and(crate::ident::IdentConfig::nominate_unconfirmed) && !named(nominate) {
+            out.push(nominate);
+        }
+        let safe = crate::engage::EngageRules::default().min_identity_confidence;
+        if self.rules.engage.as_ref().is_some_and(|e| e.min_identity_confidence < safe) && !named(confidence) {
+            out.push(confidence);
+        }
+        out
+    }
+
     /// The policy file at `path`, merged over the files it extends if it says `extends`.
     pub fn load(path: &Path) -> Result<Self, PolicyError> {
         Self::load_layers(path).map(|(p, _)| p)

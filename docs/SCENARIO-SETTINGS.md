@@ -289,3 +289,21 @@ of this work.
   may be declared by rule where it was flagged. A scenario that raises the bar to 0.625 or more makes every
   neutral call by classification a conflict for an act attributed to it; tying the two is left to
   S6/S7.
+- S3 as built: an own look is the vehicle's most specific (an identification over a
+  recognition, then the latest), its confidence the surest that look has been of its label (the
+  tracker's per-look figure, not the track's fused identity confidence: another vehicle's look
+  never ends the order). Other vehicles' looks are noted meanwhile only when they meet the
+  criteria, their words saying the confidence and sensor. The deadline counts
+  `identify_on_station_s` from the order's dispatch. The engagement check reads the level the
+  picture logs (`track_levels`, already in every engagement decision's logged picture), so nothing
+  new is logged for it; a track with no level there is "not classified" and refused. The scenario
+  runner gives a track named without a level its label's (`identify::label_level`) under rules 33
+  only, so the logs of rules 32 stay as they were; seven scenarios whose design rules 33 change
+  carry a `[since.33]` table (75: its target a fishing vessel, a kind, not the radar's
+  `small_craft`; 117: held on its conflict to the deadline; 108, 111, 112, 118, 144: the new
+  words), which the S7 flip writes into the files. `murmur-scenarios --rules 32` skips the two
+  scenarios (156, 157) whose policies rules 32 refuse. An identify order on a subsurface track is
+  still planned on a camera's reach, so on the physical model none is dispatched (no camera sees
+  under water): scenario 150 runs on the legacy reaches; a sonar-planned look is open. MCP
+  `get_intents` and `explain_intent` carry `identify_progress` under rules 33 only; the tools'
+  descriptions are unchanged (they enter the golden digests' tool lists), left for S4 or S7.

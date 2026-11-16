@@ -151,13 +151,17 @@ pub struct EngageRules {
     /// pass `target_declared` before an operator confirms it.
     #[serde(skip)]
     pub nominate_unconfirmed: bool,
+    /// Rules 33: `[watch] stale_s` (copied by [`RulesConfig::engage_rules`]; not a key of this
+    /// section): a track unseen this long is out of view ([`EngageRules::out_of_view_s`]).
+    #[serde(skip, default = "legacy_out_of_view_s")]
+    pub stale_s: f64,
     /// The track's identity confidence must be at least this (0..1). From rules 33 at least the
     /// policy's `[watch] bar` (the floor, checked at load and by replay).
     pub min_identity_confidence: f64,
     /// Rules 33 (policy schema 8): the identity level an engagement's target must show, which the
     /// floor holds at `identify` (a size class or a family at any confidence is not an
-    /// identification). Parsed, checked and logged; the check that reads it comes in stage S3 of
-    /// docs/SCENARIO-SETTINGS.md. Default `identify`.
+    /// identification; [`identity_check`] reads it with the bar from rules 33). Default
+    /// `identify`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_identity_level: Option<crate::identify::Level>,
     /// The track's existence confidence now must be at least this (0..1).
@@ -278,6 +282,10 @@ fn rules_version_now() -> u32 {
     crate::rules::RULES_VERSION
 }
 
+fn legacy_out_of_view_s() -> f64 {
+    crate::legacy::OUT_OF_VIEW_S
+}
+
 /// The effect radius of a nomination that names none, metres, when the policy sets none
 /// (`[rules.engage] default_effect_radius_m`, rules 33).
 pub const DEFAULT_EFFECT_RADIUS_M: f64 = 75.0;
@@ -386,6 +394,23 @@ impl EngageRules {
         self.rules_version >= crate::rules::LOST_CONTACT_SINCE
     }
 
+    /// Rules 33 ([`crate::rules::SCENARIO_SETTINGS_SINCE`]): the thresholds are the scenario's.
+    pub fn scenario_settings(&self) -> bool {
+        self.rules_version >= crate::rules::SCENARIO_SETTINGS_SINCE
+    }
+
+    /// Rules 33 ([`crate::rules::ENGAGE_IDENTITY_LEVEL_SINCE`]): the target's identity level is
+    /// checked against `min_identity_level` as well as its confidence against the bar.
+    pub fn identity_level(&self) -> bool {
+        self.rules_version >= crate::rules::ENGAGE_IDENTITY_LEVEL_SINCE
+    }
+
+    /// Rules 16: how long a track goes unseen before it is out of view, s: the policy's `[watch]
+    /// stale_s` from rules 33, [`OUT_OF_VIEW_S`] before.
+    pub fn out_of_view_s(&self) -> f64 {
+        if self.scenario_settings() { self.stale_s } else { crate::legacy::OUT_OF_VIEW_S }
+    }
+
     /// The decisions of rules 18 on ([`crate::rules::VELOCITY_SIGMA_SINCE`]): a protected track
     /// is predicted with its own velocity error ([`track_velocity_error`]).
     pub fn own_velocity_error(&self) -> bool {
@@ -485,6 +510,7 @@ impl Default for EngageRules {
         EngageRules {
             rules_version: crate::rules::RULES_VERSION,
             nominate_unconfirmed: false,
+            stale_s: crate::legacy::OUT_OF_VIEW_S,
             min_identity_confidence: 0.6,
             min_identity_level: None,
             min_track_confidence: 0.5,
@@ -1308,7 +1334,7 @@ pub fn behaving_acceptable(id: &str, t: Option<&TrackFacts>, now: Time, target: 
         return Err(format!("{id} is declared hostile: it is not protected"));
     }
     let unseen = secs(now.ms_since(t.last_seen_t)).max(0.0);
-    if unseen >= OUT_OF_VIEW_S {
+    if unseen >= ec.out_of_view_s() {
         return Err(format!(
             "{id} is out of view (no detection for {unseen:.0} s): only a track in view may be accepted as behaving now"
         ));
@@ -1353,7 +1379,7 @@ pub fn behaving_lapse(id: &str, a: &AcceptedBehaving, live: Option<&TrackFacts>,
         return lapse(LapseKind::Gone, format!("{id} is no longer in the picture"));
     };
     let unseen = secs(now.ms_since(t.last_seen_t)).max(0.0);
-    if unseen >= OUT_OF_VIEW_S {
+    if unseen >= ec.out_of_view_s() {
         return lapse(
             LapseKind::OutOfView,
             format!("{id} out of view (no detection for {unseen:.0} s): its course can no longer be checked"),
@@ -2655,7 +2681,7 @@ fn target_checks(
     };
     vec![
         declared_check(id, t, ec),
-        identity_check(id, t, ec),
+        identity_check(id, t, world.track_levels.get(id).map(|l| l.level), ec),
         recency_check(id, t, world, ec),
         uncertainty_check(id, t, ec, radius),
     ]
@@ -2741,7 +2767,15 @@ fn flags_list(flags: &[u64]) -> String {
     flags.iter().map(|f| format!("F-{f}")).collect::<Vec<_>>().join(", ")
 }
 
-fn identity_check(id: &str, t: &TrackFacts, ec: &EngageRules) -> CheckResult {
+/// target_identity: the track's identity at least as sure as the bar, its existence at least as
+/// sure as `min_track_confidence`. Rules 33 ([`crate::rules::ENGAGE_IDENTITY_LEVEL_SINCE`]): its
+/// identity at `min_identity_level` too (`level`: the tracker's, the picture's `track_levels`, which
+/// every engagement decision logs with the picture): a size class or a family at any confidence is
+/// not an identification ([`identity_check_by_level`]).
+fn identity_check(id: &str, t: &TrackFacts, level: Option<crate::identify::Level>, ec: &EngageRules) -> CheckResult {
+    if ec.identity_level() {
+        return identity_check_by_level(id, t, level, ec);
+    }
     let r = RuleId::TargetIdentity;
     let kind = t.identity.as_deref().unwrap_or("unclassified");
     if t.identity_confidence < ec.min_identity_confidence {
@@ -2774,6 +2808,62 @@ fn identity_check(id: &str, t: &TrackFacts, ec: &EngageRules) -> CheckResult {
             "{id} identity {kind} at {:.2} (>= {:.2}), existence {:.2} (>= {:.2}), {} source(s)",
             t.identity_confidence,
             ec.min_identity_confidence,
+            t.confidence,
+            ec.min_track_confidence,
+            t.sources.len()
+        ),
+    )
+}
+
+/// Rules 33: [`identity_check`] by the level as well as the bar, each named in its words: "T-0001
+/// identity small_air at 0.93 is a detection (its size class), not an identification: an
+/// engagement needs identification at 0.6 or more".
+fn identity_check_by_level(id: &str, t: &TrackFacts, level: Option<crate::identify::Level>, ec: &EngageRules) -> CheckResult {
+    let r = RuleId::TargetIdentity;
+    let kind = t.identity.as_deref().unwrap_or("unclassified");
+    let needs = ec.min_identity_level();
+    let bar = ec.min_identity_confidence;
+    let at = t.identity_confidence;
+    let needed = format!("an engagement needs {} at {bar} or more", needs.noun());
+    let shown = match level {
+        Some(crate::identify::Level::Detect) => "a detection (its size class)",
+        Some(crate::identify::Level::Recognise) => "a recognition (its family)",
+        Some(crate::identify::Level::Identify) => "an identification (its kind)",
+        None => "not classified",
+    };
+    if level.is_none_or(|l| l < needs) {
+        return check(
+            r,
+            None,
+            Outcome::Fail,
+            format!("{id} identity {kind} at {at:.2} is {shown}, not an {}: {needed}", needs.noun()),
+        );
+    }
+    if at < bar {
+        return check(
+            r,
+            None,
+            Outcome::Fail,
+            format!("{id} identity {kind} at {at:.2} is below the bar, {bar}: {needed}"),
+        );
+    }
+    if t.confidence < ec.min_track_confidence {
+        return check(
+            r,
+            None,
+            Outcome::Fail,
+            format!(
+                "{id} existence confidence {:.2} is below {:.2}",
+                t.confidence, ec.min_track_confidence
+            ),
+        );
+    }
+    check(
+        r,
+        None,
+        Outcome::Pass,
+        format!(
+            "{id} identity {kind} at {at:.2}, {shown}, at or above the bar of {bar}, existence {:.2} (>= {:.2}), {} source(s)",
             t.confidence,
             ec.min_track_confidence,
             t.sources.len()
@@ -3581,26 +3671,15 @@ pub fn track_regions(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Tr
     reach(t, effect_t, ec, false)
 }
 
-/// Rules 16: a track is out of view after this long without a detection, s, and from then on
-/// a keep-out counts it anywhere it could have got to since its last fix ([`out_of_view`]).
-/// The bridge's tracker calls a track stale at the same age (`tracks::model::STALE_S`: the
-/// console fades it) and drops it at 180 s (then a lost contact, [`crate::lost`]). Why 10 s:
-/// the sensing model draws a detection every second for every sensor in reach, with a
-/// probability of at least 0.47 within a sensor's nominal range and 0.94 within half of it, so
-/// ten misses in a row (at most 0.16%, and 10^-12 at half range) mean the sensors are not
-/// seeing the contact, not a gap between fixes; an AIS report comes every 2 to 10 s underway.
-/// Below it a contact that turned back unseen is at most about twice its speed times the gap
-/// off its course (100 m at 5 m/s), which the regions along its course already allow for
-/// (their acceleration-noise term is that size 40 s ahead); above it nothing bounds where it
-/// went but its speed. Until the drop the track is in the picture and the tracker would say
-/// nothing of a turn it has not seen (the review of murmur-533: a ferry steaming away, unseen
-/// 170 s, let a nomination through that the same ferry unseen 182 s, lost, blocked).
-pub const OUT_OF_VIEW_S: f64 = 10.0;
+/// Rules 16: a track is out of view after this long without a detection, s, under rules below 33
+/// ([`crate::legacy::OUT_OF_VIEW_S`], where the reasons are); from rules 33 the policy's `[watch]
+/// stale_s` ([`EngageRules::out_of_view_s`]).
+pub use crate::legacy::OUT_OF_VIEW_S;
 
 /// Rules 16: whether a track is out of view at `now`: no detection for [`OUT_OF_VIEW_S`]
-/// (never before rules 16).
+/// (never before rules 16; rules 33: the policy's `stale_s`, [`EngageRules::out_of_view_s`]).
 pub fn out_of_view(t: &TrackFacts, now: Time, ec: &EngageRules) -> bool {
-    ec.lost() && secs(now.ms_since(t.last_seen_t)) >= OUT_OF_VIEW_S
+    ec.lost() && secs(now.ms_since(t.last_seen_t)) >= ec.out_of_view_s()
 }
 
 /// Rules 16: how fast a track out of view may be going since its last fix, m/s, and how far
@@ -5045,7 +5124,7 @@ pub fn picture(
         }
         Some(t) => {
             picture_checks.push(declared_check(id, t, &ec));
-            picture_checks.push(reclass_check(id, &snap.track, t, &ec));
+            picture_checks.push(reclass_check(id, &snap.track, t, world.track_levels.get(id).map(|l| l.level), &ec));
             unseen.push(picture_checks.len());
             picture_checks.push(recency_check(id, t, world, &ec));
             picture_checks.push(deviation_check(id, snap, t, world, &ec));
@@ -5138,7 +5217,7 @@ fn effect_at(p: &EngagePreview, world: &WorldSnapshot, lead: Option<i64>, ec: &E
     }
 }
 
-fn reclass_check(id: &str, then: &TrackFacts, now: &TrackFacts, ec: &EngageRules) -> CheckResult {
+fn reclass_check(id: &str, then: &TrackFacts, now: &TrackFacts, level: Option<crate::identify::Level>, ec: &EngageRules) -> CheckResult {
     let r = RuleId::TargetIdentity;
     // any change counts, from unclassified to a kind too
     if then.identity != now.identity {
@@ -5153,7 +5232,7 @@ fn reclass_check(id: &str, then: &TrackFacts, now: &TrackFacts, ec: &EngageRules
             ),
         );
     }
-    identity_check(id, now, ec)
+    identity_check(id, now, level, ec)
 }
 
 fn deviation_check(

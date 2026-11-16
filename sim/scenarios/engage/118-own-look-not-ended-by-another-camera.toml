@@ -72,3 +72,11 @@ action = "track"
 id = "T-0001"
 level = "identify"
 level_by = ["hunter-1:eo_ir", "puma-1:eo_ir"]
+
+# Rules 33 (being built: docs/SCENARIO-SETTINGS.md): HUNTER 1's look is noted with its confidence
+# and sensor, and the end says the criteria.
+[since.33]
+expect_identify = [
+  "meanwhile: HUNTER 1 identified it as cargo_ship at 0.90 by its eo_ir meanwhile; PUMA 1 continues for its own look",
+  "ended done: track T-0001 identified as cargo_ship at 0.90 by PUMA 1's eo_ir (the bar is 0.6, identification by EO/IR); it agrees with its identity before, cargo_ship (identify); meanwhile HUNTER 1 identified it as cargo_ship; holding: no order to go back to",
+]

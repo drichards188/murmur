@@ -552,6 +552,33 @@ fn each_observer_keeps_its_own_latest_identification() {
     assert_eq!(own.len(), 2);
 }
 
+/// Rules 33: each observer's own look with its sensor, level and confidence (the surest that look
+/// has been of its label), its recognitions too; an identification is kept over a later
+/// recognition, and without recognitions the marks are rules 23's identifications exactly.
+#[test]
+fn each_observers_own_look_carries_its_sensor_level_and_confidence() {
+    let mut t = Track::new("T-0001".into(), 1, &look(1, SensorType::EoIr, Level::Recognise, "small_craft", 0.8), 1_000.0);
+    let marks = t.own_marks(true);
+    let m = marks.get(&1).expect("observer 1's look");
+    assert_eq!((m.label.as_str(), m.sensor, m.level, m.confidence, m.t), ("small_craft", SensorType::EoIr, Level::Recognise, 0.8, 1_000.0));
+    assert!(t.own_marks(false).is_empty(), "rules 23's: identifications only");
+    t.update(&look(1, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.11), 1_001.0);
+    t.update(&look(1, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.65), 1_002.0);
+    // a later recognition does not displace the identification
+    t.update(&look(1, SensorType::EoIr, Level::Recognise, "small_craft", 0.9), 1_003.0);
+    t.update(&look(2, SensorType::Sonar, Level::Identify, "small_fast_boat", 0.3), 1_004.0);
+    let marks = t.own_marks(true);
+    let m = marks.get(&1).expect("observer 1's look");
+    assert_eq!((m.label.as_str(), m.sensor, m.level, m.confidence, m.t), ("small_fast_boat", SensorType::EoIr, Level::Identify, 0.65, 1_002.0));
+    assert_eq!(marks.get(&2).map(|m| (m.sensor, m.confidence)), Some((SensorType::Sonar, 0.3)));
+    let own = t.own_identifications();
+    assert_eq!(own.get(&1), Some(&(1_002.0, "small_fast_boat".to_string())));
+    assert_eq!(own.len(), 2);
+    // AIS is never one of ours
+    t.update(&ais_report(3, "Cargo"), 1_005.0);
+    assert!(!t.own_marks(true).contains_key(&3));
+}
+
 /// [`look`] of a contact in `domain`.
 fn look_in(domain: Domain, uid: u64, sensor: SensorType, level: Level, label: &str, confidence: f64) -> Detection {
     Detection { domain, ..look(uid, sensor, level, label, confidence) }

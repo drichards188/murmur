@@ -91,3 +91,18 @@ action = "revoke_declaration"
 by = "op-3"
 track = "T-0001"
 note = "the act's author was west of the fishing boat; nobody saw it act"
+
+# Rules 33 (being built: docs/SCENARIO-SETTINGS.md): an engagement's target must be identified, a
+# kind, not a family: a small craft at 0.7 (the radar's recognition) is refused at the nomination.
+# The fishing boat is identified as one here (its kind, at 0.7), so the false declaration is
+# nominated and signed as designed, and the revocation stops it.
+[since.33]
+
+[[since.33.track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # inside ez-gate-west, holding
+affiliation = "unknown"
+truth = "neutral"
+identity = "fishing_vessel"
+identity_confidence = 0.7
+sources = ["usv-1:radar", "blade-1:eo_ir"]

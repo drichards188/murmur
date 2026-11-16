@@ -1,0 +1,53 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md): a boat identified as a small fast boat (its kind, the
+# identification level) at 0.55, below the bar. Declared hostile and nominated, it is rejected at
+# the identity check, which says the level it is at, its confidence and the bar it falls short of
+# (`T-0001 identity small_fast_boat at 0.55 is below the bar, 0.6: an engagement needs
+# identification at 0.6 or more`). Rules 32 refused it too, on the confidence alone (`--rules 32`).
+title = "An identification below the bar is refused, saying the bar"
+invariant = "target_identity"
+attack = "a target identified at 0.55"
+expect = "rejected"
+expect_rule = "target_identity"
+min_rules = 33
+end_s = 10
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.55
+sources = ["3:radar", "blade-1:eo_ir"]
+level = "identify"
+level_by = ["blade-1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

@@ -2536,8 +2536,35 @@ Rules versions:
   `sim/policy-v0-watch.toml`'s), and `Engine::start` refuses a policy whose settings differ from
   the standing ones but for the area (`EngineError::Policy`). Replay re-checks the floor on the
   logged copy (`Policy::validate`). Markers: a logged `watch`, `loosened`, `silent`,
-  `min_identity_level`, `default_effect_radius_m`, `policy_layers`. No decision reads the
-  settings yet (stages S3 and S4); `tests/scenario_settings.rs`.
+  `min_identity_level`, `default_effect_radius_m`, `policy_layers`; `tests/scenario_settings.rs`.
+  Stage S3 (this build), the engine reads them (`IDENTIFY_CRITERIA_SINCE`,
+  `ENGAGE_IDENTITY_LEVEL_SINCE`, both 33). An identify order ends identified only on the vehicle
+  sent's own look (`identify::OwnLook`, from rules 33 with its `sensor`, `level` and `confidence`,
+  its recognitions too: the bridge's `Track::own_marks`, logged with the picture so its hash covers
+  them, dropped with the recognitions from the facts of older rules) that meets its track's
+  domain criteria (`identify::shortfall`: the level at or above the domain's, one of its sensors,
+  never AIS, the confidence at or above the bar, no identity conflict). A first naming that falls
+  short is logged once a kind as `identify.step` `named` ("PUMA 1 named it small_fast_boat at
+  0.11, not yet identified (the bar is 0.6); it goes on") and the order goes on; another vehicle's
+  look is noted meanwhile only when it meets them (its confidence and sensor said). The end says
+  the look's confidence and the criteria ("track T-0007 identified as small_fast_boat at 0.71 by
+  PUMA 1's eo_ir (the bar is 0.6, identification by EO/IR)"), the timeout the vehicle's best look,
+  and the deadline counts `identify_on_station_s`. An engagement's `target_identity` requires the
+  track's identity level (the picture's `track_levels`, which every engagement decision logs) at
+  `min_identity_level` as well as the bar, and says the level, the confidence and the bar ("T-0001
+  identity small_air at 0.93 is a detection (its size class), not an identification: an
+  engagement needs identification at 0.6 or more"). Out of view is `watch.stale_s`
+  (`EngageRules::out_of_view_s`), a silent vehicle's drift `[rules.silent] drift_mps`
+  (`RulesConfig::silent_drift`). Under rules 32 every word and decision is as it was: the old
+  constants live in `legacy` (`IDENTIFY_ON_STATION_S`, `OUT_OF_VIEW_S`, the drifts), re-exported
+  under their old names. Markers: an own look's `"sensor":`, a `"step":"named"`; replay checks a
+  logged policy of rules 33 names each loosening it holds (`Policy::unnamed_loosenings`). The
+  scenario runner gives a track its file names without a level its label's
+  (`identify::label_level`) from rules 33, and an own look its sensor (after the colon), level and
+  the track's identity confidence; a scenario whose design rules 33 change says so in `[since.33]`
+  (75, 108, 111, 112, 117, 118, 144). MCP `get_intents` and `explain_intent` show an identify
+  order's `identify_progress` (`identify::progress`, read-only) from rules 33. Scenarios 149-157,
+  tampers `edit_own_confidence`, `drop_loosened`; `tests/rules33.rs`.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

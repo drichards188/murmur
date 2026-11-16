@@ -202,6 +202,15 @@ pub struct Scenario {
     /// overrides it either way. Absent: the current rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_rules: Option<u32>,
+    /// What changes in the scenario when it decides under newer rules, by the version they start
+    /// at (`[since.33]`): any of its own keys, each replacing the file's whole (a list too: the
+    /// designed ends, `expect_identify`, its `track`s), applied in version order to a run that
+    /// decides under that version or a newer one. For a scenario whose design a rules version
+    /// changes, while that version is built behind [`crate::rules::RULES_NEWEST`]: a run of the
+    /// current rules reads the file as it is, so its log is as it was; the version's last stage
+    /// writes them into the file.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub since: BTreeMap<String, toml::Table>,
     /// The sensing model's reaches the scenario is designed for (bd murmur-1u4): `physical`, the
     /// catalog's `physical_reach_m` (rules 31: a camera's reaches by size class among them),
     /// whatever [`RunOptions::reaches`] says; `legacy`, `range_m` alone. Absent: the runner's.
@@ -1320,6 +1329,9 @@ struct TrackSim {
     truth_aff: Affiliation,
     /// rules 21: its identity's level (the world's `track_levels`)
     level: Option<crate::identify::TrackLevel>,
+    /// rules 33: with no level given, its identity's level as its label says it
+    /// ([`crate::identify::label_level`]), as the bridge's tracker always gives a named track one
+    derive_level: bool,
 }
 
 fn is_zero(x: &f64) -> bool {
@@ -1364,6 +1376,41 @@ impl Rng {
     }
 }
 
+/// The rules version `sc` decides under with `opts`: `--rules`, else its `min_rules` when newer
+/// than the current rules.
+fn deciding_rules(sc: &Scenario, opts: &RunOptions) -> u32 {
+    opts.rules_version
+        .unwrap_or_else(|| sc.min_rules.map_or(crate::rules::RULES_VERSION, |v| v.max(crate::rules::RULES_VERSION)))
+}
+
+/// `sc` as a run under rules `version` reads it: each `[since.N]` with N at most `version`
+/// applied in turn, its keys replacing the file's.
+fn since_rules(sc: &Scenario, version: u32) -> Result<std::borrow::Cow<'_, Scenario>, String> {
+    let mut due: Vec<(u32, &toml::Table)> = Vec::new();
+    for (k, t) in &sc.since {
+        let v: u32 = k.parse().map_err(|_| format!("since.{k}: a rules version"))?;
+        if v <= version {
+            due.push((v, t));
+        }
+    }
+    if due.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(sc));
+    }
+    due.sort_by_key(|(v, _)| *v);
+    let mut table = toml::Table::try_from(sc).map_err(|e| e.to_string())?;
+    table.remove("since");
+    for (v, t) in due {
+        for (key, value) in t {
+            if key == "since" {
+                return Err(format!("since.{v}: a since inside a since"));
+            }
+            table.insert(key.clone(), value.clone());
+        }
+    }
+    let out: Scenario = toml::Value::Table(table).try_into().map_err(|e: toml::de::Error| e.to_string())?;
+    Ok(std::borrow::Cow::Owned(out))
+}
+
 /// Play a scenario. `file` is only for the result.
 pub fn run(
     sc: &Scenario,
@@ -1372,6 +1419,8 @@ pub fn run(
     opts: &RunOptions,
 ) -> Result<ScenarioResult, ScenarioError> {
     let setup = |e: String| ScenarioError::Setup(file.to_string(), e);
+    // what changes in it under the rules it decides under
+    let sc = &*since_rules(sc, deciding_rules(sc, opts)).map_err(setup)?;
     let rel = |p: &Option<String>, d: &str| root.join(p.as_deref().unwrap_or(d));
     let (mut policy, policy_layers) = Policy::load_layers(&rel(&sc.policy, "sim/policy.toml")).map_err(|e| setup(e.to_string()))?;
     // the rules being built, when the scenario is designed for them (and nothing asks otherwise)
@@ -1577,6 +1626,8 @@ pub fn run(
             sim.facts.first_seen_t = None;
             sim.facts.mean_velocity_mps = None;
         }
+        // rules 33: a track named without a level is at its label's (the engagement's check reads it)
+        sim.derive_level = engine.policy().rules.scenario_settings();
         tracks.insert(t.id.clone(), sim);
     }
     // rules 9: a track the file lists as declared is declared through the engine's ledger,
@@ -1876,6 +1927,10 @@ pub fn run(
                         // rules 23: another vehicle's identification meanwhile; the order goes on
                         IdentifyEvent::Meanwhile { intent, detail, .. } => {
                             extra.identify_reports.push(format!("t={s} {intent} meanwhile: {detail}"));
+                        }
+                        // rules 33: the vehicle's own naming below the criteria; the order goes on
+                        IdentifyEvent::Named { intent, detail, .. } => {
+                            extra.identify_reports.push(format!("t={s} {intent} named: {detail}"));
                         }
                     }
                 }
@@ -2553,27 +2608,43 @@ fn track_sim(t: &TrackDef) -> TrackSim {
             // rules 22: our own sensors identified it at its last detection, if one of them did
             own_t: (level == crate::identify::Level::Identify && t.level_by.iter().any(|b| !b.ends_with("ais"))).then_some(seen),
             conflict: None,
-            // rules 23: and which of our vehicles did, as what
-            own: own_looks(level, &t.level_by, seen, t.identity.as_deref(), BTreeMap::new()),
+            // rules 23: and which of our vehicles did, as what (rules 33: how sure, by which sensor)
+            own: own_looks(level, &t.level_by, seen, t.identity.as_deref(), t.identity_confidence, BTreeMap::new()),
         }),
+        derive_level: false,
         alt_frozen: t.alt_age_s > 0.0,
         truth_aff: t.truth.unwrap_or(t.affiliation),
     }
 }
 
 /// Rules 23: `before` with the identifications `by` gives at `t` (each label but an AIS one, its
-/// vehicle the uid before the colon), as `kind`, when `level` is identification.
+/// vehicle the uid before the colon), as `kind`, when `level` is identification. Rules 33: its
+/// recognitions too, each look with its sensor (the label's after the colon), its level and
+/// `confidence` (the track's identity confidence then), a vehicle's look at a higher level kept
+/// over one at a lower, as the bridge's tracker keeps them; the engine drops the recognitions and
+/// the details under older rules, which leaves what they always had.
 fn own_looks(
     level: crate::identify::Level,
     by: &[String],
     t: Time,
     kind: Option<&str>,
+    confidence: f64,
     mut before: BTreeMap<String, crate::identify::OwnLook>,
 ) -> BTreeMap<String, crate::identify::OwnLook> {
-    if level == crate::identify::Level::Identify {
+    if level >= crate::identify::Level::Recognise {
         for b in by.iter().filter(|b| !b.ends_with("ais")) {
-            let who = b.split(':').next().unwrap_or(b).to_string();
-            before.insert(who, crate::identify::OwnLook { t, kind: kind.map(str::to_string) });
+            let (who, sensor) = b.split_once(':').unwrap_or((b, ""));
+            if before.get(who).and_then(|o| o.level).is_some_and(|l| l > level) {
+                continue;
+            }
+            let look = crate::identify::OwnLook {
+                t,
+                kind: kind.map(str::to_string),
+                sensor: (!sensor.is_empty()).then(|| sensor.to_string()),
+                level: Some(level),
+                confidence: Some(confidence),
+            };
+            before.insert(who.to_string(), look);
         }
     }
     before
@@ -2731,12 +2802,30 @@ fn snapshot(
         let age = now.ms_since(f.last_seen_t) as f64 / 1000.0;
         f.pos_sigma_m += engage::sigma_growth(&f) * age.max(0.0);
         f.confidence *= (-age.max(0.0) / 60.0).exp();
-        w.tracks.insert(id.clone(), f);
+        w.tracks.insert(id.clone(), f.clone());
         if let Some(a) = &tr.ais {
             w.track_ais.insert(id.clone(), a.clone());
         }
-        if let Some(l) = &tr.level {
-            w.track_levels.insert(id.clone(), l.clone());
+        match &tr.level {
+            Some(l) => {
+                w.track_levels.insert(id.clone(), l.clone());
+            }
+            // rules 33: a track the file names without a level is at its label's
+            None if tr.derive_level => {
+                if let Some(level) = f.identity.as_deref().and_then(crate::identify::label_level) {
+                    w.track_levels.insert(
+                        id.clone(),
+                        crate::identify::TrackLevel {
+                            level,
+                            by: Vec::new(),
+                            own_t: None,
+                            conflict: None,
+                            own: BTreeMap::new(),
+                        },
+                    );
+                }
+            }
+            None => {}
         }
     }
     w
@@ -3512,6 +3601,10 @@ fn act(
                     level_by: Vec::new(),
                 })
             });
+            // rules 33: a track a step makes without a level is at its label's
+            if new {
+                t.derive_level = engine.policy().rules.scenario_settings();
+            }
             if let Some(a) = ais {
                 t.ais = Some(a.clone());
             }
@@ -3520,11 +3613,12 @@ fn act(
                 // rules 23: each vehicle's own identification, kept until another replaces it
                 let before = t.level.as_ref().map(|l| l.own.clone()).unwrap_or_default();
                 let kind = identity.clone().or_else(|| t.facts.identity.clone());
+                let confidence = identity_confidence.unwrap_or(t.facts.identity_confidence);
                 t.level = Some(crate::identify::TrackLevel {
                     level: *l,
                     // rules 22: our own sensors identify it now, if one of them does
                     own_t: (*l == crate::identify::Level::Identify && by.iter().any(|b| !b.ends_with("ais"))).then_some(now),
-                    own: own_looks(*l, &by, now, kind.as_deref(), before),
+                    own: own_looks(*l, &by, now, kind.as_deref(), confidence, before),
                     by,
                     conflict: level_conflict.clone(),
                 });
@@ -4826,6 +4920,48 @@ fn edit_pictures(
     Ok(done)
 }
 
+/// Rules 33: [`edit_pictures`] for the pictures' identity levels: `edit` changes one picture's
+/// `track_levels` and says whether it did; each `tracks.picture` edited gets its hash recomputed
+/// and every reference to it rewritten. Whether any changed.
+fn edit_levels(
+    events: &mut [crate::audit::Event],
+    mut edit: impl FnMut(&mut BTreeMap<String, crate::identify::TrackLevel>) -> bool,
+) -> Result<bool, String> {
+    let mut renamed: BTreeMap<String, String> = BTreeMap::new();
+    let mut done = false;
+    for e in events.iter_mut() {
+        if let EventBody::TracksPicture {
+            sha256,
+            tracks,
+            track_ais,
+            track_levels,
+        } = &mut e.body
+            && edit(track_levels)
+        {
+            let h = crate::world::picture_hash(tracks, track_ais, track_levels).map_err(|err| err.to_string())?;
+            renamed.insert(std::mem::replace(sha256, h.clone()), h);
+            done = true;
+        }
+    }
+    for e in events.iter_mut() {
+        for slot in e.body.pictures_mut() {
+            match slot.sha256 {
+                Some(h) => {
+                    if let Some(new) = renamed.get(h.as_str()) {
+                        *h = new.clone();
+                    }
+                }
+                None => {
+                    if let Some(levels) = slot.track_levels {
+                        done |= edit(levels);
+                    }
+                }
+            }
+        }
+    }
+    Ok(done)
+}
+
 /// A log attack's result.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tampered {
@@ -4936,6 +5072,37 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
         }
         if !done {
             return Err("no sensor reach under the conditions in any decision's inputs".into());
+        }
+        return rechained(&mut events);
+    }
+    // rules 33: the identify orders' own looks made surer or less sure than they were (no
+    // engagement needed): each look's confidence mirrored (c to 1 - c) in every picture, hashes
+    // recomputed, so only recomputing the steps that read them catches it
+    if kind == "edit_own_confidence" {
+        let done = edit_levels(&mut events, |levels| {
+            let mut any = false;
+            for o in levels.values_mut().flat_map(|l| l.own.values_mut()) {
+                if let Some(c) = o.confidence.as_mut() {
+                    *c = 1.0 - *c;
+                    any = true;
+                }
+            }
+            any
+        })?;
+        if !done {
+            return Err("no own look with a confidence in any picture".into());
+        }
+        return rechained(&mut events);
+    }
+    // rules 33: the policy's named loosenings dropped from run.started, as if the policy held the
+    // standing values (no engagement needed)
+    if kind == "drop_loosened" {
+        let mut done = false;
+        if let Some(EventBody::RunStarted { policy, .. }) = events.first_mut().map(|e| &mut e.body) {
+            done = policy.loosened.take().is_some();
+        }
+        if !done {
+            return Err("no `loosened` in the logged policy".into());
         }
         return rechained(&mut events);
     }
@@ -5824,4 +5991,28 @@ fn rechained(events: &mut [crate::audit::Event]) -> Result<String, String> {
         out.push('\n');
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `[since.N]` table reads back every scenario as it was, its own keys aside: the round trip
+    /// through TOML it takes loses nothing of any scenario that ships.
+    #[test]
+    fn a_since_table_reads_every_scenario_back_whole() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sim/scenarios/engage");
+        let mut n = 0;
+        for f in files(&dir).expect("the scenarios") {
+            let mut sc = load(&f).expect("a scenario");
+            sc.since.clear();
+            let want = serde_json::to_value(&sc).expect("json");
+            sc.since.insert("1".into(), toml::Table::new());
+            let got = since_rules(&sc, 1).expect("read back");
+            assert!(matches!(got, std::borrow::Cow::Owned(_)), "{}", f.display());
+            assert_eq!(serde_json::to_value(&*got).expect("json"), want, "{}", f.display());
+            n += 1;
+        }
+        assert!(n >= 157, "{n} scenarios");
+    }
 }

@@ -181,7 +181,9 @@ pub fn lost_link_fact(v: &Vehicle, autopilot: Option<AutopilotKind>) -> Option<F
 /// platform and no facts: an engagement's friendly keep-out can't clear a vehicle it knows
 /// nothing about (fail closed). With `node_loss` (rules 30, the decision loop's
 /// `RulesConfig::node_loss`) each vehicle's facts carry its own lost-link failsafe
-/// ([`lost_link_fact`]); without it that fact stays out, as before.
+/// ([`lost_link_fact`]); without it that fact stays out, as before. With `own_details` (rules 33,
+/// `RulesConfig::identify_criteria`) each vehicle's own look at a track carries its sensor, level
+/// and confidence (`Tracks::levels`); without, as before.
 pub fn build(
     world: &World,
     catalog: &Catalog,
@@ -189,6 +191,7 @@ pub fn build(
     t: Time,
     tracks: Option<&crate::tracks::Tracks>,
     node_loss: bool,
+    own_details: bool,
 ) -> WorldSnapshot {
     let now = clock::mono();
     let mut snap = WorldSnapshot::new(t);
@@ -237,8 +240,8 @@ pub fn build(
     if let Some(tracks) = tracks {
         snap.tracks = tracks.facts(t.0 as f64 / 1000.0);
         snap.track_ais = tracks.ais();
-        // rules 21: what ends an identify order
-        snap.track_levels = tracks.levels();
+        // rules 21: what ends an identify order (rules 33: each own look's details)
+        snap.track_levels = tracks.levels(own_details);
     }
     snap
 }

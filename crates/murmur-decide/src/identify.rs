@@ -42,6 +42,20 @@
 //! only on an identification by the vehicle sent, with its own sensors, made after the order went
 //! out ([`TrackLevel::own`]). Another vehicle's identification meanwhile is logged as a step
 //! ([`Step::Meanwhile`], [`meanwhile_due`]) and said in the outcome; the order goes on.
+//!
+//! Rules 33 ([`crate::rules::IDENTIFY_CRITERIA_SINCE`], docs/SCENARIO-SETTINGS.md; the F8 boat
+//! whose order ended at its first naming at 0.11 while the brief counted 0.6): "identified" is the
+//! scenario's. The look ends identified only on the vehicle sent's own look ([`OwnLook`]: its
+//! sensor, level and confidence) that meets its track's domain criteria in the policy's `[watch]`
+//! ([`crate::watch::DomainCriteria`]): the level at or above the domain's, one of the domain's
+//! sensors (AIS never: an identify order is for a look of our own), the confidence at or above the
+//! bar, and no identity conflict on the track. A first naming that falls short is logged once for
+//! each kind ([`Step::Named`]: "PUMA 1 named it small_fast_boat at 0.11, not yet identified (the
+//! bar is 0.6); it goes on") and the order goes on; another vehicle's look is noted meanwhile only
+//! when it meets them. The end says the look's confidence and the criteria ("track T-0007
+//! identified as small_fast_boat at 0.71 by PUMA 1's eo_ir (the bar is 0.6, identification by
+//! EO/IR)"), the timeout the vehicle's best look, and the time on station is the policy's
+//! `identify_on_station_s`. Under older rules every word stays as it was ([`crate::legacy`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -54,6 +68,7 @@ use crate::ids::{IntentId, Uid};
 use crate::intent::{IntentSpec, Task, TaskKind};
 use crate::rules::{CheckResult, Outcome, RuleId, RulesConfig};
 use crate::time::Time;
+use crate::watch::WatchSettings;
 use crate::world::{TrackFacts, VehicleFacts, WorldSnapshot};
 
 /// The share of a camera's detection reach out to which it identifies [E]: the physical model's
@@ -76,10 +91,10 @@ pub const STANDOFF_SHARE: f64 = 0.7;
 pub const RECENTRE_SHARE: f64 = 0.5;
 pub const RECENTRE_MIN_M: f64 = 100.0;
 
-/// Time on station before an identify order gives up, after the time to get there [E]: a camera
-/// takes seconds a look (docs/SENSING.md: 3.4 s to detect, 1 s more to identify, a second to
-/// settle after each slew), so five minutes on station is many looks.
-pub const ON_STATION_S: f64 = 300.0;
+/// Time on station before an identify order gives up, after the time to get there, under rules
+/// below 33 ([`crate::legacy::IDENTIFY_ON_STATION_S`], where the reasons are); from rules 33 the
+/// policy's `[watch] identify_on_station_s`.
+pub use crate::legacy::IDENTIFY_ON_STATION_S as ON_STATION_S;
 
 /// A cruise speed below this (or none) counts as this for the time to get there, m/s.
 const MIN_TRANSIT_MPS: f64 = 1.0;
@@ -102,12 +117,21 @@ impl Level {
             Level::Identify => "identify",
         }
     }
+
+    /// Rules 33: the level as a noun in an identify order's or an engagement check's words.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Level::Detect => "detection",
+            Level::Recognise => "recognition",
+            Level::Identify => "identification",
+        }
+    }
 }
 
 /// Rules 21: a track's identity level as the bridge's tracker settles it, and the sensors whose
 /// looks reached identification, as `"<uid>:<sensor>"` (`"ais"` for an AIS identity's kind).
 /// [`WorldSnapshot::track_levels`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrackLevel {
     pub level: Level,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -120,18 +144,43 @@ pub struct TrackLevel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<String>,
     /// Rules 23: each of our vehicles' latest identification of it with its own sensors (not
-    /// AIS), by the vehicle's uid: when, and the kind it gave.
+    /// AIS), by the vehicle's uid: when, and the kind it gave. Rules 33: its recognitions too
+    /// (a family names it), each with its sensor, level and confidence ([`OwnLook`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub own: BTreeMap<String, OwnLook>,
 }
 
-/// Rules 23: one vehicle's latest identification of a track by its own sensors.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Rules 23: one vehicle's latest identification of a track by its own sensors. Rules 33
+/// ([`crate::rules::IDENTIFY_CRITERIA_SINCE`]): its most specific look (an identification over a
+/// recognition, then the latest), with the sensor that made it, its level and its confidence, what
+/// an identify order's end is judged on ([`outcome`]). The three are filled and logged (with the
+/// picture, so its hash covers them) from rules 33 only, and dropped from the facts of older
+/// rules, so their pictures hash as they always did.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OwnLook {
     pub t: Time,
-    /// The kind it identified it as (none where the tracker can't say).
+    /// The kind it identified it as (none where the tracker can't say); rules 33, the family of a
+    /// recognition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Rules 33: the sensor that made the look (`eo_ir`, `sonar`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<String>,
+    /// Rules 33: the look's level (`recognise`, `identify`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<Level>,
+    /// Rules 33: how sure the look is of its kind (0..1), the surest it has been of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+}
+
+impl OwnLook {
+    /// The look as rules below 33 log it: without its details.
+    pub fn without_details(&mut self) {
+        self.sensor = None;
+        self.level = None;
+        self.confidence = None;
+    }
 }
 
 /// The orbit an identify order is flown as, and what it rests on.
@@ -218,8 +267,18 @@ pub enum Step {
         reason: String,
     },
     /// Rules 23: another of our vehicles identified the track after the order went out; the order
-    /// goes on for its own vehicle's look. Logged once for each vehicle and kind.
+    /// goes on for its own vehicle's look. Logged once for each vehicle and kind. Rules 33: a look
+    /// that meets the track's criteria.
     Meanwhile {
+        by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<String>,
+        detail: String,
+    },
+    /// Rules 33: the vehicle sent named the track with a look of its own that falls short of the
+    /// criteria (below the bar, a recognition where identification counts, a sensor that does not,
+    /// an identity in conflict); the order goes on. Logged once for each kind it names.
+    Named {
         by: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<String>,
@@ -261,6 +320,10 @@ pub struct Run {
     pub before: Option<String>,
     /// Rules 23: the other vehicles' identifications noted meanwhile, in order.
     pub meanwhile: Vec<Noted>,
+    /// Rules 33: the vehicle sent's namings below the criteria noted so far ([`Step::Named`]), in
+    /// order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub named: Vec<Noted>,
 }
 
 /// Rules 23: another vehicle's identification an identify order noted meanwhile: by whom (its
@@ -272,9 +335,15 @@ pub struct Noted {
     pub t: Time,
 }
 
-/// The order's deadline: its dispatch, the time to get there, then [`ON_STATION_S`].
-pub fn deadline(dispatched_t: Time, plan: &Plan) -> Time {
-    dispatched_t.plus_ms(((plan.transit_s + ON_STATION_S) * 1000.0).round() as i64)
+/// The order's deadline: its dispatch, the time to get there, then its time on station: rules 33,
+/// the policy's `[watch] identify_on_station_s`, before them [`ON_STATION_S`].
+pub fn deadline(dispatched_t: Time, plan: &Plan, cfg: &RulesConfig) -> Time {
+    let on_station = if cfg.identify_criteria() {
+        cfg.watch().identify_on_station_s
+    } else {
+        crate::legacy::IDENTIFY_ON_STATION_S
+    };
+    dispatched_t.plus_ms(((plan.transit_s + on_station) * 1000.0).round() as i64)
 }
 
 /// The kinds an identify goes back to afterwards: the vehicle tasks one vehicle can be sent
@@ -376,6 +445,22 @@ fn cameras(v: &VehicleFacts) -> impl Iterator<Item = &SensorFact> {
 /// The words ESM's detections name a contact's domain with (the bridge's `tracks::model`
 /// `domain_label`), three of them a family's too.
 const ESM_DOMAIN_WORDS: [&str; 4] = ["aircraft", "vessel", "ground_vehicle", "submerged"];
+
+/// Rules 33: the level a picture's label says (a size class's name a detection's, a family's a
+/// recognition's, a kind's an identification's); none for a label of none of them. The scenario
+/// runner gives a track the file names without a level this one, as the bridge's tracker gives
+/// every named track its own.
+pub fn label_level(label: &str) -> Option<Level> {
+    if SizeClass::named(label).is_some() {
+        Some(Level::Detect)
+    } else if SizeClass::of_family(label).is_some() {
+        Some(Level::Recognise)
+    } else if SizeClass::of_kind(label).is_some() {
+        Some(Level::Identify)
+    } else {
+        None
+    }
+}
 
 /// Rules 31: the size class the picture shows `track` as, from its shown identity read at its
 /// level (`level`, the tracker's [`TrackLevel`]): at detection a size class's name, ESM's words
@@ -588,23 +673,29 @@ pub fn identity_now(track: &str, world: &WorldSnapshot) -> Option<String> {
 
 /// Rules 22 and 23: what a look is judged against: when the order went out and the track's
 /// identity then; rules 23, the vehicle sent (only its own identification ends the look) and the
-/// other vehicles' identifications noted meanwhile.
+/// other vehicles' identifications noted meanwhile; rules 33, the scenario's criteria (`criteria`,
+/// the policy's `[watch]`) and the vehicle sent's namings below them noted so far.
 #[derive(Clone, Copy, Debug)]
 pub struct Look<'a> {
     pub sent_t: Time,
     pub before: Option<&'a str>,
     pub own: Option<&'a Uid>,
     pub meanwhile: &'a [Noted],
+    pub criteria: Option<&'a crate::watch::WatchSettings>,
+    pub named: &'a [Noted],
 }
 
 impl<'a> Look<'a> {
-    /// The look of `run` (none before rules 22), by `uid` from rules 23.
-    pub fn of(run: &'a Run, uid: &'a Uid, cfg: &RulesConfig) -> Option<Look<'a>> {
+    /// The look of `run` (none before rules 22), by `uid` from rules 23, against the scenario's
+    /// criteria from rules 33.
+    pub fn of(run: &'a Run, uid: &'a Uid, cfg: &'a RulesConfig) -> Option<Look<'a>> {
         Some(Look {
             sent_t: run.sent_t?,
             before: run.before.as_deref(),
             own: cfg.identify_own_look().then_some(uid),
             meanwhile: &run.meanwhile,
+            criteria: cfg.identify_criteria().then(|| cfg.watch()),
+            named: &run.named,
         })
     }
 }
@@ -635,10 +726,28 @@ pub fn name(world: &WorldSnapshot, uid: &str) -> String {
 /// Rules 23: the other vehicles' identifications of `track` on `world` made after `sent_t` that
 /// are not noted yet (a vehicle noted again only when it gives another kind), in uid order.
 pub fn meanwhile_due(track: &str, world: &WorldSnapshot, sent: &Uid, sent_t: Time, noted: &[Noted]) -> Vec<(String, Option<String>)> {
+    meanwhile_due_by(track, world, sent, sent_t, noted, None)
+}
+
+/// [`meanwhile_due`]; rules 33 (`criteria`, the policy's `[watch]`): only the looks that meet the
+/// track's domain criteria ([`shortfall`]), as the vehicle sent's own must to end the order.
+pub fn meanwhile_due_by(
+    track: &str,
+    world: &WorldSnapshot,
+    sent: &Uid,
+    sent_t: Time,
+    noted: &[Noted],
+    criteria: Option<&WatchSettings>,
+) -> Vec<(String, Option<String>)> {
     let Some(l) = world.track_levels.get(track) else { return Vec::new() };
+    let domain = world.tracks.get(track).map(|t| t.domain);
     l.own
         .iter()
         .filter(|(by, o)| by.as_str() != sent.as_str() && o.t > sent_t)
+        .filter(|(_, o)| match criteria {
+            None => true,
+            Some(w) => domain.is_some_and(|d| shortfall(o, d, w, l.conflict.as_deref()).is_none()),
+        })
         .filter(|(by, o)| !noted.iter().any(|n| n.by == **by && n.kind == o.kind))
         .map(|(by, o)| (by.clone(), o.kind.clone()))
         .collect()
@@ -655,6 +764,31 @@ pub fn meanwhile_detail(world: &WorldSnapshot, by: &str, kind: Option<&str>, sen
     )
 }
 
+/// [`meanwhile_detail`]; rules 33 (`criteria`): the look's confidence and sensor too ("HUNTER 1
+/// identified it as cargo_ship at 0.90 by its eo_ir meanwhile; PUMA 1 continues for its own
+/// look").
+pub fn meanwhile_detail_by(
+    world: &WorldSnapshot,
+    track: &str,
+    by: &str,
+    kind: Option<&str>,
+    sent: &Uid,
+    criteria: Option<&WatchSettings>,
+) -> String {
+    let look = world.track_levels.get(track).and_then(|l| l.own.get(by));
+    match (criteria, look) {
+        (Some(_), Some(o)) => format!(
+            "{} identified it{} at {}{} meanwhile; {} continues for its own look",
+            name(world, by),
+            kind.map(|k| format!(" as {k}")).unwrap_or_default(),
+            confidence_words(o),
+            sensor_words(o),
+            name(world, sent.as_str())
+        ),
+        _ => meanwhile_detail(world, by, kind, sent),
+    }
+}
+
 /// Rules 23: the outcome's note of the identifications made meanwhile ("; meanwhile HUNTER 1
 /// identified it as cargo_ship"), empty when none.
 fn meanwhile_note(world: &WorldSnapshot, noted: &[Noted]) -> String {
@@ -668,12 +802,274 @@ fn meanwhile_note(world: &WorldSnapshot, noted: &[Noted]) -> String {
     format!("; meanwhile {}", each.join(", "))
 }
 
+/// Rules 33: why a vehicle's own look does not identify a track of `domain` by the scenario's
+/// criteria (`w`, the policy's `[watch]`; `conflict`, the tracker's identity conflict on it), in
+/// the order checked: none when it does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shortfall {
+    /// A level below the domain's (a recognition where identification counts).
+    Level,
+    /// Not one of the domain's sensors (AIS never counts: an identify order is for our own look).
+    Sensor,
+    /// A confidence below the bar.
+    Bar,
+    /// The tracker's identity conflict on the track.
+    Conflict(String),
+}
+
+/// Rules 33: whether `o` meets the domain criteria `w` gives a track of `domain`: none when it
+/// does, else the first criterion it falls short of ([`Shortfall`]). A look without its details
+/// (a picture of older rules) meets nothing.
+pub fn shortfall(o: &OwnLook, domain: crate::catalog::Domain, w: &WatchSettings, conflict: Option<&str>) -> Option<Shortfall> {
+    let c = w.domain.get(domain);
+    if o.level.is_none_or(|l| l < c.level) {
+        return Some(Shortfall::Level);
+    }
+    let sensor = o.sensor.as_deref().unwrap_or_default();
+    if sensor == "ais" || !c.sensors.iter().any(|s| s == sensor) {
+        return Some(Shortfall::Sensor);
+    }
+    if o.confidence.is_none_or(|x| x < w.bar) {
+        return Some(Shortfall::Bar);
+    }
+    conflict.map(|c| Shortfall::Conflict(c.to_string()))
+}
+
+/// Rules 33: a sensor type as the words name it.
+fn sensor_name(s: &str) -> &str {
+    match s {
+        "eo_ir" => "EO/IR",
+        "esm" => "ESM",
+        other => other,
+    }
+}
+
+/// Rules 33: what identifies a contact of `domain` by `w`, in words: "identification by EO/IR",
+/// "recognition by sonar" (AIS never ends an identify order, so it is not named).
+pub fn criterion_words(w: &WatchSettings, domain: crate::catalog::Domain) -> String {
+    let c = w.domain.get(domain);
+    let own: Vec<&str> = c.sensors.iter().filter(|s| s.as_str() != "ais").map(|s| sensor_name(s)).collect();
+    let by = match own.split_last() {
+        None => "no sensor of ours (AIS alone, which never ends an identify order)".to_string(),
+        Some((one, [])) => (*one).to_string(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+    };
+    format!("{} by {by}", c.level.noun())
+}
+
+/// Rules 33: the scenario's criteria for a contact of `domain`, in words: "the bar is 0.6,
+/// identification by EO/IR".
+pub fn criteria_words(w: &WatchSettings, domain: crate::catalog::Domain) -> String {
+    format!("the bar is {}, {}", w.bar, criterion_words(w, domain))
+}
+
+/// Rules 33: a look's confidence in words ("0.11").
+fn confidence_words(o: &OwnLook) -> String {
+    o.confidence.map_or_else(|| "a confidence not known".to_string(), |c| format!("{c:.2}"))
+}
+
+/// Rules 33: a look's level with its article ("a recognition").
+fn level_article(o: &OwnLook) -> &'static str {
+    match o.level {
+        Some(Level::Detect) => "a detection",
+        Some(Level::Recognise) => "a recognition",
+        Some(Level::Identify) => "an identification",
+        None => "a look of a level not known",
+    }
+}
+
+/// Rules 33: " by its eo_ir", or nothing where the look does not say its sensor.
+fn sensor_words(o: &OwnLook) -> String {
+    o.sensor.as_deref().map(|s| format!(" by its {s}")).unwrap_or_default()
+}
+
+/// Rules 33: what the vehicle sent's own look since the order went out named the track as, and
+/// how it falls short of the criteria, in words ("named it small_fast_boat at 0.11, not yet
+/// identified (the bar is 0.6)").
+fn short_words(kind: Option<&str>, o: &OwnLook, why: &Shortfall, w: &WatchSettings, domain: crate::catalog::Domain) -> String {
+    let kind = kind.unwrap_or("its kind");
+    let at = confidence_words(o);
+    match why {
+        Shortfall::Bar => format!("named it {kind} at {at}, not yet identified (the bar is {})", w.bar),
+        Shortfall::Level => format!(
+            "named it {kind} at {at}, {}{}, not yet identified (the criterion is {})",
+            level_article(o),
+            sensor_words(o),
+            criterion_words(w, domain)
+        ),
+        Shortfall::Sensor => format!(
+            "named it {kind} at {at}{}, not yet identified (the criterion is {})",
+            sensor_words(o),
+            criterion_words(w, domain)
+        ),
+        Shortfall::Conflict(c) => format!("named it {kind} at {at}, not yet identified (its identity is in conflict: {c})"),
+    }
+}
+
+/// Rules 33: the vehicle sent's own look at `track` on `world` since the order went out (`look`),
+/// with the kind it names, its track's domain and the conflict on it; none where it has none.
+fn own_since<'w>(track: &str, world: &'w WorldSnapshot, look: &Look<'_>) -> Option<(&'w OwnLook, Option<String>, &'w TrackFacts, Option<&'w str>)> {
+    let u = look.own?;
+    let t = world.tracks.get(track)?;
+    let l = world.track_levels.get(track)?;
+    let o = l.own.get(u.as_str()).filter(|o| o.t > look.sent_t)?;
+    let kind = o.kind.clone().or_else(|| t.identity.clone());
+    Some((o, kind, t, l.conflict.as_deref()))
+}
+
+/// Rules 33: the vehicle sent's own naming of `track` on `world` that falls short of the criteria
+/// (`look.criteria`) and is not noted yet for that kind (`look.named`): its uid, the kind and the
+/// step's words ("PUMA 1 named it small_fast_boat at 0.11, not yet identified (the bar is 0.6);
+/// it goes on"). None under older rules, without such a look, or once noted.
+pub fn named_due(track: &str, world: &WorldSnapshot, look: &Look<'_>) -> Option<(String, Option<String>, String)> {
+    let w = look.criteria?;
+    let u = look.own?;
+    let (o, kind, t, conflict) = own_since(track, world, look)?;
+    let why = shortfall(o, t.domain, w, conflict)?;
+    if look.named.iter().any(|n| n.by == u.as_str() && n.kind == kind) {
+        return None;
+    }
+    let detail = format!("{} {}; it goes on", name(world, u.as_str()), short_words(kind.as_deref(), o, &why, w, t.domain));
+    Some((u.to_string(), kind, detail))
+}
+
+/// Rules 33: where an identify order's look stands (MCP `get_intents` and `explain_intent`;
+/// read-only, never logged): the vehicle sent's best own look since it went out against its
+/// track's criteria.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Progress {
+    /// The vehicle sent (its uid).
+    pub vehicle: String,
+    /// Its best own look since the order went out (none: none yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<OwnLook>,
+    /// The scenario's bar, and the level and sensors that count for the track's domain.
+    pub bar: f64,
+    pub level: Level,
+    pub sensors: Vec<String>,
+    /// Whether the look meets them (the order ends identified at its next step).
+    pub identified: bool,
+    pub words: String,
+}
+
+/// Rules 33: [`Progress`] of identify order `run` on `uid` at `track` on `world`, the vehicle
+/// called `who`; none under older rules, before the order went out, or with the track gone.
+pub fn progress(track: &str, world: &WorldSnapshot, run: &Run, uid: &Uid, cfg: &RulesConfig, who: &str) -> Option<Progress> {
+    if !cfg.identify_criteria() {
+        return None;
+    }
+    let look = Look::of(run, uid, cfg)?;
+    let w = look.criteria?;
+    let t = world.tracks.get(track)?;
+    let c = w.domain.get(t.domain);
+    let own = own_since(track, world, &look);
+    let criteria = criteria_words(w, t.domain);
+    let (identified, words) = match &own {
+        None => (false, format!("{who} has no look of its own at it since the order went out ({criteria})")),
+        Some((o, kind, _, conflict)) => match shortfall(o, t.domain, w, *conflict) {
+            None => (
+                true,
+                format!(
+                    "{who}'s best look named it {} at {}{}: identified ({criteria})",
+                    kind.as_deref().unwrap_or("its kind"),
+                    confidence_words(o),
+                    sensor_words(o)
+                ),
+            ),
+            Some(why) => {
+                let reason = match &why {
+                    Shortfall::Bar => "below the bar".to_string(),
+                    Shortfall::Level => level_article(o).to_string(),
+                    Shortfall::Sensor => "not a sensor that counts".to_string(),
+                    Shortfall::Conflict(c) => format!("its identity is in conflict: {c}"),
+                };
+                let words = format!(
+                    "{who}'s best look so far named it {} at {}{}, not yet identified ({reason}; {criteria})",
+                    kind.as_deref().unwrap_or("its kind"),
+                    confidence_words(o),
+                    sensor_words(o)
+                );
+                (false, words)
+            }
+        },
+    };
+    Some(Progress {
+        vehicle: uid.to_string(),
+        look: own.map(|(o, ..)| o.clone()),
+        bar: w.bar,
+        level: c.level,
+        sensors: c.sensors.iter().filter(|s| s.as_str() != "ais").cloned().collect(),
+        identified,
+        words,
+    })
+}
+
+/// Rules 33: [`outcome`] by the scenario's criteria (`w`): identified only on the vehicle sent's
+/// own look since the order went out that meets them, saying its confidence and the criteria;
+/// at the deadline, the vehicle's best look.
+fn outcome_by_criteria(track: &str, world: &WorldSnapshot, deadline_t: Time, k: &Look<'_>, w: &WatchSettings) -> Option<(EndKind, String)> {
+    let note = meanwhile_note(world, k.meanwhile);
+    let own = own_since(track, world, k);
+    let who = k.own.map_or_else(|| "the vehicle sent".to_string(), |u| name(world, u.as_str()));
+    if let Some((o, kind, t, conflict)) = &own
+        && shortfall(o, t.domain, w, *conflict).is_none()
+    {
+        let mut detail = format!(
+            "track {track} identified as {} at {} by {who}'s {} ({})",
+            kind.as_deref().unwrap_or("its kind"),
+            confidence_words(o),
+            o.sensor.as_deref().unwrap_or("sensor"),
+            criteria_words(w, t.domain)
+        );
+        let was = k.before.unwrap_or("unclassified");
+        let before_kind = k.before.and_then(|b| b.split(" (").next());
+        let identified_before = k.before.is_some_and(|b| b.ends_with("(identify)"));
+        match (identified_before, before_kind == kind.as_deref()) {
+            (true, true) => detail.push_str(&format!("; it agrees with its identity before, {was}")),
+            (true, false) => detail.push_str(&format!("; it differs from its identity before, {was}")),
+            (false, _) => detail.push_str(&format!("; it was {was} before")),
+        }
+        return Some((EndKind::Identified, format!("{detail}{note}")));
+    }
+    if let Err(why) = live_track(track, world) {
+        return Some((EndKind::Lost, format!("{why}{note}")));
+    }
+    if world.t >= deadline_t {
+        let domain = world.tracks.get(track).map(|t| t.domain);
+        let best = match &own {
+            Some((o, kind, t, conflict)) => {
+                let hint = match shortfall(o, t.domain, w, *conflict) {
+                    Some(Shortfall::Level) => format!(", {}", level_article(o)),
+                    Some(Shortfall::Conflict(c)) => format!(", its identity in conflict: {c}"),
+                    _ => String::new(),
+                };
+                format!(
+                    "{who}'s best look named it {} at {}{}{hint}",
+                    kind.as_deref().unwrap_or("its kind"),
+                    confidence_words(o),
+                    sensor_words(o)
+                )
+            }
+            None => format!("{who} had no look of its own at it since the order went out"),
+        };
+        let criteria = domain.map(|d| format!(" ({})", criteria_words(w, d))).unwrap_or_default();
+        return Some((EndKind::TimedOut, format!("track {track} not identified by the order's deadline; {best}{criteria}{note}")));
+    }
+    None
+}
+
 /// Whether the look is over on `world`, and why: identified, lost, or past `deadline_t`. Rules 22
 /// (`look`: when it went out, and the identity before): identified only by our own sensors after
 /// it went out, saying whether that agrees with the identity before or contradicts it. Rules 23
 /// (`look.own`): only by the vehicle sent, with its own sensors, the identifications of others
-/// meanwhile said.
+/// meanwhile said. Rules 33 (`look.criteria`): only on its own look that meets the track's domain
+/// criteria, saying its confidence and the criteria ([`outcome_by_criteria`]).
 pub fn outcome(track: &str, world: &WorldSnapshot, deadline_t: Time, look: Option<Look<'_>>) -> Option<(EndKind, String)> {
+    if let Some(k) = look
+        && let Some(w) = k.criteria
+    {
+        return outcome_by_criteria(track, world, deadline_t, &k, w);
+    }
     let note = look.map(|k| meanwhile_note(world, k.meanwhile)).unwrap_or_default();
     // rules 23: the vehicle's own identification, after it went out
     fn own<'l>(l: &'l TrackLevel, k: &Look<'_>) -> Option<&'l OwnLook> {

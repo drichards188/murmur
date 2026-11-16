@@ -1,0 +1,13 @@
+# sim/policy.toml with a stricter bar (scenario 156, decision rules 33; docs/SCENARIO-SETTINGS.md):
+# this scenario counts a contact identified only at 0.75, and an engagement's target must be at
+# least as sure (the floor: the engagement bar is never below the watch's). Stricter than the
+# standing values, so nothing is loosened. A run under rules 32 refuses it (those rules read no
+# scenario settings).
+
+extends = "../../../policy.toml"
+
+[watch]
+bar = 0.75
+
+[rules.engage]
+min_identity_confidence = 0.75

@@ -144,7 +144,7 @@ impl Decision {
             return;
         }
         // our vehicles alone (the engine's step reads nothing else), each with its own failsafe
-        let world = super::snapshot::build(&self.world, self.facts_catalog(), &self.areas, self.clock.now(), None, true);
+        let world = super::snapshot::build(&self.world, self.facts_catalog(), &self.areas, self.clock.now(), None, true, false);
         let step = core.engine.step_nodes(&world);
         // where each silent vehicle can be now, as the keep-out counts it (a confirmed loss is
         // out of every keep-out: shown LOST, with no region)

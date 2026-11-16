@@ -717,7 +717,7 @@ fn scan_speed_mps(ctx: &Ctx, probes: &[Probe]) -> f64 {
             Probe::Track(_, t, _) | Probe::Lost(_, t) => track(t),
             // rules 30: a silent one's region grows no faster than its reach (crate::silent)
             Probe::Vehicle(_, v) if ctx.cfg.node_loss() && fresh(&v.position, v, "position", ctx.world, ctx.cfg).is_err() => {
-                crate::silent::top_speed(v) + crate::silent::carried_mps(v)
+                crate::silent::top_speed(v) + crate::silent::carried_mps(v, ctx.cfg)
             }
             Probe::Vehicle(_, v) => {
                 let speed = v.velocity_mps.as_ref().map_or(0.0, |f| f.value[0].hypot(f.value[1]));

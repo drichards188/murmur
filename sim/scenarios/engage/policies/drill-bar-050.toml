@@ -1,0 +1,14 @@
+# sim/policy.toml loosened for a drill (scenario 157, decision rules 33; docs/SCENARIO-SETTINGS.md):
+# the watch counts a contact identified at 0.5, and an engagement's target at 0.5 too (the floor
+# keeps the engagement bar at least the watch's). Lowering the engagement bar below what this file
+# extends is a loosening, which it names with its reason: logged with the policy, stated on the
+# brief, and checked by replay against the logged policy.
+
+extends = "../../../policy.toml"
+loosened = { "rules.engage.min_identity_confidence" = "a drill on decoys the cameras only half resolve; never for a live watch" }
+
+[watch]
+bar = 0.5
+
+[rules.engage]
+min_identity_confidence = 0.5

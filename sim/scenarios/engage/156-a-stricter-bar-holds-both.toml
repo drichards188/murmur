@@ -1,0 +1,99 @@
+# Rules 33 (docs/SCENARIO-SETTINGS.md): one scenario's bar for everything that reads it. Its policy
+# counts a contact identified only at 0.75 (`[watch] bar`, and the engagement bar with it:
+# policies/bar-075.toml). PUMA 1 is sent to identify a boat the radar recognises; at 30 s its
+# camera identifies a small fast boat at 0.70: above the standing 0.6, below this scenario's bar,
+# so the look is logged as a naming that falls short and the order goes on. The boat is declared
+# hostile and nominated at 32 s: rejected at the identity check, 0.70 below the bar of 0.75. At
+# 50 s the camera's look reaches 0.80 and the identify order ends, saying the bar it met.
+title = "A stricter bar holds the identify order and the engagement alike"
+invariant = "target_identity"
+attack = "a look sure enough by the standing bar, not by the scenario's"
+expect = "rejected"
+expect_rule = "target_identity"
+expect_identify = [
+  "named: PUMA 1 named it small_fast_boat at 0.70, not yet identified (the bar is 0.75); it goes on",
+  "ended done: track T-0001 identified as small_fast_boat at 0.80 by PUMA 1's eo_ir (the bar is 0.75, identification by EO/IR); it was small_craft (recognise) before; holding: no order to go back to",
+]
+policy = "sim/scenarios/engage/policies/bar-075.toml"
+min_rules = 33
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+callsign = "PUMA 1"
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 30                   # sure enough by 0.6, not by this scenario's 0.75
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.7
+level = "identify"
+level_by = ["puma-1:eo_ir"]
+
+[[step]]
+at_s = 32
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 33
+action = "expect"
+state = "rejected"
+rule = "target_identity"
+task_state = "dispatched"   # the identify order goes on
+
+[[step]]
+at_s = 50                   # surer: past the bar
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.8
+level = "identify"
+level_by = ["puma-1:eo_ir"]
