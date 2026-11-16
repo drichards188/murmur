@@ -1093,9 +1093,7 @@ fn a_void_that_says_superseded_names_an_order_the_log_has() {
     }
     // rules 12 did not look (the gap): the same forgery under rules 12 replays
     let forged12 = forge(&reason("system: superseded: i99 was dispatched to vehicle sky-1".into()), |ev| {
-        if let EventBody::RunStarted { rules_version, .. } = &mut ev[0].body {
-            *rules_version = Some(REVIEW_FOLLOWUPS_SINCE);
-        }
+        claim_older_rules(&mut ev[0].body, REVIEW_FOLLOWUPS_SINCE);
     });
     let r = replay_str_with(
         &forged12,

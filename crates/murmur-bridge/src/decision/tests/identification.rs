@@ -26,6 +26,14 @@ pub(super) fn rule_on(p: &mut Policy, nominate_unconfirmed: bool) {
         nominate_unconfirmed: Some(nominate_unconfirmed),
         ..IdentConfig::default()
     });
+    // rules 33: a loosening is named with its reason (the floor; replay checks it)
+    if nominate_unconfirmed {
+        p.loosened = Some(
+            [(murmur_decide::policy::LOOSENABLE[0].to_string(), "a test of a nomination before a confirmation".to_string())]
+                .into_iter()
+                .collect(),
+        );
+    }
     // the bridge's own copy of the rules reads it too (the nomination form's dry run), as a
     // policy loaded from its file has it
     p.sync();

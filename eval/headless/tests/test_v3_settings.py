@@ -168,17 +168,17 @@ def test_the_recorder_keeps_settings_only_when_the_run_logged_a_watch():
 
 
 def test_policy_file_show_returns_the_effective_watch():
-    """`murmur-policy show` (eval/policy_file.py): under the default rules the legacy watch with the
-    scenario's circle; under rules 33 the merged [watch], which the logged policy carries too."""
+    """`murmur-policy show` (eval/policy_file.py): under rules 32 the legacy watch with the scenario's
+    circle; under rules 33, the default, the merged [watch], which the logged policy carries too."""
     from eval.policy_file import show
 
-    shown = show("sim/situations/policies/san-diego-watch.toml")
+    shown = show("sim/situations/policies/san-diego-watch.toml", rules=32)
     w = shown["watch"]
     v0 = S.v0("san-diego")
     assert S.watch_of(w, "logged").watch() == v0.watch()
     assert "watch" not in shown["policy"]
     assert [layer["path"] for layer in shown["layers"]][1:] == ["watch.toml", "../../policy.toml"]
-    new = show("sim/situations/policies/san-diego-watch.toml", rules=33)
+    new = show("sim/situations/policies/san-diego-watch.toml")
     assert new["watch"] == new["policy"]["watch"] and new["watch"]["neutral_after_bar"] is True
     assert S.from_policy(new["policy"]).area == v0.area
     # the standing policy names no circle

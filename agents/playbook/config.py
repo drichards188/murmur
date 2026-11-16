@@ -22,15 +22,18 @@ sensor platform) and `every_s` (the tick).
 The canonical form is the merged config as JSON with sorted keys; its SHA-256, cut to 12 hex
 digits, is the config hash, and `<name>#<hash>` the label every evidence record carries.
 
-**The run's watch settings** (docs/SCENARIO-SETTINGS.md, stage S5): two thresholds are the
-scenario's, not the playbook's, and the engine runs on the file's config `under` the settings the
-run's policy gives (agents/roe.py `Roe.of_policy`: MCP `get_policy`'s `watch`, else v0's):
-`classifier_fresh_s` is the watch's `stale_s`, and `tcpa_max_s` is `TCPA_HORIZON_FACTOR` times its
-`approach_horizon_s` (2 x 300 s: the 600 s of before). A situation's table may not set either
-(set them in its policy's `[watch]`); defaults.toml keeps both keys, so the config hash, which the
-bridge is told at connect, is what it was. A table with no watch area or protected point takes the
-policy's `[watch.area]`: its circle, and its centre as the point. Under v0's settings and a table
-that names its areas, the run's config is the file's, byte for byte, hash and all.
+**The run's watch settings** (docs/SCENARIO-SETTINGS.md, stages S5 and S7): what counts as
+identified, and two thresholds, are the scenario's, not the playbook's, and the engine runs on the
+file's config `under` the settings the run's policy gives (agents/roe.py `Roe.of_policy`: MCP
+`get_policy`'s `watch`, else v0's). A track's identity is settled when the watch counts it
+identified (`Config.roe`, `Roe.identified`: its domain's level and sensors, the bar, no
+conflict); `classifier_fresh_s` is the watch's `stale_s`, and `tcpa_max_s` is
+`TCPA_HORIZON_FACTOR` times its `approach_horizon_s` (2 x 300 s: the 600 s of before). The file
+holds none of the three (defaults.toml dropped `classification_settled`, `classifier_fresh_s` and
+`tcpa_max_s` in S7) and a situation's table may not set them (its policy's `[watch]` does). A
+table with no watch area or protected point takes the policy's `[watch.area]`: its circle, and its
+centre as the point. The run's config is always the file's with those, hashed as it holds them;
+the file's own label is what the bridge is told at connect.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ import hashlib
 import json
 import math
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +57,9 @@ SECTIONS = ("thresholds", "budget", "cooldown", "material")
 LEGACY_RADIUS_KM = 4.0  # the old agent's default radius
 #: thresholds the run's watch settings give (`under`), which a situation's table may not set
 FROM_WATCH = {"classifier_fresh_s": "stale_s", "tcpa_max_s": "approach_horizon_s"}
+#: a threshold the playbook held until stage S7, and the watch's setting that took its place: a
+#: track's identity is settled when the watch counts it identified (`Roe.identified`)
+RETIRED = {"classification_settled": "bar, with each domain's level and sensors"}
 #: the playbook looks this many times the watch's approach horizon ahead for a closest approach:
 #: a look proposed now is still on station then (the policy's 900 s task outlasts 600 s)
 TCPA_HORIZON_FACTOR = 2.0
@@ -169,28 +175,29 @@ def merge(table: dict[str, Any] | None) -> dict[str, Any]:
         over = table.get(sec, {})
         if not isinstance(over, dict):
             raise ConfigError(f"[playbook.{sec}] is a table")
+        from_watch = {**FROM_WATCH, **RETIRED}
+        watch = sorted(k for k in over if sec == "thresholds" and k in from_watch)
+        if watch:
+            raise ConfigError(f"[playbook.thresholds]: {', '.join(watch)} come from the scenario's watch settings "
+                              f"(its policy's [watch] {', '.join(from_watch[k] for k in watch)}), not the playbook's table")
         extra = set(over) - set(cfg[sec])
         if extra:
             raise ConfigError(f"[playbook.{sec}]: unknown keys {sorted(extra)} (known: {sorted(cfg[sec])})")
-        watch = sorted(k for k in over if sec == "thresholds" and k in FROM_WATCH)
-        if watch:
-            raise ConfigError(f"[playbook.thresholds]: {', '.join(watch)} come from the scenario's watch settings "
-                              f"(its policy's [watch] {', '.join(FROM_WATCH[k] for k in watch)}), not the playbook's table")
         for k, v in over.items():
             cfg[sec][k] = _num(v, f"{sec}.{k}")
         for k, v in cfg[sec].items():
             cfg[sec][k] = float(v) if not isinstance(v, bool) else v
     t, b = cfg["thresholds"], cfg["budget"]
-    for k in ("existence_min", "affiliation_min", "classification_settled", "orbit_range_fraction", "recentre_fraction"):
+    for k in ("existence_min", "affiliation_min", "orbit_range_fraction", "recentre_fraction"):
         if not 0 < t[k] <= 1:
             raise ConfigError(f"thresholds.{k} must be in (0, 1]")
     if b["previews_per_tick"] < 1 or b["own_pending_max"] < 0 or b["human_burst"] < 1:
         raise ConfigError("budget: previews_per_tick and human_burst at least 1, own_pending_max at least 0")
     # a value something divides by, or multiplies a distance or a time by, must be positive
     positive = {
-        "thresholds": ("fast_mps", "cpa_alert_m", "tcpa_max_s", "unseen_s", "orbit_turn_margin", "default_min_turn_m",
-                       "link_gap_factor", "classifier_fresh_s", "status_hold_ticks", "classify_rise_s",
-                       "classify_rise_min", "classify_wait_max_s"),
+        "thresholds": ("fast_mps", "cpa_alert_m", "unseen_s", "orbit_turn_margin", "default_min_turn_m",
+                       "link_gap_factor", "status_hold_ticks", "classify_rise_s", "classify_rise_min",
+                       "classify_wait_max_s"),
         "budget": ("human_every_s", "inbox_busy"),
         "cooldown": ("preview_backoff_s", "preview_backoff_max_s"),
         "material": ("cpa_factor", "confidence_step"),
@@ -224,11 +231,13 @@ def config_hash(cfg: dict[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class Config:
-    """The merged config, its hash and its label (`<name>#<hash>`)."""
+    """The merged config, its hash and its label (`<name>#<hash>`); `roe`, on the config the plays
+    run on (`under`), the run's watch settings (agents/roe.py `Roe`), None on the file's."""
 
     data: dict[str, Any]
     name: str
     hash: str
+    roe: Any = field(default=None, compare=False, repr=False)
 
     @property
     def label(self) -> str:
@@ -269,12 +278,12 @@ def make(table: dict[str, Any] | None, name: str = "defaults") -> Config:
 
 
 def under(cfg: Config, roe: Any, area_wins: bool = False) -> Config:
-    """The config the plays run on in a run whose watch settings are `roe` (agents/roe.py `Roe`):
-    the file's, with `classifier_fresh_s` and `tcpa_max_s` from the settings (`FROM_WATCH`), and
-    the settings' area, when they have one, as the watch area and the protected point where the
-    table names none; with `area_wins` (the officer's watch line), as the only watch area whatever
-    the table names. Its hash is of what it holds; `cfg` itself when nothing changed (v0's
-    settings, a table that names its areas)."""
+    """The config the plays run on in a run whose watch settings are `roe` (agents/roe.py `Roe`,
+    kept as its `roe`: what counts as identified): the file's, with `classifier_fresh_s` and
+    `tcpa_max_s` from the settings (`FROM_WATCH`), and the settings' area, when they have one, as
+    the watch area and the protected point where the table names none; with `area_wins` (the
+    officer's watch line), as the only watch area whatever the table names. Its hash is of what it
+    holds."""
     data = copy.deepcopy(cfg.data)
     t = data["thresholds"]
     t["classifier_fresh_s"] = float(roe.stale_s)
@@ -289,9 +298,7 @@ def under(cfg: Config, roe: Any, area_wins: bool = False) -> Config:
                                    "radius_m": float(a["radius_m"])}]
         if not data["protected"]:
             data["protected"] = [{"name": a["name"], "point": [float(a["center"][0]), float(a["center"][1])]}]
-    if data == cfg.data:
-        return cfg
-    return Config(data=data, name=cfg.name, hash=config_hash(data))
+    return Config(data=data, name=cfg.name, hash=config_hash(data), roe=roe)
 
 
 def load_file(path: Path, name: str | None = None) -> Config:

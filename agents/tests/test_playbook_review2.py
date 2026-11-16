@@ -275,7 +275,7 @@ def test_r2_7_slow_intermittent_sonar_does_not_suppress_a_look():
     hist = [(T0 - 40 + 20 * k, sonar_track(0.30 + 0.008 * k, T0 - 40 + 20 * k)) for k in range(2)]
     res = look_after(hist, T0, sonar_track(0.316, T0 - 1))
     assert res.candidates and res.candidates[0].trigger[-1] == (
-        "classification 0.32 under 0.60: our sonar on it, not raising it within 30 s")
+        "not identified (0.32 under the bar 0.60): our sonar on it, not raising it within 30 s")
 
 
 def test_r2_7_suppression_is_capped_per_track_and_a_label_conflict_always_counts():
@@ -283,7 +283,7 @@ def test_r2_7_suppression_is_capped_per_track_and_a_label_conflict_always_counts
     hist = [(T0 - 130 + 10 * k, sonar_track(0.05 + 0.03 * k, T0 - 130 + 10 * k)) for k in range(13)]
     res = look_after(hist, T0, sonar_track(0.45, T0 - 1))
     assert res.candidates and res.candidates[0].trigger[-1] == (
-        "classification 0.45 under 0.60: our sonar on it 130 s without settling it")
+        "not identified (0.45 under the bar 0.60): our sonar on it 130 s without settling it")
     # rising within the window and under the cap: suppressed, unless the sensors disagree
     hist = [(T0 - 10, sonar_track(0.30, T0 - 10))]
     assert look_after(hist, T0, sonar_track(0.35, T0 - 1)).candidates == []

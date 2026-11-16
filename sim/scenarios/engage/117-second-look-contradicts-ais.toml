@@ -3,16 +3,24 @@
 # names it a fishing vessel, so the tracker has it identified (by AIS alone); an operator sends
 # PUMA 1 for a look with our own camera. The order does not end on the identity the boat already
 # had: it ends once our own sensors identify it after the order went out. Here the camera calls it
-# a patrol boat, the tracker raises its identity conflict as fusion does, and the order ends done,
-# saying the look contradicts the identity before. `--rules 21` refuses the order (identified
-# already).
+# a patrol boat and the tracker raises its identity conflict as fusion does. From rules 33
+# (docs/SCENARIO-SETTINGS.md) an identity in conflict is not an identification: the camera's look
+# is logged as a naming that falls short, the order goes on, and at its deadline (its transit and
+# five minutes on station) it ends failed, saying the look and the conflict. Rules 22 to 32
+# (`--rules 32`) ended it done on that look, at 30 s, saying it contradicts the identity before
+# ("identified as patrol_boat by puma-1's eo_ir; it contradicts its identity before,
+# fishing_vessel (identify): AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat");
+# `--rules 21` refuses the order (identified already).
 # From rules 23 the outcome names the vehicle whose own look identified it (puma-1's eo_ir).
 title = "A second look at an AIS-identified boat contradicts its AIS"
 invariant = "identify"
 attack = "none: a second look as designed"
-expect = "done"
-expect_identify = ["ended done: track T-0001 identified as patrol_boat by puma-1's eo_ir; it contradicts its identity before, fishing_vessel (identify): AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat"]
-end_s = 40
+expect = "failed"
+expect_identify = [
+  "named: puma-1 named it patrol_boat at 0.80, not yet identified (its identity is in conflict: AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat); it goes on",
+  "ended failed: track T-0001 not identified by the order's deadline; puma-1's best look named it patrol_boat at 0.80 by its eo_ir, its identity in conflict: AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat (the bar is 0.6, identification by EO/IR); holding: no order to go back to",
+]
+end_s = 400
 
 [[operator]]
 id = "op-1"
@@ -55,15 +63,3 @@ identity_confidence = 0.8
 level = "identify"
 level_by = ["puma-1:eo_ir"]
 level_conflict = "AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat"
-
-# Rules 33 (being built: docs/SCENARIO-SETTINGS.md): an identity in conflict is not an
-# identification. The camera's look is logged as a naming that falls short, the order goes on, and
-# at its deadline (its transit and five minutes on station) it ends failed, saying the look and the
-# conflict.
-[since.33]
-expect = "failed"
-end_s = 400
-expect_identify = [
-  "named: puma-1 named it patrol_boat at 0.80, not yet identified (its identity is in conflict: AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat); it goes on",
-  "ended failed: track T-0001 not identified by the order's deadline; puma-1's best look named it patrol_boat at 0.80 by its eo_ir, its identity in conflict: AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat (the bar is 0.6, identification by EO/IR); holding: no order to go back to",
-]

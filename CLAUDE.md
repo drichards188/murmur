@@ -623,13 +623,55 @@ meaningful.
   `scenario_reach_figures`); without it an identify cannot be evaluated, so `--reaches physical`
   on scenarios that state none needs `--rules 31`. Scenarios 146-148 (and 144-145 re-taken), tamper
   `edit_reach`; `tests/rules32.rs`.
-- A rules version built in stages before it is the default (as rules 30 was, docs/NODE-LOSS.md
-  section 8): `RULES_NEWEST` (rules.rs) one ahead of `RULES_VERSION` while it is built; a run
-  decides under it only when asked (a scenario's `min_rules`, `murmur-scenarios --rules N`, a
-  test's `policy.rules.rules_version`, the bridge's `MURMUR_RULES`, which `eval/headless/sim.py`
-  passes on), so no fixture or digest moves until the last stage sets `RULES_VERSION` to it and
-  `RULES_NEWEST = RULES_VERSION`, adds the fixtures and re-takes the digests. Gate on the
-  `RulesConfig` method, never on `RULES_VERSION`, what the bridge itself adds too.
+- Rules 33 (`SCENARIO_SETTINGS_SINCE`, docs/SCENARIO-SETTINGS.md, DECISIONS.md "2026-11-16:
+  Thresholds are the scenario's"; policy schema 8): the thresholds are the scenario's, one source,
+  its policy file: `[watch]` (`crates/murmur-decide/src/watch.rs`: `bar`, `neutral_after_bar`,
+  `approach_horizon_s`, `identify_on_station_s`, `stale_s`, `still_mps`, `look_m`,
+  `no_velocity_mps`, each `domain`'s `level`, `sensors` and `grace_s`, the `area` circle),
+  `[rules.engage] min_identity_level` and `default_effect_radius_m`, `[rules.silent] drift_mps`,
+  `loosened`; sim/policy.toml writes each out at its standing value. A scenario's policy `extends`
+  another and sets only what it changes (a key equal to what it inherits, a cycle, more than four
+  layers refused; a `[[tier]]` names `before`); the merged policy is logged in `run.started` with
+  `policy_layers` (each file as written, its sha256), and Python reads it only through
+  `murmur-policy show` (`eval/policy_file.py`), never merging itself. The floor (refused at load,
+  re-checked by replay, no override): two approvers, never automatic, never the proposer; the
+  engagement bar at least the watch's; the engagement level `identify`; a watch domain's level
+  `recognise` or `identify`. Lowering an engagement bar, or `nominate_unconfirmed`, needs
+  `loosened = { "<dotted key>" = "<why>" }`, logged and stated on the card, the record and the
+  report. Readers: an identify order ends only on the sent vehicle's own look meeting its track's
+  domain criteria (its level, one of its sensors but never AIS, the bar, no conflict;
+  `IDENTIFY_CRITERIA_SINCE`): a first naming below them is an `identify.step` `named` and the order
+  goes on, the end and the timeout say the confidence and the criteria, `identify_on_station_s` is
+  its time on station, and MCP `get_intents` and `explain_intent` carry `identify_progress`. An
+  engagement's target must show its kind at the bar (`ENGAGE_IDENTITY_LEVEL_SINCE`, the picture's
+  `track_levels`: a size class at 0.99 is refused). On the physical model the tracker calls nothing
+  neutral by classification before it meets the bar and its domain's criteria (AIS calls as before;
+  the legacy model keeps its call at 0.3). `stale_s` is the tracker's stale, the engine's out of
+  view, the keep-out explanation's memory, `get_tracks`' and the playbook's freshness, and the
+  floor of `MURMUR_TRACK_DROP_S` (`tracks::drop_floor`). MCP `get_policy` serves `watch` and
+  `engage_defaults` (as `GET /api/policy`); the agents judge by `agents/roe.py` (identified, in
+  doubt, approaching; the playbook's "settled" is `Roe.identified`). The brief is the scenario's ROE
+  card (`eval/roe_card.py`: v3's is the card, a situation's carries it), and the scoring grades each
+  record by the values it ran under (`eval/headless/v3/settings.py` `of_record`; a record without a
+  logged `[watch]` by v0's, `sim/policy-v0-watch.toml`, frozen and pinned: never edit it). Under
+  older rules none of it is logged (schema 7), `RulesConfig::watch` is v0's, and a policy whose
+  settings differ from the standing ones (the area aside) is refused. The v1 and v2 worlds run
+  `sim/situations/policies/legacy-v1v2.toml` (`neutral_after_bar = false`, what the legacy tracker
+  does; `eval/headless/situations.py` `run_policy`). Guards: `eval/tests/test_settings_guard.py`
+  (no copied value outside the single readers and the pinned frozen modules; a perturbation check),
+  the Rust guard (`tests/settings_guard.rs`); `tests/rules33.rs`, `tests/scenario_settings.rs`,
+  `tests/policy_layers.rs`; scenarios 149-157, tampers `edit_own_confidence`, `drop_loosened`.
+  Scenarios whose design it changed (75, 108, 111, 112, 117, 118, 144) say what rules 32 did.
+- A rules version built in stages before it is the default (as rules 30 and 33 were,
+  docs/NODE-LOSS.md section 8): `RULES_NEWEST` (rules.rs) one ahead of `RULES_VERSION` while it is
+  built; a run decides under it only when asked (a scenario's `min_rules`, `murmur-scenarios --rules
+  N`, a test's `policy.rules.rules_version`, the bridge's `MURMUR_RULES`, which
+  `eval/headless/sim.py` passes on), so no fixture or digest moves until the last stage sets
+  `RULES_VERSION` to it and `RULES_NEWEST = RULES_VERSION`, adds the fixtures and re-takes the
+  digests. Gate on the `RulesConfig` method, never on `RULES_VERSION`, what the bridge itself adds
+  too. A policy schema it adds is staged the same way (`POLICY_SCHEMA_NEWEST` ahead of
+  `POLICY_SCHEMA`, `RulesConfig::policy_schema`), and a scenario whose design it changes says so in
+  a `[since.N]` table, which the last stage writes into the file, noting what the older rules did.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a node fires its
   catalog kind's loadout (`sim/contacts.toml`) by its own fire control at an `[[order]]` (the
   contacts file, the contacts process's `POST /orders`, a situation's `red` step;

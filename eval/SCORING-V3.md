@@ -757,6 +757,63 @@ Choice 41 came with building choice 40 (2026-11-15), for the owner; built as rec
     **Recommend** as built: the label judges what the agent could see when it ordered, as choice 40
     does, and the cover need (2.10) still credits only a cover that was asked.
 
+**The owner's decision (2026-11-16)**, on a registered rerun that lost F8 decoys to an identify
+order ended on a first naming at 0.11 (17.25, 17.26; bd murmur-mdm2): "cater all thresholds to the
+scenario", the scoring graded against the scenario's values, the agents briefed on them. Built in
+stages S1 to S7 of docs/SCENARIO-SETTINGS.md (decision rules 33, the default since S7; DECISIONS.md
+"2026-11-16: Thresholds are the scenario's"); recorded as choices 42 to 47. Each value below is the
+standing one (sim/policy.toml), a scenario's own where its policy sets another, and every record
+before rules 33 is graded by v0's, the same values frozen (sim/policy-v0-watch.toml).
+
+42. **One definition of identified.** A contact is identified when the picture shows its identity
+    at its domain's level (its kind; under the water its class or kind) at the scenario's bar (0.6),
+    supported by one of its domain's sensors (EO/IR, or its own true AIS on the surface; EO/IR in the
+    air and on the ground; sonar under the water), without an identity conflict. The brief (the
+    ROE card), the engine's identify order (it ends only on the vehicle sent's own look meeting
+    them, never AIS; a first naming below them is logged and the order goes on), the engagement
+    check (the kind at the engagement bar), the officer, its case file and the playbook
+    (agents/roe.py), the honest ceiling and these labels all read that one definition from the
+    run's settings. Before it there were six (docs/SCENARIO-SETTINGS.md section 1): the engine ended
+    an identify order on any first naming and told the model "identified" at 0.11, and a size class
+    at 0.99 passed the engagement check. *Alternative*: each reader keeps its own and the brief
+    names the scoring's. Made by the owner.
+43. **Neutral only after the bar.** On the physical sensing model the tracker shows no contact
+    neutral by its classification (a fishing vessel, a sailboat, a light aircraft, a helicopter)
+    before it is identified as 42 says (`neutral_after_bar`); until then it is unknown, saying what
+    it lacks. A neutral call from the contact's own AIS identity is as before, and the legacy model
+    keeps its call from 0.3 (the v1 and v2 worlds' policy says so: `neutral_after_bar = false`).
+    Before it the tracker called them neutral at 0.3 and the officer let them out of doubt before
+    the brief's 0.6. Measured on the six hostile-act situations (world v3, the scripted chain):
+    the same acts, declarations, flags and engagements; one fishing vessel shown unknown 9 s longer
+    (docs/SCENARIO-SETTINGS.md section 7, S4). *Alternative*: the 0.3 call stays and the agents
+    discount it. Made by the owner.
+44. **The reserve is the engine's.** A vehicle is above its reserve when it would keep `reserve_pct`
+    (20 %) of its endurance after a task of `task_duration_s` (900 s), as the engine refuses a task,
+    and the card says so; the low-reserve need (version 2, `v3.low_reserve`) opens under that
+    reserve plus one task at the catalog endurance and is unmet at the reserve. Before it the brief
+    said "above its reserve" with no number, and the scoring held a vehicle to 20 % of its battery
+    now and opened the need at 35 %, which the agent was never told (v0's `[v0]`). *Alternative*:
+    battery-now lines stated on the card. Made by the owner.
+45. **One horizon, 300 s.** `approach_horizon_s` is the officer's wake ("approaching"), these
+    labels' "justified" and the ceiling's plan (the playbook looks twice as far for a closest
+    approach, 600 s, as it did). 300 s is the scoring's registered value; the officer woke at 180 s
+    before (stage S5), and waking it earlier is what served F8 for the oracle. *Alternative*: 180 s
+    everywhere, which re-registers the scoring. Made by the owner.
+46. **The ceilings are held to the mission's sensors.** The honest ceiling and the oracles settle a
+    need on its domain's sensors from the run's settings, as 42's labels do: AIS counts on the
+    surface, a buoy's sonar there no longer does; the bar, the horizon and the reserve with the
+    planners' named margins come from the same settings. Measured on dev seeds before and after
+    (17.27): no need moved for any agent; the honest ceiling's orders moved in 11 of 140 situations.
+    *Alternative*: the ceilings keep EO/IR or sonar in every domain, a ruler the scoring does not
+    use. Made by the owner.
+47. **Each record is graded under the values it ran under.** The labels, faults, metrics, report,
+    causes and able types read the record's own settings (settings.py `of_record`: its logged
+    `[watch]` and `[rules]`; v0's for a record that logged none), never a constant; the report's
+    coverage states them per world and sha256, and a batch whose records ran under different values
+    is summarized per set, never pooled. Rescoring the result directories before rules 33
+    reproduces their reports byte for byte (17.27). *Alternative*: one set of values for every
+    record, which grades a scenario by another's rules. Made by the owner.
+
 ## 10. Gates (dev)
 
 Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5194 (13.7):

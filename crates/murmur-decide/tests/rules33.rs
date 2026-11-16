@@ -343,15 +343,21 @@ fn an_own_looks_details_are_logged_under_rules_33_only() {
     }
 }
 
-/// The scenarios designed before rules 33 that it changes say so in their `[since.33]`, and a run of
-/// the current rules reads the file as it is.
+/// A scenario designed before rules 33 that it changes carries its rules 33 design (the `[since.33]`
+/// tables of the staged build, written into the files when rules 33 became the default), and says
+/// in its notes what rules 32 did: 117's second look, contradicting the boat's AIS, ends it done
+/// under rules 32 and holds it on the conflict until its deadline under rules 33.
 #[test]
-fn a_scenarios_since_table_applies_from_its_version_only() {
+fn a_scenario_rules_33_changed_ends_as_its_notes_say_under_rules_32() {
     let name = "117-second-look-contradicts-ais.toml";
     let now = run(name, None);
     assert!(now.ok, "{:?}", now.failures);
-    assert_eq!(now.final_state.as_deref(), Some("done"), "rules 32 end it on the contradicting look");
-    let next = run(name, Some(SCENARIO_SETTINGS_SINCE));
-    assert!(next.ok, "{:?}", next.failures);
-    assert_eq!(next.final_state.as_deref(), Some("failed"), "rules 33 hold it on the conflict until its deadline");
+    assert_eq!(now.final_state.as_deref(), Some("failed"), "rules 33 hold it on the conflict until its deadline");
+    let old = run(name, Some(REACH_NOW_SINCE));
+    assert_eq!(old.final_state.as_deref(), Some("done"), "rules 32 end it on the contradicting look");
+    assert!(
+        old.identify.iter().any(|l| l.contains("identified as patrol_boat by puma-1's eo_ir; it contradicts its identity before")),
+        "{:?}",
+        old.identify
+    );
 }

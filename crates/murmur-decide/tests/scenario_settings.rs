@@ -1,4 +1,4 @@
-//! The scenario's settings (docs/SCENARIO-SETTINGS.md, stage S2; rules 33 staged): the policy's
+//! The scenario's settings (docs/SCENARIO-SETTINGS.md, stage S2; rules 33, the default since S7): the policy's
 //! `[watch]` and the new keys parsed, bounded and written out; the floor, refused at load and by
 //! replay; a loosening only when named; the legacy values; a run of older rules refusing settings
 //! other than the standing ones and logging exactly what it did before; a run of rules 33 logging
@@ -150,7 +150,7 @@ fn legacy_is_the_frozen_files_watch_whatever_a_file_says() {
     let mut p = policy();
     p.watch.as_mut().unwrap().bar = 0.8;
     p.sync();
-    assert_eq!(at(&p, RULES_VERSION).rules.watch(), WatchSettings::legacy());
+    assert_eq!(at(&p, REACH_NOW_SINCE).rules.watch(), WatchSettings::legacy());
     let mut p33 = at(&p, SCENARIO_SETTINGS_SINCE);
     p33.sync();
     assert_eq!(p33.rules.watch().bar, 0.8);
@@ -326,7 +326,7 @@ fn under_older_rules_settings_other_than_the_standing_ones_are_refused_the_area_
         ("[rules.engage]\ndefault_effect_radius_m = 50\n", "rules.engage.default_effect_radius_m"),
     ] {
         let p = Policy::load(&over_shipped(&d, "over.toml", text)).unwrap();
-        let e = started(&p, RULES_VERSION, Vec::new()).unwrap_err().to_string();
+        let e = started(&p, REACH_NOW_SINCE, Vec::new()).unwrap_err().to_string();
         assert!(e.starts_with(&format!("policy: {keys} differ")) && e.contains("rules 33"), "{text}: {e}");
         // rules 33 read them
         started(&p, SCENARIO_SETTINGS_SINCE, Vec::new()).unwrap();
@@ -335,8 +335,15 @@ fn under_older_rules_settings_other_than_the_standing_ones_are_refused_the_area_
     for f in ["golden-gate-v3-watch.toml", "san-diego-watch.toml", "golden-gate-scale-watch.toml"] {
         let p = Policy::load(&root().join("sim/situations/policies").join(f)).unwrap();
         assert!(p.watch.as_ref().unwrap().area.is_some(), "{f}");
-        started(&p, RULES_VERSION, Vec::new()).unwrap();
+        started(&p, REACH_NOW_SINCE, Vec::new()).unwrap();
     }
+    // the v1 and v2 worlds' supplement says what rules 32 meant (the neutral call from 0.3), which
+    // rules 32 refuse as any setting other than the standing ones
+    let p = Policy::load(&root().join("sim/situations/policies/legacy-v1v2.toml")).unwrap();
+    assert!(!p.watch.as_ref().unwrap().neutral_after_bar);
+    let e = started(&p, REACH_NOW_SINCE, Vec::new()).unwrap_err().to_string();
+    assert!(e.starts_with("policy: watch.neutral_after_bar differs"), "{e}");
+    started(&p, SCENARIO_SETTINGS_SINCE, Vec::new()).unwrap();
 }
 
 #[test]
@@ -345,19 +352,20 @@ fn under_older_rules_the_log_is_what_it_was() {
     // policy now (the watch policy, every new key and an area): the same run.started, byte for byte
     let (p, layers) = Policy::load_layers(&root().join("sim/situations/policies/golden-gate-v3-watch.toml")).unwrap();
     let old = Policy::load(&fixture("situations-watch.toml")).unwrap();
-    for rules in [RULES_VERSION, REACH_NOW_SINCE, 8] {
+    for rules in [REACH_NOW_SINCE, IDENTIFY_CLASS_SINCE, 8] {
         let now = started(&p, rules, layers.clone()).unwrap();
         let before = started(&old, rules, Vec::new()).unwrap();
         assert_eq!(now, before, "rules {rules}");
         for k in NEW_KEYS {
             assert!(!now.contains(k), "rules {rules}: {k}");
         }
-        assert!(now.contains(&format!("\"policy_schema\":{POLICY_SCHEMA},")), "{now}");
+        // the schema they logged, whatever this build's is
+        assert!(now.contains(&format!("\"policy_schema\":{PASSKEY_SCHEMA_SINCE},")), "{now}");
     }
     // and a policy that loosens: nothing of it
     let p = Policy::load(&root().join("eval/policy/minimal.toml")).unwrap();
-    let now = started(&p, RULES_VERSION, Vec::new()).unwrap();
-    let before = started(&Policy::load(&fixture("eval-minimal.toml")).unwrap(), RULES_VERSION, Vec::new()).unwrap();
+    let now = started(&p, REACH_NOW_SINCE, Vec::new()).unwrap();
+    let before = started(&Policy::load(&fixture("eval-minimal.toml")).unwrap(), REACH_NOW_SINCE, Vec::new()).unwrap();
     assert_eq!(now, before);
     assert!(!now.contains("\"loosened\""));
 }
@@ -412,7 +420,7 @@ fn under_rules_33_the_settings_and_the_layers_are_logged_and_replay() {
     // the claims fit: a rules 33 log claiming the old schema, or a rules 32 log carrying a watch
     let older = forge(&log.text(), |ev| {
         if let EventBody::RunStarted { policy_schema, .. } = &mut ev[0].body {
-            *policy_schema = Some(POLICY_SCHEMA);
+            *policy_schema = Some(PASSKEY_SCHEMA_SINCE);
         }
     });
     let w: Vec<String> = replay_str_with(&older, &opts).unwrap().mismatches.iter().map(|m| m.logged.clone()).collect();
@@ -436,7 +444,7 @@ fn the_effective_watch_is_the_legacy_one_with_the_area_under_older_rules() {
     let p = Policy::load(&root().join("sim/situations/policies/san-diego-watch.toml")).unwrap();
     let area = p.watch.as_ref().unwrap().area.clone().unwrap();
     assert_eq!((area.name.as_str(), area.center, area.radius_m), ("the bay entrance off Ballast Point", [-117.229, 32.686], 3000.0));
-    let old = at(&p, RULES_VERSION).effective_watch();
+    let old = at(&p, REACH_NOW_SINCE).effective_watch();
     assert_eq!(WatchSettings { area: None, ..old.clone() }, *WatchSettings::legacy());
     assert_eq!(old.area, Some(area.clone()));
     let new = at(&p, SCENARIO_SETTINGS_SINCE).effective_watch();
@@ -452,29 +460,30 @@ fn show(args: &[&str]) -> (i32, String, String) {
 #[test]
 fn show_prints_the_effective_watch_for_the_rules_asked() {
     let file = "sim/situations/policies/golden-gate-scale-watch.toml";
-    // the default rules: the legacy watch with the scenario's circle, the policy as logged
+    // the default rules (33): the merged [watch], logged in the policy too
     let (code, out, _) = show(&["show", file]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["watch"]["neutral_after_bar"], true);
+    assert_eq!(v["watch"]["area"]["name"], "the Golden Gate Bridge");
+    assert_eq!(v["watch"], v["policy"]["watch"]);
+    // rules 32: the legacy watch with the scenario's circle, the policy as they logged it
+    let (code, out, _) = show(&["show", file, "--rules", &REACH_NOW_SINCE.to_string()]);
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["watch"]["neutral_after_bar"], false);
     assert_eq!(v["watch"]["area"]["name"], "the Golden Gate Bridge");
     assert!(v["policy"]["watch"].is_null());
-    // rules 33: the merged [watch], logged in the policy too
-    let (code, out, _) = show(&["show", file, "--rules", &SCENARIO_SETTINGS_SINCE.to_string()]);
-    assert_eq!(code, 0);
-    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(v["watch"]["neutral_after_bar"], true);
-    assert_eq!(v["watch"], v["policy"]["watch"]);
     // sim/policy.toml has no area
     let (_, out, _) = show(&["show", "sim/policy.toml"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v["watch"].get("area").is_none(), "{}", v["watch"]);
-    // a file the bridge would refuse under these rules, refused
+    // a file the bridge would refuse under rules 32, refused there, read under the default
     let d = Dir::new("show");
     let f = over_shipped(&d, "over.toml", "[watch]\nstale_s = 12\n");
-    let (code, _, err) = show(&["show", f.to_str().unwrap()]);
+    let (code, _, err) = show(&["show", f.to_str().unwrap(), "--rules", &REACH_NOW_SINCE.to_string()]);
     assert_eq!(code, 2);
     assert!(err.contains("watch.stale_s"), "{err}");
-    let (code, _, _) = show(&["show", f.to_str().unwrap(), "--rules", &SCENARIO_SETTINGS_SINCE.to_string()]);
+    let (code, _, _) = show(&["show", f.to_str().unwrap()]);
     assert_eq!(code, 0);
 }

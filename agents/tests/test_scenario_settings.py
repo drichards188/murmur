@@ -19,7 +19,7 @@ import roe as ROE
 from playbook.config import ConfigError, make, under
 from playbook.engine import Engine
 from playbook_world import POLICY as PLAYBOOK_POLICY
-from playbook_world import config, reads
+from playbook_world import config, file_config, reads
 from roe import FROM_POLICY, FROM_V0, Roe, v0, v0_watch
 from watch import casefile as CF
 from watch.picture import Poller
@@ -122,7 +122,10 @@ def test_without_watch_the_officer_runs_on_v0s():
         v["bar"], v["approach_horizon_s"], v["look_m"], v["stale_s"], v["still_mps"])
     assert r.no_velocity_mps == v["no_velocity_mps"] and r.area is None
     table = make(GATE, "test")
-    assert watch_of(table, "t", r).cfg is table, "v0's settings and a table with its areas: the table's own config"
+    # since stage S7 the file's config holds no watch-derived threshold: v0's give them (10 s, 600 s)
+    cfg = watch_of(table, "t", r).cfg
+    assert cfg.roe is r and cfg.t["classifier_fresh_s"] == v["stale_s"] and cfg.t["tcpa_max_s"] == 2 * v["approach_horizon_s"]
+    assert {k: x for k, x in cfg.data.items() if k != "thresholds"} == {k: x for k, x in table.data.items() if k != "thresholds"}
     assert "the bridge's get_policy has no watch" in r.describe()["source"]
     assert ROE.V0_FILE.name == "policy-v0-watch.toml" and ROE.V0_FILE.is_file()
 
@@ -217,13 +220,21 @@ def test_the_headless_mapping_follows_the_look_distance():
 
 
 def test_the_playbook_runs_on_the_watch_settings():
-    """classifier_fresh_s is the watch's stale_s and tcpa_max_s twice its approach horizon; the area
-    where the table names none; the file's config, hash and all, under v0's."""
-    cfg = config()
-    assert under(cfg, v0()) is cfg
+    """classifier_fresh_s is the watch's stale_s and tcpa_max_s twice its approach horizon, and what
+    counts as settled its identification (`roe`); the area where the table names none. Since stage
+    S7 the file's config holds none of them (defaults.toml dropped them), so the run's config is the
+    file's with them, under v0's too, and a situation's table may not set them."""
+    cfg = file_config()
+    assert "classifier_fresh_s" not in cfg.t and "tcpa_max_s" not in cfg.t and "classification_settled" not in cfg.t
+    old = under(cfg, v0())
+    assert old.t["classifier_fresh_s"] == 10.0 and old.t["tcpa_max_s"] == 600.0 and old.roe is v0()
+    assert old == config() and old.hash != cfg.hash
     run = under(cfg, Roe.of_policy({"watch": {**TAILORED, "stale_s": 12}}))
-    assert run.t["classifier_fresh_s"] == 12.0 and run.t["tcpa_max_s"] == 480.0
-    assert run.hash != cfg.hash and run.name == cfg.name and cfg.t["tcpa_max_s"] == 600.0
+    assert run.t["classifier_fresh_s"] == 12.0 and run.t["tcpa_max_s"] == 480.0 and run.roe.bar == 0.75
+    assert run.hash != cfg.hash and run.name == cfg.name
+    for key in ("tcpa_max_s", "classifier_fresh_s", "classification_settled"):
+        with pytest.raises(ConfigError, match="watch settings"):
+            make({"thresholds": {key: 0.5}}, "x")
     area = {"name": "the bay entrance", "center": at(-6000), "radius_m": 2000.0}
     bare = make({}, "bare")
     run = under(bare, Roe.of_policy({"watch": {**TAILORED, "area": area}}))
@@ -238,4 +249,4 @@ def test_the_playbook_runs_on_the_watch_settings():
     e.plan(reads(policy={**PLAYBOOK_POLICY, "watch": TAILORED}))
     assert e.cfg.t["tcpa_max_s"] == 480.0 and e.file_cfg is cfg
     e.plan(reads())
-    assert e.cfg is cfg, "a bridge without watch: v0's, the file's config itself"
+    assert e.cfg == old and e.cfg.roe is v0(), "a bridge without watch: the file's under v0's"

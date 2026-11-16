@@ -19,8 +19,8 @@ it (each record's own values, `of_record`; a running agent's, `of_answer`).
   record of theirs is as it was). `of_record` reads `rec["settings"]` first, then the record's
   audit log when it still holds it (`audit_text`, the record as the episode builds it) or the one
   kept beside it (`audit`: batch.py's `keep_audit` writes `<name>.audit.jsonl`), else v0. No run
-  has logged a `[watch]` yet outside the rules being built, so every existing record is graded
-  under v0.
+  before rules 33 became the default (stage S7) logged a `[watch]` outside the staged rules, so
+  every result directory before it is graded under v0.
 - **A run's settings before it starts** (`for_run`): what a run of a scenario's policy file under
   a rules version will decide under, for its brief (eval/roe_card.py) and its stated truth: v0's
   under rules below 33 (what such a record is graded under), else the policy file's effective
@@ -243,6 +243,7 @@ def describe(s: Settings) -> str:
     area = (f"{s.area.radius_m / 1000.0:g} km around {s.area.name} [{s.area.center[0]:.4f}, {s.area.center[1]:.4f}]"
             if s.area is not None else "no circle")
     out = (f"{src}, sha256 {s.sha256()[:12]}: {area}; bar {s.bar:g}; {doms}; horizon {s.approach_horizon_s:g} s; "
+           f"an identify order {s.identify_on_station_s:g} s on station; stale after {s.stale_s:g} s; "
            f"still under {s.still_mps:g} m/s, no velocity taken at {nv}; look {s.look_m:g} m; {reserve}")
     if s.loosened:
         out += "; loosened: " + "; ".join(f"{k} ({why})" for k, why in s.loosened)

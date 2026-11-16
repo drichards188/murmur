@@ -80,6 +80,7 @@ fn world(t: Time) -> WorldSnapshot {
     let mut target = track(t, TARGET_AT, Some([0.0, 0.0]), Affiliation::Hostile, Domain::Surface);
     target.identity = Some("small_fast_boat".into());
     w.tracks.insert("T-0001".into(), target);
+    level_from_label(&mut w, "T-0001");
     w
 }
 

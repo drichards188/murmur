@@ -10,8 +10,9 @@ import math
 from pathlib import Path
 from typing import Any
 
-from playbook.config import make
+from playbook.config import make, under
 from playbook.reads import Reads
+from roe import v0
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "playbook"
 GATE = (-122.4783, 37.8199)
@@ -38,6 +39,14 @@ WATCH = {
 
 
 def config(**over: Any):
+    """The config the plays run on (playbook/config.py `under`) for the test table under v0's watch
+    settings, what the engine runs on when the bridge's `get_policy` serves no watch: since stage S7
+    the file's config holds no `classifier_fresh_s`, `tcpa_max_s` or settle bar (`file_config`)."""
+    return under(file_config(**over), v0())
+
+
+def file_config(**over: Any):
+    """The file's config for the test table (what the engine is given, its label the bridge's)."""
     table = copy.deepcopy(WATCH)
     table.update(over)
     return make(table, "test")
@@ -67,8 +76,11 @@ def track(tid: str, affiliation: str = "suspect", conf: float = 0.7, pos: list[f
          "course_deg": round(math.degrees(math.atan2(vel[0], vel[1])) % 360, 0), "pos_sigma_m": 5.0,
          "affiliation": affiliation, "affiliation_confidence": conf,
          "affiliation_reason": over.pop("reason", "fast small craft, no AIS" if affiliation == "suspect" else "AIS identity"),
+         # the feed's identity: a kind at the identification level (`level`, as the bridge always
+         # sends it with a kind), supported by these sensors
          "identity": {"kind": over.pop("kind", "small_fast_boat"), "confidence": over.pop("kind_conf", conf),
-                      "ais": over.pop("ais", None), "conflict": over.pop("conflict", None), "supported_by": ["radar", "eo_ir"]},
+                      "level": over.pop("level", "identify"), "ais": over.pop("ais", None),
+                      "conflict": over.pop("conflict", None), "supported_by": over.pop("supported_by", ["radar", "eo_ir"])},
          "sources": over.pop("sources", [{"uid": 1, "sensor": "radar", "hits": 40, "last_t": T0 - 1.0}]),
          "state": "active", "declared": over.pop("declared", None), "review": [], "age_s": 1.0, "stale": False,
          "pos_sigma_now_m": 6.0, "confidence_now": 0.95, "predicted": pos}

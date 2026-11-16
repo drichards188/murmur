@@ -6,7 +6,8 @@ officer (agents/watch/picture.py `Poller.approach`: who is in doubt; stakes.py `
 horizon, the still speed and the no-velocity speeds; stakes.py `watch_of`: the watch line from
 `area`), its case file (casefile.py: `unsettled`, `look_m`, `stale_s`) and the playbook
 (playbook/config.py `under`: `stale_s`, the approach horizon, the area where its table has none;
-its own "settled" stays its confidence-only check until stage S7).
+since stage S7 its "settled" is `identified`: playbook/plays/isr.py `look_reasons` and
+`custody_held`, playbook/ledger.py `see_classification`).
 
 - `Roe.of_policy(policy)`: the run's settings from MCP `get_policy`'s answer: its top-level
   `watch` (the effective settings the run decides under, from decision rules 33), else the frozen
@@ -22,7 +23,7 @@ its own "settled" stays its confidence-only check until stage S7).
   bar, and it has no conflict. As picture.py `resolved` and the picture side of
   eval/headless/v3/labels.py `resolved_at` judge it today, but for one row: an identity without a
   `supported_by` list is not identified here (the scoring reads it as no support; `resolved` let
-  it through).
+  it through). `shortfall(track)` says why not, in words (None when identified).
 - `in_doubt(track)`: not identified, or shown with an affiliation other than neutral,
   assumed_friend or friend: a contact leaves doubt only identified and shown clear (section 3).
   As eval/headless/v3/labels.py `in_doubt` holds it (a contact shown unknown, suspect or hostile
@@ -190,18 +191,32 @@ class Roe:
         return self._criteria.get(str(domain)) if domain is not None else None
 
     def identified(self, track: dict[str, Any]) -> bool:
+        return self.shortfall(track) is None
+
+    def shortfall(self, track: dict[str, Any], conflict: bool = True) -> str | None:
+        """Why `track` is not identified under these settings, in words (None: it is): the first
+        of its confidence under the bar, a conflict, its level short of its domain's, and none of
+        its domain's sensors supporting it, as `identified` judges them. `conflict=False` leaves a
+        conflict out (for a reader to which a conflict is a reason of its own: the playbook's look)."""
         ident = track.get("identity") or {}
         conf = _num(ident.get("confidence"))
-        if ident.get("conflict") or conf is None or conf < self.bar:
-            return False
+        if conf is None:
+            return "no identity"
+        if conf < self.bar:
+            return f"{conf:.2f} under the bar {self.bar:.2f}"
+        if conflict and ident.get("conflict"):
+            return "its identity in conflict"
         c = self.criteria(track.get("domain"))
         if c is None:
-            return False
+            return f"no criteria for its domain ({track.get('domain')})"
         level = ident.get("level")
         if level not in LEVELS or LEVELS.index(level) < LEVELS.index(c.level):
-            return False
+            return f"a {level or 'no'} level, short of {c.level}"
         support = ident.get("supported_by")
-        return isinstance(support, list) and bool(set(support) & set(c.sensors))
+        if not (isinstance(support, list) and set(support) & set(c.sensors)):
+            by = ", ".join(str(s) for s in support) if isinstance(support, list) and support else "no sensor"
+            return f"supported by {by}, not by {' or '.join(c.sensors)}"
+        return None
 
     def in_doubt(self, track: dict[str, Any]) -> bool:
         return not self.identified(track) or track.get("affiliation") not in CLEAR

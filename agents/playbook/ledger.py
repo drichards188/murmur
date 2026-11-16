@@ -460,7 +460,8 @@ class Ledger:
 
     def see_classification(self, tracks: list[dict[str, Any]], t: float, cfg: Any, classifying: tuple[str, ...]) -> None:
         """Each track's identity confidence over the last `classify_rise_s`, and since when a
-        classifying sensor of ours (EO/IR, sonar) has held it while unsettled (`since`): the
+        classifying sensor of ours (EO/IR, sonar) has held it while unsettled (`since`: the run's
+        watch does not count it identified, a conflict aside, as isr.unsettled judges it): the
         sensor-coverage suppression of a look runs only while that classification rises, and
         `classify_wait_max_s` at most from `since` (isr.look_reasons)."""
         th = cfg.t
@@ -475,8 +476,8 @@ class Ledger:
             c["t"] = round(t, 3)
             held = any(s.get("sensor") in classifying and isinstance(s.get("last_t"), (int, float))
                        and t - float(s["last_t"]) <= th["classifier_fresh_s"] for s in tr.get("sources") or [])
-            # confidence alone until stage S7 (agents/roe.py `Roe.identified`; isr.look_reasons)
-            if held and float(conf) < th["classification_settled"] and c.get("since") is None:
+            # agents/roe.py, the conflict left to its own reason (by confidence alone until stage S7)
+            if held and cfg.roe.shortfall(tr, conflict=False) is not None and c.get("since") is None:
                 c["since"] = round(t, 3)
 
     # ---- alerts and stuck vehicles ---------------------------------------------------------------------

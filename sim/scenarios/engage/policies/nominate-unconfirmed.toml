@@ -49,7 +49,7 @@
 # The whole file is logged at the start of every run, and replay decides with that copy.
 
 # Rules 33 (docs/SCENARIO-SETTINGS.md section 3): a loosening is named with its reason. Logged
-# from rules 33 only: scenario 75 runs under the default rules and logs what it always did.
+# from rules 33 only: scenario 75 under older rules (`--rules 32`) logs what it always did.
 loosened = { "identification.nominate_unconfirmed" = "scenario 75 tests a revocation that stops an engagement nominated on a rule declaration before anyone confirmed it" }
 
 [approval]

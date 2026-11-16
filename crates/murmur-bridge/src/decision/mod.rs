@@ -865,6 +865,8 @@ impl Decision {
             AuthMode::Credentials => roster.with_scripted(p.scripted.clone()),
             AuthMode::Dev => roster,
         };
+        // the run's stale time, which the tracker's drop age is never under
+        let stale_s = p.policy.rules.watch().stale_s;
         let engine = Engine::start(
             p.policy,
             Some(p.areas.clone()),
@@ -873,12 +875,15 @@ impl Decision {
                 pointer: p.pointer,
                 from: p.carried_from,
                 // rules 16: the tracker's drop age (the injected tracker's, else this process's
-                // settings, which the store `tracks::init` makes later reads too)
-                track_drop_s: Some(
+                // settings, which the store `tracks::init` makes later reads too), never under the
+                // run's stale time (the store is handed this policy's watch before its first
+                // truth message, `Tracks::set_watch`)
+                track_drop_s: Some(crate::tracks::drop_floor(
                     p.tracks
                         .as_ref()
                         .map_or_else(|| crate::tracks::Settings::from_env().drop_s, |t| t.drop_s()),
-                ),
+                    stale_s,
+                )),
                 policy_layers: p.policy_layers,
             },
             Box::new(clock.clone()),

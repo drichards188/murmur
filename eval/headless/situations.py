@@ -45,6 +45,10 @@ GATE = load_world(DEFAULT_WORLD).point("bridge")
 #: the terrain grid baked from tidewater (sim/headless/terrain/README.md): the Golden Gate
 #: world's surface grid
 TERRAIN_GRID: Path = load_world(DEFAULT_WORLD).surface_grid  # type: ignore[assignment]
+#: the situations' watch policy, and its supplement for a run on the legacy sensing model (the v1
+#: world, and the v2 families built on Harbor watch: docs/SCENARIO-SETTINGS.md section 4)
+WATCH_POLICY = REPO / "sim" / "situations" / "policies" / "watch.toml"
+LEGACY_POLICY = REPO / "sim" / "situations" / "policies" / "legacy-v1v2.toml"
 #: the station's ports in a headless run: identifiers only, nothing is bound
 HTTP_PORT = 9565
 VEHICLE_BASE = 29000
@@ -307,9 +311,27 @@ def run_id(e: EpisodeSpec, seed: int) -> str:
     return opaque_run_id(e.family or e.name, e.situation_seed, rep)
 
 
+def run_policy(sit: Situation) -> Path:
+    """The policy a situation runs under headless: its own, but in the Golden Gate's own world (the
+    v1 world, and the v2 families built on Harbor watch: the legacy sensing model, `process_spec`)
+    the situations' watch policy's legacy supplement (sim/situations/policies/legacy-v1v2.toml:
+    what rules 33 would state wrongly on that model set right; docs/SCENARIO-SETTINGS.md section
+    4), and a situation of that world naming another policy is refused (the supplement extends
+    watch.toml)."""
+    assert sit.policy is not None
+    if sit.world != DEFAULT_WORLD:
+        return sit.policy
+    if Path(sit.policy).resolve() != WATCH_POLICY.resolve():
+        raise ValueError(f"{sit.path}: a situation of the Golden Gate's own world runs headless on the legacy sensing "
+                         f"model under {LEGACY_POLICY.relative_to(REPO)}, which extends watch.toml, not "
+                         f"{sit.policy}: give that model a supplement of its policy")
+    return LEGACY_POLICY
+
+
 def from_situation(path_or_name: str | Path) -> EpisodeSpec:
     """A situation file (sim/situations/), as its runner would run it on autoplay: its world and
-    `[headless]` choices, and its timeline (`[[step]]`) as the script's items (`timeline`)."""
+    `[headless]` choices, its policy as it runs headless (`run_policy`, which its AI's brief and
+    card state), and its timeline (`[[step]]`) as the script's items (`timeline`)."""
     sit: Situation = load_situation(path_or_name)
     if sit.todo:
         raise ValueError(f"{sit.path}: a stub, not runnable")
@@ -317,12 +339,14 @@ def from_situation(path_or_name: str | Path) -> EpisodeSpec:
     for f in sit.events:
         events += list(tomllib.loads(Path(f).read_text()).get("event", []))
     assert sit.fleet is not None and sit.policy is not None
+    policy = run_policy(sit)
     return EpisodeSpec(
-        name=sit.name, fleet=sit.fleet, contacts=sit.contacts, policy=sit.policy, at=sit.at,
+        name=sit.name, fleet=sit.fleet, contacts=sit.contacts, policy=policy, at=sit.at,
         duration_s=sit.duration_s, ai_start_s=sit.ai_start_s, ready_timeout_s=sit.ready_timeout_s,
         orders=list(sit.orders), playbook=dict(sit.playbook), autoplay=dict(sit.autoplay), seed=sit.seed,
-        events=events, path=sit.path, config_name=sit.name, brief=brief_text(sit), script=timeline(sit),
-        map=sit.world, domain_rule=sit.domain_rule, currents=sit.currents, conditions_from=sit.conditions,
+        events=events, path=sit.path, config_name=sit.name, brief=brief_text(sit, policy=policy),
+        script=timeline(sit), map=sit.world, domain_rule=sit.domain_rule, currents=sit.currents,
+        conditions_from=sit.conditions,
         space_snapshot=load_world(sit.world).space if sit.world != DEFAULT_WORLD else None,
         world="v1" if sit.world == DEFAULT_WORLD else "v3",
     )

@@ -57,7 +57,7 @@ def test_investigate_takes_an_unknown_with_no_classification_inside_the_area():
     res, _ = look(reads(vehicles=FLEET, tracks=[t]))
     assert [c.target for c in res.candidates] == ["T-1"]
     assert res.candidates[0].trigger == ["inside the Golden Gate approaches",
-                                         "classification 0.00 under 0.60, no EO/IR or sonar of ours on it"]
+                                         "not identified (0.00 under the bar 0.60), no EO/IR or sonar of ours on it"]
 
 
 def test_investigate_does_not_look_for_classification_at_a_track_our_eo_ir_already_has():
@@ -558,7 +558,7 @@ def test_a_far_camera_that_cannot_identify_does_not_hold_custody():
     r.tracks["tracks"][0]["identity"]["confidence"] = 0.59
     res, _ = custody(r)
     assert [c.uid for c in res.candidates] == [3, 2]
-    assert res.candidates[0].trigger[1] == "PUMA 1 eo_ir has it, its identity 0.59 under 0.60"
+    assert res.candidates[0].trigger[1] == "PUMA 1 eo_ir has it, not identified (0.59 under the bar 0.60)"
 
 
 def test_custody_reads_a_lost_link_gap_without_rules_30():

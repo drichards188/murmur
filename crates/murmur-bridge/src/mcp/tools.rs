@@ -344,7 +344,8 @@ pub struct NominationsParams {
 pub struct NominationOptionsParams {
     /// The track id (from get_tracks) of a track declared hostile.
     pub track_id: String,
-    /// The effect radius in metres (default 75; the policy caps it).
+    /// The effect radius in metres (default from the policy, get_policy's engage_defaults; the
+    /// policy caps it).
     pub effect_radius_m: Option<f64>,
     /// The window closes this many seconds from now (default from the policy).
     pub window_s: Option<u32>,
@@ -520,8 +521,10 @@ pub fn tools() -> Vec<Tool> {
             "get_intents",
             format!(
                 "Read the intents of this run, newest first: state, source (human or agent \
-                 and its id), task, vehicles, checks, policy decision, approval and history. \
-                 Filter by state or to your own. {STALE_NOTE}"
+                 and its id), task, vehicles, checks, policy decision, approval and history; \
+                 an identify order still looking carries identify_progress (its vehicle's best \
+                 own look so far against the scenario's bar, level and sensors). Filter by \
+                 state or to your own. {STALE_NOTE}"
             ),
             true,
         ),
@@ -783,7 +786,9 @@ pub fn tools() -> Vec<Tool> {
              and rule it matched, why it needs a human (armed platform, leaving the approved \
              area, an unverifiable check), who decided it and how (policy, an operator in \
              the inbox, or the operator's own submission), its history, its tasking once \
-             dispatched, and a plain summary of where it stands."
+             dispatched, an identify order's identify_progress while it looks (its \
+             vehicle's best own look so far against the scenario's bar, level and sensors), \
+             and a plain summary of where it stands."
                 .into(),
             true,
         ),

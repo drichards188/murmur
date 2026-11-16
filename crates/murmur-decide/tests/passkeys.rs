@@ -67,6 +67,7 @@ fn engage_world(t: Time) -> WorldSnapshot {
             velocity_sigma_mps: None,
         },
     );
+    level_from_label(&mut w, "T-0001");
     w
 }
 

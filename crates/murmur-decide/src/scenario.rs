@@ -1457,6 +1457,15 @@ pub fn run(
             i.nominate_unconfirmed = o.nominate_unconfirmed;
         }
         i.validate().map_err(setup)?;
+        // rules 33: a loosening is named with its reason (the floor; replay checks it): the
+        // runner's setting names itself where the file does not
+        if i.nominate_unconfirmed() {
+            policy
+                .loosened
+                .get_or_insert_with(Default::default)
+                .entry(crate::policy::LOOSENABLE[0].to_string())
+                .or_insert_with(|| "the scenario runner's --nominate-unconfirmed, an evaluation's setting over the file's policy".into());
+        }
         policy.identification = Some(i);
         policy.sync();
     }

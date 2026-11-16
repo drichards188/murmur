@@ -12,7 +12,7 @@ agents/roe.py for the agents. It fails on:
   standing policy (sim/policy.toml), the frozen v0 file and the four whole policy fixtures that write
   the standing values out (`WHOLE_POLICIES`, pinned) or a supplement (`extends`: the decision layer
   refuses a key it sets equal to what it inherits); the playbook's own copies (`PLAYBOOK_KEYS`, read
-  from the watch since stage S5) in agents/playbook/defaults.toml only, until stage S7;
+  from the watch since stage S5 and S7) nowhere, its defaults.toml included (stage S7 took them out);
 - **a situation repeating its policy's circle**: a `[playbook]` watch area or protected point at the
   centre its policy's `[watch.area]` already gives (the playbook takes the area from the policy);
 - **an inventory site that stops reading the settings** (`SITES`): each reader that held a copy before
@@ -71,17 +71,16 @@ ALLOWED = set(READERS) | set(PINNED)
 WHOLE_POLICIES = {
     "sim/scenarios/engage/policies/no-engagement-tier.toml": "6cd9682129977f2f607b52f3500284ffb75188fc0dce15b470893f511620b0cb",
     "sim/scenarios/engage/policies/orbit-never-queued.toml": "127587e49e7ca9e871d91a0699f2df08a9e7c820c060ecda459999e20b31aff3",
-    "sim/scenarios/engage/policies/nominate-unconfirmed.toml": "2146a85038fd5f55960ce2da568360f7261babeceacb7680905f41debf0bfa4a",
+    "sim/scenarios/engage/policies/nominate-unconfirmed.toml": "eb0a410348f7776246bd9fe8bedf2922dbc23eef87072df7137cf23b34a8dc9b",
     "eval/policy/base.toml": "fc2d1ecb6b7c2618ee06dab681ad85831d89408a04104b7d0f05b0338346a326",
 }
 STANDING = ("sim/policy.toml", "sim/policy-v0-watch.toml")
 #: a policy's settings keys outside `[watch]` (dotted paths)
 RULES_KEYS = ("rules.reserve_pct", "rules.task_duration_s", "rules.engage.min_identity_confidence",
               "rules.engage.min_identity_level", "rules.engage.default_effect_radius_m", "rules.silent.drift_mps")
-#: the playbook's copies of the watch's values (agents/playbook/config.py `FROM_WATCH`, and its
-#: confidence-only "settled" until stage S7): agents/playbook/defaults.toml's only
+#: the playbook's copies of the watch's values (agents/playbook/config.py `FROM_WATCH` and `RETIRED`:
+#: its confidence-only "settled" until stage S7): in no file, agents/playbook/defaults.toml included
 PLAYBOOK_KEYS = ("classifier_fresh_s", "tcpa_max_s", "classification_settled")
-PLAYBOOK_DEFAULTS = "agents/playbook/defaults.toml"
 
 #: what each reader that held a copy before stage S6 reads now: (file, function or class.method, the
 #: text its body must hold)
@@ -133,6 +132,12 @@ SITES = [
     ("eval/headless/agents_v2.py", "OracleHonest", ("V2L.RESERVE_PCT", "V2L.JUSTIFY_HORIZON_S")),
     ("eval/situation.py", "situation_card", ("for_run(", "render(")),
     ("eval/situation_run.py", "policy_guard", ("show(", "situation_card(")),
+    # stage S7: the playbook's "settled", its classification at 0.6 at any level until then
+    ("agents/playbook/plays/isr.py", "unsettled", ("roe.shortfall(",)),
+    ("agents/playbook/plays/isr.py", "custody_held", ("roe.identified(",)),
+    ("agents/playbook/plays/isr.py", "look_thresholds", ("roe.bar",)),
+    ("agents/playbook/ledger.py", "Ledger.see_classification", ("roe.shortfall(",)),
+    ("eval/headless/agents_v2.py", "LookAtFerries.evaluate", ("V2L.RESOLVE_CONF",)),
 ]
 
 
@@ -260,8 +265,6 @@ def test_no_file_copies_a_setting_outside_the_standing_policy_the_frozen_files_a
         except tomllib.TOMLDecodeError:
             continue
         keys = setting_keys(raw)
-        if rel == PLAYBOOK_DEFAULTS:
-            keys = [k for k in keys if k.split(".")[-1] not in PLAYBOOK_KEYS]  # until stage S7
         if "extends" in raw:
             # a supplement: the decision layer refuses a key it sets equal to what it inherits, so
             # what it sets is the scenario's own choice; the playbook's copies are never its

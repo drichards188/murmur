@@ -5,7 +5,8 @@ record built from their files, so one metrics function scores both sides.
     .venv/bin/python -m eval.headless.fullstack record logs/headless-g1/gate/seed-1
 
 `run`: for each seed, a copy of `sim/situations/harbor-watch.toml` with only `seed = k` changed
-(the autoplay operator's draws), then `make situation NAME=<copy> AI=playbook OPERATOR=autoplay`
+(the autoplay operator's draws) and its policy the one its headless episode runs under
+(situations.py `run_policy`, the legacy sensing model's supplement), then `make situation NAME=<copy> AI=playbook OPERATOR=autoplay`
 on the assigned port block (CRITERIA.md) with `MURMUR_LINKEMU_SEED` = k (the link emulator's
 draws, as the simulator's for that copy: `stack_env`), one run at a time: the commit, the
 binaries' hashes and the untracked inputs recorded (`provenance.json`), the ports checked free first; after
@@ -124,6 +125,10 @@ def stack_provenance(env: dict[str, str]) -> dict[str, Any]:
 
 
 def run_one(seed: int, out_root: Path) -> Path:
+    from eval.situation import load_situation
+
+    from .situations import run_policy
+
     out_root.mkdir(parents=True, exist_ok=True)
     busy = listening()
     if busy:
@@ -135,6 +140,12 @@ def run_one(seed: int, out_root: Path) -> Path:
     new, n = re.subn(r"(?m)^seed = \d+", f"seed = {seed}", text)
     if n != 1:
         raise SystemExit("harbor-watch.toml: no single `seed = ` line")
+    # the policy its headless episode runs under (situations.py `run_policy`: a v1 situation, on
+    # the legacy sensing model, as `stack_env` pins it)
+    policy = run_policy(load_situation(SITUATION)).relative_to(REPO)
+    new, n = re.subn(r'(?m)^policy = "[^"]*"', f'policy = "{policy}"', new)
+    if n != 1:
+        raise SystemExit("harbor-watch.toml: no single `policy = ` line")
     copy.write_text(new)
     env = stack_env(seed)
     prov = stack_provenance(env)

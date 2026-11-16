@@ -117,10 +117,12 @@ impl Settings {
             eval_truth: var("MURMUR_EVAL_TRUTH").is_some_and(|v| {
                 !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
             }),
+            // as asked: the store never drops a track before it is stale (`Tracks::drop_s`
+            // floors it at the run's stale time, the watch's `stale_s` from rules 33)
             drop_s: var("MURMUR_TRACK_DROP_S")
                 .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(180.0f64)
-                .max(model::STALE_S),
+                .filter(|s: &f64| s.is_finite())
+                .unwrap_or(180.0f64),
             model: var("MURMUR_SENSE_MODEL").and_then(|s| match s.parse() {
                 Ok(m) => Some(m),
                 Err(e) => {
@@ -131,6 +133,14 @@ impl Settings {
             sim_token: var("MURMUR_SIM_TOKEN").map(|t| t.trim().to_string()),
         }
     }
+}
+
+/// The drop time a run's tracker keeps (`Tracks::drop_s`, and `run.started`'s `track_drop_s`):
+/// `MURMUR_TRACK_DROP_S` as asked, but never under the run's stale time `stale_s` (a track goes
+/// stale before it drops: the same notion as stale, which the watch's `stale_s` sets from rules
+/// 33; before them the fixed 10 s, `model::STALE_S`).
+pub fn drop_floor(asked_s: f64, stale_s: f64) -> f64 {
+    asked_s.max(stale_s)
 }
 
 /// The header the contacts process sends its token in.
@@ -446,15 +456,17 @@ impl Tracks {
     }
 
     /// Rules 16: how long a track goes without a detection before it is dropped (s, the run's
-    /// `MURMUR_TRACK_DROP_S`, every domain alike), logged in `run.started` for replay.
+    /// `MURMUR_TRACK_DROP_S`, every domain alike), logged in `run.started` for replay. Never under
+    /// the run's stale time (`stale_s`: a track goes stale before it drops; the fixed
+    /// [`model::STALE_S`] until rules 33 made it the watch's `stale_s`).
     pub fn drop_s(&self) -> f64 {
-        self.settings.drop_s
+        drop_floor(self.settings.drop_s, self.stale_s())
     }
 
     /// The tracker's memories for the keep-out explanation, this run's stale and drop times
     /// included.
     pub fn memory(&self) -> murmur_decide::keepout::TrackerMemory {
-        model::memory(self.stale_s(), self.settings.drop_s)
+        model::memory(self.stale_s(), self.drop_s())
     }
 
     /// Rules 33 (docs/SCENARIO-SETTINGS.md section 3): the run's watch settings as the tracker
@@ -1272,7 +1284,7 @@ impl Tracks {
     }
 
     fn drop_old(&self, inner: &mut Inner, now: f64) {
-        let drop_s = self.settings.drop_s;
+        let drop_s = self.drop_s();
         let gone: Vec<String> = inner
             .tracks
             .values()
@@ -1610,7 +1622,7 @@ impl Tracks {
             "t": round(now, 2),
             "count": tracks.len(),
             "stale_after_s": self.stale_s(),
-            "drop_after_s": self.settings.drop_s,
+            "drop_after_s": self.drop_s(),
             "tracks": tracks,
             // rules 16: contacts the tracker dropped that the keep-outs still count
             "lost": self.lost_json(),

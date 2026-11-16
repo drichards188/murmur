@@ -77,6 +77,7 @@ fn world(t: Time, others: &[(&str, TrackFacts)]) -> WorldSnapshot {
     target.identity = Some("small_fast_boat".into());
     target.declared_by = Some("op-1".into());
     w.tracks.insert("T-0001".into(), target);
+    level_from_label(&mut w, "T-0001");
     for (id, f) in others {
         w.tracks.insert((*id).to_string(), f.clone());
     }

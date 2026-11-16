@@ -785,21 +785,21 @@ def test_the_watch_policy_is_the_shipped_one_plus_agent_tasking():
 def test_the_v3_watches_policies_are_the_watch_policy_and_their_circle():
     """golden-gate-v3-watch, san-diego-watch and golden-gate-scale-watch each name a supplement of
     the watch policy that sets only its `[watch.area]`, v0's circle for its world
-    (sim/policy-v0-watch.toml; docs/SCENARIO-SETTINGS.md stage S2). Under the default rules a run
-    logs exactly the watch policy and serves the legacy watch with that circle; under rules 33 the
-    circle is in the logged policy."""
+    (sim/policy-v0-watch.toml; docs/SCENARIO-SETTINGS.md stage S2). Under rules 32 a run logs
+    exactly the watch policy and serves the legacy watch with that circle; under rules 33, the
+    default, the circle is in the logged policy."""
     from eval.headless.v3 import settings as V
     from eval.policy_file import show
 
-    watch = show(S.SITUATIONS / "policies" / "watch.toml")
+    watch = show(S.SITUATIONS / "policies" / "watch.toml", rules=32)
     for name in WATCHES_V3:
         sit = S.load_situation(name)
         assert sit.policy == (S.SITUATIONS / "policies" / f"{name}.toml").resolve()
-        shown = show(sit.policy)
+        shown = show(sit.policy, rules=32)
         assert [layer["path"] for layer in shown["layers"]][1:] == ["watch.toml", "../../policy.toml"]
         assert shown["policy"] == watch["policy"], name
         assert V.watch_of(shown["watch"], "logged").watch() == V.v0(sit.world).watch(), name
-        new = show(sit.policy, rules=33)
+        new = show(sit.policy)
         assert new["policy"]["watch"]["area"] == V.v0(sit.world).watch()["area"], name
 
 
@@ -1450,10 +1450,15 @@ def test_the_ai_starts_in_an_empty_directory_of_its_own(tmp_path: Path, monkeypa
         def poll(self):
             return 0
 
+    runner = _runner(tmp_path, ai="claude")
+    # the brief with its ROE card (decision rules 33: murmur-policy show reads the policy), made
+    # before Popen is faked
+    text = R.brief_text(runner.sit, (runner.card or {}).get("rules"))
+    assert "Identify every contact" in text, "the card after the brief"
+    monkeypatch.setattr(R, "brief_text", lambda sit, rules=None, policy=None: text)
     monkeypatch.setattr(R.subprocess, "Popen", FakePopen)
     monkeypatch.setenv("MURMUR_SIM_TOKEN", "secret")
     monkeypatch.setenv("MURMUR_AGENT_KEY", "k")
-    runner = _runner(tmp_path, ai="claude")
     runner.zero = time.time()
     runner.start_ai()
     cwd = Path(seen["cwd"]).resolve()

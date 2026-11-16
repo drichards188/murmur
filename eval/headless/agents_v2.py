@@ -1780,14 +1780,15 @@ FERRY_PLAY = "perturb.look_at_ferries"
 
 class LookAtFerries(Play):
     """A look at every track shown neutral with an AIS identity, once per track, ranked below every
-    real look; let go once the classification is settled, the track is dropped, or after 90 s."""
+    real look; let go once the classification is settled (v2's own: its frozen labels' 0.6 by a
+    classifying sensor, as the playbook's `classification_settled` was until stage S7 of
+    docs/SCENARIO-SETTINGS.md), the track is dropped, or after 90 s."""
 
     name, klass = FERRY_PLAY, P2
     SCORE = 0.2
 
     def evaluate(self, b: Any, led: Any) -> Result:
         res = Result()
-        th = b.cfg.t
         for _, e in sorted(led.entries.items(), key=lambda kv: int(kv[0])):
             if e["play"] != self.name or not runs(e, b):
                 continue
@@ -1799,7 +1800,7 @@ class LookAtFerries(Play):
             why = None
             if tr is None:
                 why = f"{tid} was dropped by the tracker"
-            elif tr.kind_conf >= th["classification_settled"] and any(s in CLASSIFYING for _, s, _ in tr.sources):
+            elif tr.kind_conf >= V2L.RESOLVE_CONF and any(s in CLASSIFYING for _, s, _ in tr.sources):
                 why = f"{tid} is classified ({tr.kind} {tr.kind_conf:.2f})"
             elif b.t - float(e.get("state_t") or e.get("proposed_t") or b.t) >= FERRY_LOOK_S:
                 why = f"looked at {tid} for {FERRY_LOOK_S:.0f} s"

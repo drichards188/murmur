@@ -40,7 +40,7 @@ platform.
 |---|---|---|---|
 | existence confidence now | at least 0.5 | `isr.investigate`, `isr.armed_overwatch` | more likely than not that the contact is there: the same 0.5 as the rule book's `C_MIN` |
 | affiliation confidence | at least 0.5 | `isr.armed_overwatch`; withdraw on neutral or assumed friend | the rule book's `C_MIN` ("more likely than not"); below it the picture does not support an armed task |
-| classification settled | identity confidence 0.6 | `isr.investigate` | the engagement rules' `min_identity_confidence`: the identity confidence the engine itself treats as settled |
+| classification settled | identified as the scenario's watch counts it (`agents/roe.py`: its kind at its domain's level from one of its domain's sensors, the bar 0.6 standing, no conflict) | `isr.investigate`, `isr.custody` | the scenario's `[watch]` (docs/SCENARIO-SETTINGS.md, stage S7), what the brief, the engine's identify order and the scoring count as identified; until S7 the engagement rules' `min_identity_confidence`, 0.6, at any level (`classification_settled`) |
 | fast | above 8 m/s (15.5 kn) | `isr.investigate` | faster than a displacement hull under 10 m can go (hull speed about 1.34 x sqrt(waterline ft) kn, 7.3 kn at 30 ft): a small contact this fast is planing, the fast-craft profile of force protection |
 | CPA alert | 457 m (500 yd) | `isr.investigate`, `isr.armed_overwatch` | the 500-yard naval vessel protection zone of 33 CFR 165 subpart G, the distance inside which an approach to a protected US naval vessel is regulated |
 | TCPA horizon | 600 s | `isr.investigate`, `isr.armed_overwatch` | inside the policy's assumed task length (`task_duration_s` 900): a look proposed now is still on station at the closest approach |
@@ -197,8 +197,9 @@ Each item has a test in `agents/tests/test_playbook_review3.py` that failed befo
 (`hostile-act-air-to-air` does), so the shipped defaults and their hash are as they were. It adds no
 threshold: a sensor "holds" a track as `isr.investigate` reads coverage (an EO/IR or sonar of ours
 that detected it within `classifier_fresh_s`, 10 s) and only while the track's identity is settled
-(`classification_settled`, the engagement rules' 0.6: a camera far off that sees the contact but
-cannot identify it is the case docs/NODE-LOSS.md section 1 describes, an identity stuck at 0.59), a
+(`classification_settled`, the engagement rules' 0.6; since stage S7 of docs/SCENARIO-SETTINGS.md
+the scenario's watch counting it identified, `agents/roe.py`: a camera far off that sees the contact
+but cannot identify it is the case docs/NODE-LOSS.md section 1 describes, an identity stuck at 0.59), a
 track out of view (stale) is left alone because the engine sends an identify only to a contact our
 sensors see, a vehicle is silent by its rules 30 standing or,
 under older rules, as `link.cover_gap` reads a gap (`link_gap_factor` x its `lost_after_s`), and a

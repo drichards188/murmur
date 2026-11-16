@@ -907,9 +907,10 @@ async fn fleet_facts_carry_age_and_staleness() {
     assert_eq!(v["status"], 404);
 }
 
-/// Rules 33 (staged, docs/SCENARIO-SETTINGS.md): `get_policy`'s `watch` is the policy's own
-/// `[watch]`, its circle included, in the design's schema (what agents/roe.py reads), and the
-/// logged policy carries the same; under the default rules the legacy values keep the circle.
+/// Rules 33 (docs/SCENARIO-SETTINGS.md): `get_policy`'s `watch` is the policy's own `[watch]`, its
+/// circle included, in the design's schema (what agents/roe.py reads), and the logged policy
+/// carries the same, with the nomination's defaults (`engage_defaults`, as `GET /api/policy`);
+/// under rules 32 the legacy values keep the circle, and no defaults are served.
 #[tokio::test(start_paused = true)]
 async fn get_policy_serves_the_watch_the_run_decides_under() {
     let area = || murmur_decide::WatchArea {
@@ -938,13 +939,18 @@ async fn get_policy_serves_the_watch_the_run_decides_under() {
     assert_eq!(domains, ["air", "ground", "subsurface", "surface"]);
     assert_eq!(w["domain"]["air"], json!({"level": "identify", "sensors": ["eo_ir"], "grace_s": 30.0}));
     assert_eq!(&policy["policy"]["watch"], w);
-    // the default rules: the legacy values with the scenario's circle, nothing logged
-    let r = rig_policy(|p| p.watch.as_mut().expect("written out").area = Some(area()));
+    assert_eq!(policy["engage_defaults"], json!({"effect_radius_m": 75.0, "window_s": 600}));
+    // rules 32: the legacy values with the scenario's circle, nothing logged, no defaults served
+    let r = rig_policy(|p| {
+        p.rules.rules_version = murmur_decide::REACH_NOW_SINCE;
+        p.watch.as_mut().expect("written out").area = Some(area());
+    });
     let policy = r.ok(&planner(), "get_policy", json!({})).await;
     let mut legacy = murmur_decide::WatchSettings::legacy().clone();
     legacy.area = Some(area());
     assert_eq!(policy["watch"], serde_json::to_value(legacy).expect("json"));
     assert!(policy["policy"].get("watch").is_none());
+    assert!(policy.get("engage_defaults").is_none(), "{policy}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -956,10 +962,10 @@ async fn the_other_reads_answer() {
     assert!(areas["areas"].to_string().contains("alcatraz"));
     let policy = r.ok(&planner(), "get_policy", json!({})).await;
     assert!(policy["policy"]["tier"].as_array().is_some_and(|t| !t.is_empty()), "{policy}");
-    // the watch the run decides under (docs/SCENARIO-SETTINGS.md): under the default rules the
-    // legacy values, the shipped policy naming no circle; the logged policy carries none
-    assert_eq!(policy["watch"], serde_json::to_value(murmur_decide::WatchSettings::legacy()).expect("json"), "{policy}");
-    assert!(policy["policy"].get("watch").is_none(), "{policy}");
+    // the watch the run decides under (docs/SCENARIO-SETTINGS.md): under the default rules (33) the
+    // shipped policy's, its standing values, naming no circle; the logged policy carries the same
+    assert_eq!(policy["watch"], serde_json::to_value(murmur_decide::WatchSettings::default()).expect("json"), "{policy}");
+    assert_eq!(policy["policy"]["watch"], policy["watch"], "{policy}");
     let platforms = r.ok(&planner(), "get_platforms", json!({})).await;
     assert!(platforms["platforms"].as_array().is_some_and(|p| p.len() > 20));
     // a hold: the mode change is a vehicle event
@@ -2866,6 +2872,8 @@ async fn api_policy_serves_the_policy_its_rules_and_the_nominations_defaults() {
     assert_eq!(v["rules_version"], murmur_decide::RULES_VERSION);
     assert_eq!((&v["policy"], &v["watch"]), (&mcp["policy"], &mcp["watch"]));
     assert_eq!(v["engage_defaults"], json!({"effect_radius_m": 75.0, "window_s": 600}));
+    // rules 33: MCP get_policy serves the same defaults
+    assert_eq!(mcp["engage_defaults"], v["engage_defaults"]);
     assert_eq!(r.log.lines().len(), lines, "nothing logged");
     let t = rig_policy(rules33(|p| {
         let e = p.rules.engage.as_mut().expect("[rules.engage]");
@@ -2905,7 +2913,7 @@ async fn the_default_effect_radius_is_the_policys() {
 /// older rules, and where nothing is shown, they are as they were.
 #[test]
 fn the_reach_notes_say_the_reach_is_the_even_chance_range_under_rules_33() {
-    let r32 = murmur_decide::RulesConfig::default();
+    let r32 = murmur_decide::RulesConfig { rules_version: murmur_decide::REACH_NOW_SINCE, ..murmur_decide::RulesConfig::default() };
     let r33 = murmur_decide::RulesConfig { rules_version: murmur_decide::SCENARIO_SETTINGS_SINCE, ..murmur_decide::RulesConfig::default() };
     let w = murmur_decide::WatchSettings { bar: 0.75, ..murmur_decide::WatchSettings::default() };
     let options = json!({"track": "T-0001", "vehicles": [], "note": "read-only: nothing was created or logged; passing first, soonest there first"});

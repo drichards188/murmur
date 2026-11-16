@@ -240,7 +240,8 @@ fn root() -> PathBuf {
 #[test]
 fn the_reach_now_is_logged_where_it_is_read_and_under_rules_32_only() {
     let f = root().join("sim/scenarios/engage/146-identify-in-fog-refused-until-it-lifts.toml");
-    let now = scenario::run_file(&f, &root(), &RunOptions::default()).unwrap();
+    // under rules 32 by name: relabelled 31 below (rules 33 log more, tests/rules33.rs)
+    let now = scenario::run_file(&f, &root(), &RunOptions { rules_version: Some(REACH_NOW_SINCE), ..RunOptions::default() }).unwrap();
     assert!(now.ok, "{:?}", now.failures);
     assert!(now.replay_ok, "{:?}", now.replay_mismatches);
     assert!(now.log.contains("\"reach_now\":{\"value\":{\"alt_m\":150.0,\"visibility_m\":50.0"));

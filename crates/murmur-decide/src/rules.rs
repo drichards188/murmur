@@ -282,21 +282,25 @@ pub enum UnknownEndurance {
 /// ([`REACH_NOW_SINCE`]): a sensor's reach is judged under the conditions where its vehicle is
 /// now (the visibility, the light, its height), as the physical sensing model predicts it, not on
 /// a clear day: an identify order's standoff and its refusal, and an engagement's assessment.
-pub const RULES_VERSION: u32 = REACH_NOW_SINCE;
+/// Version 33 ([`SCENARIO_SETTINGS_SINCE`]): the thresholds are the scenario's, its policy's
+/// `[watch]` (what counts as identified, stale and approaching) read by the engine, the bridge,
+/// the agents and the scoring alike; an identify order ends only on the sent vehicle's own look
+/// meeting its domain's criteria, and an engagement needs its target identified at its kind.
+pub const RULES_VERSION: u32 = SCENARIO_SETTINGS_SINCE;
 
 /// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
 /// except on a branch that builds the next version in stages before making it the default
-/// (docs/NODE-LOSS.md section 8, as rules 30 was built). There a run still decides under
+/// (docs/NODE-LOSS.md section 8, as rules 30 and 33 were built). There a run still decides under
 /// [`RULES_VERSION`], so its logs, fixtures and digests stay as they were, and decides under this
 /// version only when asked: a scenario's `min_rules`, the scenario runner's `--rules N`, a test's
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
 /// and this to [`RULES_VERSION`] again.
-pub const RULES_NEWEST: u32 = SCENARIO_SETTINGS_SINCE;
+pub const RULES_NEWEST: u32 = RULES_VERSION;
 
 /// The rules version from which the thresholds are the scenario's (docs/SCENARIO-SETTINGS.md, the
-/// owner's decision of 2026-11-16, DECISIONS.md "Thresholds are the scenario's"; built in stages,
-/// [`RULES_NEWEST`] until the last makes it the default). Up to rules 32 what counts as identified,
+/// owner's decision of 2026-11-16, DECISIONS.md "Thresholds are the scenario's"; built in stages
+/// behind [`RULES_NEWEST`], the default since stage S7). Up to rules 32 what counts as identified,
 /// stale, approaching or adrift was a constant here, another in the bridge and others again in the
 /// agents and the scoring, and they disagreed (the engine ended an identify order on a first naming
 /// at 0.11 confidence; the brief counted a contact identified only at 0.6). From this version the
@@ -310,9 +314,9 @@ pub const RULES_NEWEST: u32 = SCENARIO_SETTINGS_SINCE;
 /// says: a run of older rules refuses a policy whose `[watch]` (the area aside) or new keys differ
 /// from the standing values ([`crate::Policy::fits_rules`]). Stage S2 parses, bounds, logs and
 /// replays them; in S3 the engine reads them ([`IDENTIFY_CRITERIA_SINCE`],
-/// [`ENGAGE_IDENTITY_LEVEL_SINCE`], out of view, the silent drift); the bridge's readers come in
-/// S4. Every gate of that change reads this constant, never a literal (the held branch
-/// `rules33-class-reach` numbers itself 33 too: the one that lands second renumbers here).
+/// [`ENGAGE_IDENTITY_LEVEL_SINCE`], out of view, the silent drift); the bridge's readers came in
+/// S4, and S7 made it the default. Every gate of that change reads this constant, never a literal
+/// (the held branch `rules33-class-reach` numbers itself 33 too: it renumbers if it lands).
 pub const SCENARIO_SETTINGS_SINCE: u32 = 33;
 
 /// Rules 33, stage S3 of docs/SCENARIO-SETTINGS.md: an identify order ends identified only on the
@@ -726,13 +730,13 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 /// A renamed or removed key stays an optional field of its own, so an old log both parses
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
-/// A run under rules being built logs the schema those rules add ([`RulesConfig::policy_schema`]);
-/// this is the one a run of the default rules logs.
-pub const POLICY_SCHEMA: u32 = PASSKEY_SCHEMA_SINCE;
+/// This is the one a run of the default rules logs; a run under older rules logs the schema they
+/// logged ([`RulesConfig::policy_schema`]: 7 below rules 33, whose keys it does not log).
+pub const POLICY_SCHEMA: u32 = SCENARIO_SETTINGS_SCHEMA_SINCE;
 
-/// The newest policy schema this build reads and replay accepts: [`POLICY_SCHEMA`], or the one the
-/// rules being built add.
-pub const POLICY_SCHEMA_NEWEST: u32 = SCENARIO_SETTINGS_SCHEMA_SINCE;
+/// The newest policy schema this build reads and replay accepts: [`POLICY_SCHEMA`], or the one
+/// rules being built behind [`RULES_NEWEST`] add.
+pub const POLICY_SCHEMA_NEWEST: u32 = POLICY_SCHEMA;
 
 /// The policy schema that adds `[watch]`, `loosened`, `[rules.silent]` and `[rules.engage]
 /// min_identity_level` and `default_effect_radius_m` (with [`SCENARIO_SETTINGS_SINCE`]): named so
@@ -999,13 +1003,14 @@ impl RulesConfig {
         self.rules_version >= IDENTIFY_CRITERIA_SINCE
     }
 
-    /// The policy schema a run under these rules logs (`run.started`'s `policy_schema`): the
-    /// schema the rules being built add once a run decides under them, else [`POLICY_SCHEMA`].
+    /// The policy schema a run under these rules logs (`run.started`'s `policy_schema`):
+    /// [`POLICY_SCHEMA`] from rules 33, whose keys it logs; under older rules the schema they
+    /// logged, [`PASSKEY_SCHEMA_SINCE`] (their logged policy drops rules 33's keys).
     pub fn policy_schema(&self) -> u32 {
         if self.scenario_settings() {
             SCENARIO_SETTINGS_SCHEMA_SINCE.max(POLICY_SCHEMA)
         } else {
-            POLICY_SCHEMA
+            PASSKEY_SCHEMA_SINCE
         }
     }
 

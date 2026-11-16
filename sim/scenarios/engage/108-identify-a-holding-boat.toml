@@ -6,11 +6,14 @@
 # order to go back to the Puma holds where it is. First, the radar-only MQ-9B is refused the same
 # order: it carries no EO/IR to identify with.
 # From rules 23 the outcome names the vehicle whose own look identified it (puma-1's eo_ir).
+# From rules 33 (docs/SCENARIO-SETTINGS.md) the end says the look's confidence and the scenario's
+# criteria; rules 32 (`--rules 32`) said "identified as fishing_vessel by puma-1's eo_ir; it was
+# small_craft (recognise) before; holding: no order to go back to".
 title = "An identify order ends when its track is identified"
 invariant = "identify"
 attack = "none: the order as designed"
 expect = "done"
-expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1's eo_ir; it was small_craft (recognise) before; holding: no order to go back to"]
+expect_identify = ["ended done: track T-0001 identified as fishing_vessel at 0.90 by puma-1's eo_ir (the bar is 0.6, identification by EO/IR); it was small_craft (recognise) before; holding: no order to go back to"]
 end_s = 40
 
 [[operator]]
@@ -72,8 +75,3 @@ identity = "fishing_vessel"
 identity_confidence = 0.9
 level = "identify"
 level_by = ["puma-1:eo_ir"]
-
-# Rules 33 (being built: docs/SCENARIO-SETTINGS.md): the end says the look's confidence and the
-# scenario's criteria.
-[since.33]
-expect_identify = ["ended done: track T-0001 identified as fishing_vessel at 0.90 by puma-1's eo_ir (the bar is 0.6, identification by EO/IR); it was small_craft (recognise) before; holding: no order to go back to"]

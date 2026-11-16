@@ -27,15 +27,13 @@ existence_min = 0.5
 # the rule book's C_MIN: below it the picture does not support an armed task; at or above it a
 # neutral or assumed-friend estimate retires a look
 affiliation_min = 0.5
-# the engagement rules' min_identity_confidence: the identity confidence the engine treats as
-# settled; below it a look can still classify the contact
-classification_settled = 0.6
-# an unsettled classification is a reason to look only while no classifying sensor of ours (EO/IR,
-# sonar: they raise a classification with dwell; radar and ESM give a class only) has detected the
-# track this recently: the tracker's stale age, the same freshness every live track already has.
-# The run reads it from its policy's watch settings (`stale_s`; config.py `under`) and a situation
-# may not set it; the key stays for the config hash (docs/SCENARIO-SETTINGS.md, stage S5)
-classifier_fresh_s = 10.0
+# A track's identity is settled when the scenario's watch counts it identified (its policy's
+# [watch]: the bar, and its domain's level and sensors, no conflict; agents/roe.py `identified`);
+# until then a look can still identify the contact. An unsettled identity is a reason to look only
+# while no classifying sensor of ours (EO/IR, sonar: they raise a classification with dwell; radar
+# and ESM give a class only) has detected the track within the watch's `stale_s` (the tracker's
+# stale age: config.py `under` gives it as `classifier_fresh_s`; until stage S7 of
+# docs/SCENARIO-SETTINGS.md this file held it, and `classification_settled`, 0.6, for the bar)...
 # ...and only while that sensor is actually raising it: the identity confidence rose by at least
 # classify_rise_min within classify_rise_s. The tracker classifies with dwell, 1 - exp(-dwell/tau):
 # EO/IR to 0.95 with tau 45 s, sonar to 0.8 with tau 120 s, and a detection adds at most 2 s of
@@ -51,13 +49,11 @@ classify_wait_max_s = 120.0
 # 15.5 kn: faster than a displacement hull under 10 m can go (hull speed about 1.34 x
 # sqrt(waterline ft) kn, 7.3 kn at 30 ft), so a small contact this fast is planing
 fast_mps = 8.0
-# the 500-yard naval vessel protection zone of 33 CFR 165 subpart G
+# the 500-yard naval vessel protection zone of 33 CFR 165 subpart G; a closest approach counts
+# within twice the watch's approach horizon (config.py `under` gives it as `tcpa_max_s`: 600 s
+# under the standing 300 s, inside the policy's assumed task length, task_duration_s 900, so a
+# look proposed now is still on station at the closest approach)
 cpa_alert_m = 457.0
-# inside the policy's assumed task length (task_duration_s 900): a look proposed now is still on
-# station at the closest approach. The run reads it as twice its policy's watch approach horizon
-# (`approach_horizon_s`, 300 s; config.py `under`) and a situation may not set it; the key stays
-# for the config hash (docs/SCENARIO-SETTINGS.md, stage S5)
-tcpa_max_s = 600.0
 # a contact slower than this has no closest approach to compute: its distance now counts
 holding_mps = 0.5
 # hysteresis on leaving the watch (a look's card withdrawn, its orbit released): beyond this many

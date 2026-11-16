@@ -119,6 +119,37 @@ pub fn uid(s: &str) -> Uid {
     Uid::new(s)
 }
 
+/// A log's `run.started` claiming decision rules `version` (older than 33) as their builds wrote
+/// it: the claim, and without rules 33's own markers (the policy's scenario settings, policy schema
+/// 8 and the layers), so a test of an older rules' gap relabels a log of today's rules.
+pub fn claim_older_rules(body: &mut audit::EventBody, version: u32) {
+    if let audit::EventBody::RunStarted { rules_version, policy_schema, policy, policy_layers, .. } = body {
+        *rules_version = Some(version);
+        let mut p = policy.clone();
+        p.rules.rules_version = version;
+        *policy = p.as_logged();
+        *policy_schema = Some(policy.rules.policy_schema());
+        policy_layers.clear();
+    }
+}
+
+/// Rules 33: track `id` of `w` given the identity level its label says (`identify::label_level`:
+/// a kind's is identification), as the bridge's tracker gives every named track one and the
+/// scenario runner does: an engagement's target must show its kind (`[rules.engage]
+/// min_identity_level`), and a track with no level is not classified. A track already given a
+/// level, or one without a label, is left as it is.
+pub fn level_from_label(w: &mut WorldSnapshot, id: &str) {
+    if w.track_levels.contains_key(id) {
+        return;
+    }
+    if let Some(level) = w.tracks.get(id).and_then(|t| identify::label_level(t.identity.as_deref()?)) {
+        w.track_levels.insert(
+            id.to_string(),
+            identify::TrackLevel { level, by: Vec::new(), own_t: None, conflict: None, own: Default::default() },
+        );
+    }
+}
+
 pub fn orbit(center: LonLat, radius_m: f64, uids: &[&str]) -> Proposal {
     Proposal::new(
         Task::Orbit { center, radius_m },

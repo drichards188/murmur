@@ -1,6 +1,6 @@
 # Rules 9: a rule declaration revoked mid-engagement. A contact we hold no track of commits a
-# hostile act against our patrol USV 12 m from a fishing boat (T-0001, unclassified, truth:
-# neutral); the act is attributed to the fishing boat, the only track there, above the
+# hostile act against our patrol USV 12 m from a fishing boat (T-0001, identified as one at 0.7,
+# truth: neutral); the act is attributed to the fishing boat, the only track there, above the
 # threshold: the rule declares it hostile (a false declaration). The policy lets a rule
 # declaration be nominated before a confirmation (`nominate_unconfirmed`, scenario policy),
 # so op-1 nominates it and two operators with engagement authority sign: their tokens say
@@ -8,6 +8,11 @@
 # evidence and revokes the declaration: the engagement is stopped at once, before anything
 # else (cause revoked), and the platform flies its fallback (return). Afterwards the stop is
 # cut from the log, as if the engagement went on; replay must catch it.
+# Rules 33 (docs/SCENARIO-SETTINGS.md): an engagement's target must be identified, a kind, not a
+# family, so the fishing boat is identified as one (its kind, at 0.7). Up to rules 32 the track
+# was the radar's recognition, `small_craft` at 0.7, which those rules let be nominated; under
+# rules 33 a small craft is refused at the nomination (`target_identity`: a recognition, not an
+# identification). `--rules 32` ends the file as it is now as designed too.
 title = "A rule declaration revoked mid-engagement stops the engagement"
 invariant = "rule_declaration"
 attack = "a false rule declaration nominated before a confirmation, revoked en route; the stop cut from the log"
@@ -48,7 +53,7 @@ id = "T-0001"
 at = [-122.4950, 37.8120]   # inside ez-gate-west, holding
 affiliation = "unknown"
 truth = "neutral"
-identity = "small_craft"
+identity = "fishing_vessel"
 identity_confidence = 0.7
 sources = ["usv-1:radar", "blade-1:eo_ir"]
 
@@ -91,18 +96,3 @@ action = "revoke_declaration"
 by = "op-3"
 track = "T-0001"
 note = "the act's author was west of the fishing boat; nobody saw it act"
-
-# Rules 33 (being built: docs/SCENARIO-SETTINGS.md): an engagement's target must be identified, a
-# kind, not a family: a small craft at 0.7 (the radar's recognition) is refused at the nomination.
-# The fishing boat is identified as one here (its kind, at 0.7), so the false declaration is
-# nominated and signed as designed, and the revocation stops it.
-[since.33]
-
-[[since.33.track]]
-id = "T-0001"
-at = [-122.4950, 37.8120]   # inside ez-gate-west, holding
-affiliation = "unknown"
-truth = "neutral"
-identity = "fishing_vessel"
-identity_confidence = 0.7
-sources = ["usv-1:radar", "blade-1:eo_ir"]

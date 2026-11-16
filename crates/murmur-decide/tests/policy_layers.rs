@@ -375,9 +375,13 @@ fn show_prints_the_policy_as_logged_and_its_layers() {
         v["layers"][1]["sha256"],
         murmur_decide::hash::sha256_hex(&std::fs::read(root().join("sim/policy.toml")).unwrap())
     );
-    // S2: the watch settings a run of it decides under (the default rules: the legacy ones; the
-    // watch policy names no area)
-    assert_eq!(v["watch"], serde_json::to_value(WatchSettings::legacy()).unwrap());
+    // S2: the watch settings a run of it decides under (the default rules, 33: its own, the
+    // standing ones, which the watch policy leaves as they are and names no area; rules 32: the
+    // legacy ones)
+    assert_eq!(v["watch"], serde_json::to_value(WatchSettings::default()).unwrap());
+    let (_, out, _) = show(&["show", "sim/situations/policies/watch.toml", "--rules", &rules::REACH_NOW_SINCE.to_string()]);
+    let v32: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v32["watch"], serde_json::to_value(WatchSettings::legacy()).unwrap());
     // older rules: no [identification], no step-up factor (no build of theirs logged one)
     let (code, out, _) = show(&["show", "sim/policy.toml", "--rules", "8"]);
     assert_eq!(code, 0);

@@ -13,7 +13,8 @@ situation outside the v3 watches) is carded without one, its brief saying where 
   that an identify order runs until the bar is met or its time on station is over; that no
   contact is called neutral by its classification before it is identified (or, where the
   scenario lets the tracker, that such a call is not an identification); the approach horizon and
-  the rule for a contact shown without velocity; the reserve as a percentage left after a task of
+  the rule for a contact shown without velocity; when a track is stale (out of view) and how near
+  an orbit must be to count as a look on a contact; the reserve as a percentage left after a task of
   the policy's length; the engagement bar, level and signers; and each loosened key with its
   reason.
 
@@ -135,6 +136,9 @@ def render(settings: Settings, rules_version: int, world: str, policy: dict[str,
     out.append(f"A contact in doubt (not identified, or shown other than neutral, assumed friend or friend) is "
                f"approaching when it is {inside} or its shown course brings it {into} within "
                f"{_seconds(s.approach_horizon_s)}. " + still)
+    out.append(f"A track unseen for {_seconds(s.stale_s)} is stale, out of view: the picture shows it at its last "
+               f"fix. An orbit centred within {s.look_m:g} m of a contact, or with the contact inside its radius, "
+               "counts as a look on it.")
     out.append(f"Keep every vehicle above its reserve: {float(reserve):g} % of its endurance left after a task of "
                f"{_seconds(float(task_s))}.")
     who = NUMBER_WORDS.get(approvers, str(approvers))

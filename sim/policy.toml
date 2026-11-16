@@ -282,7 +282,19 @@ reason = "routine task inside the approved area (tunable; approval fatigue is me
 #   nominate_unconfirmed = false   a track declared by rule may be nominated for an
 #                                  engagement before an operator confirms the declaration
 #   conflict_confidence = 0.5      a track shown neutral or assumed friend this confidently
-#                                  conflicts with an act attributed to it (0.3..1)
+#                                  conflicts with an act attributed to it (0.3..1). It is an
+#                                  affiliation's confidence, not tied to [watch] bar, an
+#                                  identity's: the tracker shows a neutral call by
+#                                  classification at 0.8 of its identity confidence, so 0.5
+#                                  is an identity of 0.625, above the standing bar (0.6), and
+#                                  no call the bar holds back (rules 33, neutral_after_bar)
+#                                  could have conflicted. A scenario that raises the bar to
+#                                  0.625 or more makes every neutral call by classification a
+#                                  conflict for an act attributed to it; and a call the
+#                                  domain's sensors hold back (a sonar's fishing vessel at 0.8
+#                                  is 0.64 of affiliation) leaves the track unknown, so an act
+#                                  attributed to it may be declared by rule where it was
+#                                  flagged (docs/SCENARIO-SETTINGS.md section 7)
 #   untracked_per_km2 = 1          the attribution's alternative: contacts we hold no track
 #                                  of, per square kilometre (0.01..100)
 #   escort_m = 300, escort_speed_mps = 1.5   "keeps company with a declared hostile": within

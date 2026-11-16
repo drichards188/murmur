@@ -76,7 +76,7 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    policy, so a supplement logs what the whole file it stands for would. `murmur-policy show
    <file> [--rules N]` prints that policy as `run.started` would log it, with the files it was
    built from and their SHA-256 (Python reads merged values only there, `eval/policy_file.py`).
-   The scenario's settings (rules 33, being built; docs/SCENARIO-SETTINGS.md): `[watch]` (the
+   The scenario's settings (rules 33; docs/SCENARIO-SETTINGS.md): `[watch]` (the
    bar, `neutral_after_bar`, the horizon, the time on station, `stale_s`, `still_mps`, `look_m`,
    `no_velocity_mps`, each domain's `level`, `sensors` and `grace_s`, an optional `area`),
    `[rules.engage] min_identity_level` and `default_effect_radius_m`, `[rules.silent]
@@ -2527,8 +2527,11 @@ Rules versions:
   `v32-identify-in-fog-refused-until-it-lifts-scenario-146.jsonl` (relabelled rules 31, its reach
   now is caught, and with it taken out its refusal).
 
-- **33** (`SCENARIO_SETTINGS_SINCE`, being built behind `RULES_NEWEST`: docs/SCENARIO-SETTINGS.md
-  section 6; policy schema 8): *the thresholds are the scenario's*. Stage S2 (this build): the
+- **33** (`SCENARIO_SETTINGS_SINCE`, the owner's decision of 2026-11-16, DECISIONS.md "Thresholds
+  are the scenario's"; docs/SCENARIO-SETTINGS.md; policy schema 8; a v33 log carries every rules 32
+  behaviour too): *the thresholds are the scenario's*, one source per scenario, its policy file, read
+  by the engine, the bridge, the agents and the scoring alike. Built in stages behind `RULES_NEWEST`
+  (S1 to S6) and made the default in S7. Stage S2: the
   policy's `[watch]` (`watch::WatchSettings`), `loosened`, `[rules.silent]` and the new
   `[rules.engage]` keys are logged with the policy, and `run.started` logs `policy_layers`, each
   file the policy was built from (path as written, never absolute, and SHA-256); under older
@@ -2564,7 +2567,20 @@ Rules versions:
   the track's identity confidence; a scenario whose design rules 33 change says so in `[since.33]`
   (75, 108, 111, 112, 117, 118, 144). MCP `get_intents` and `explain_intent` show an identify
   order's `identify_progress` (`identify::progress`, read-only) from rules 33. Scenarios 149-157,
-  tampers `edit_own_confidence`, `drop_loosened`; `tests/rules33.rs`.
+  tampers `edit_own_confidence`, `drop_loosened`; `tests/rules33.rs`. Stage S7 made it the default
+  (`RULES_VERSION = RULES_NEWEST = 33`, `POLICY_SCHEMA` 8; a run asked for older rules logs schema
+  7, `RulesConfig::policy_schema`): the seven scenarios whose design it changes carry it (their
+  `[since.33]` tables written in, each saying what rules 32 did: 75's target a fishing vessel, a
+  kind; 108, 111, 112, 118 and 144's new words; 117 held on its conflict to its deadline); the
+  scenario runner's `--nominate-unconfirmed` names its loosening; the engagement tests give their
+  targets the level their labels say (`common::level_from_label`), as the bridge's tracker does,
+  and tests written for rules 32 decide under it by name. The v1 and v2 worlds run
+  `sim/situations/policies/legacy-v1v2.toml` (`neutral_after_bar = false`: their legacy tracker
+  calls neutral from 0.3). MCP `get_policy` carries `engage_defaults` (rules 33 only). Fixtures (a
+  clean build of the flip): `tests/data/audit/v33-engagement-scenario-01.jsonl` (no identify order:
+  as rules 32 decided it, its logged settings and layers aside),
+  `v33-identify-goes-on-past-a-first-naming-scenario-149.jsonl` (relabelled rules 32, its own looks'
+  details and its `named` step are caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
@@ -2581,9 +2597,9 @@ and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9); *
 `[approval] step_up_factor` (`password`, `passkey`) and `login_factor` (`either`, `password`,
 `passkey`), both optional (`PASSKEY_SCHEMA_SINCE`, rules 10); **8** adds `[watch]`, `loosened`,
 `[rules.silent]` and `[rules.engage] min_identity_level` and `default_effect_radius_m`, each
-optional and written out with its default (`SCENARIO_SETTINGS_SCHEMA_SINCE`, rules 33, being
-built: a run under rules 33 logs schema 8 and one under the default rules still logs 7,
-`RulesConfig::policy_schema`; replay accepts up to `POLICY_SCHEMA_NEWEST`).
+optional and written out with its default (`SCENARIO_SETTINGS_SCHEMA_SINCE`, rules 33: a run
+under rules 33 logs schema 8 and one asked for older rules 7, `RulesConfig::policy_schema`; replay
+accepts up to `POLICY_SCHEMA_NEWEST`, `POLICY_SCHEMA` itself while no schema is being built).
 
 ## Integration contract for the bridge
 

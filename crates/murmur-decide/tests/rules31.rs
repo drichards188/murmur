@@ -216,7 +216,9 @@ fn root() -> PathBuf {
 fn older_rules_log_no_reach_by_class() {
     let f = root().join("sim/scenarios/engage/144-identify-a-small-drone-close-in.toml");
     let now = scenario::run_file(&f, &root(), &RunOptions { rules_version: Some(IDENTIFY_CLASS_SINCE), ..RunOptions::default() }).unwrap();
-    assert!(now.ok, "{:?}", now.failures);
+    // the file's designed ends are rules 33's words; rules 31 ended it done, as its notes say
+    assert_eq!(now.final_state.as_deref(), Some("done"));
+    assert!(now.identify.iter().any(|l| l.contains("identified as small_drone by puma-1's eo_ir")), "{:?}", now.identify);
     assert!(now.replay_ok, "{:?}", now.replay_mismatches);
     assert!(now.log.contains("\"size_class\":{\"small_air\":9160.0"), "the reaches by class logged");
     assert!(now.log.contains("\"size_class\":\"small_air\""), "the plan's class logged");

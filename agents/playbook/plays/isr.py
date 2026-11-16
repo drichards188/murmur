@@ -2,11 +2,13 @@
 
 - `isr.investigate`: a track shown unknown or suspect (not declared), not stale, existence
   confidence now at least 0.5, inside a watch area or closing on a protected point (CPA within
-  457 m inside 10 min, or already inside 457 m), and still worth a look: its classification
-  below 0.6 (unless a sensor of ours is settling it: an EO/IR or sonar detection within 10 s,
-  the classification up by 0.02 within 30 s, and for at most 120 s per track), or faster than
-  8 m/s, or an identity conflict (what was seen does not fit its AIS, or the sensors' labels
-  disagree: the tracker's own anomaly flag). Action: an orbit by the free unarmed sensor aircraft (an
+  457 m inside 10 min, or already inside 457 m), and still worth a look: not identified as the
+  scenario's watch counts it (agents/roe.py `identified`: its domain's level and sensors, the bar,
+  0.6 standing, no conflict; until stage S7 of docs/SCENARIO-SETTINGS.md its classification below
+  0.6 at any level), unless a sensor of ours is settling it (an EO/IR or sonar detection within
+  the watch's `stale_s`, the classification up by 0.02 within 30 s, and for at most 120 s per
+  track); or faster than 8 m/s, or an identity conflict (what was seen does not fit its AIS, or
+  the sensors' labels disagree: the tracker's own anomaly flag). Action: an orbit by the free unarmed sensor aircraft (an
   imaging sensor in its catalog) whose predicted link holds for that orbit (version 2: the
   bridge's `get_link_coverage`, read once a tick for every free one, `link_queries`; the
   failsafe's chance on the way and five minutes on station at most 10 %; one not known counts as
@@ -39,9 +41,9 @@
   sighting of the track within `classifier_fresh_s` of its last report), while it is still in view
   (not stale: the engine sends an identify only to a contact our sensors see), no sensor of ours
   holds it (custody is held when a classifying sensor of a vehicle still reporting has had it
-  within `classifier_fresh_s` and its identity is settled, at `classification_settled`: a camera far
-  off that sees the contact but cannot identify it does not hold it), no look of ours is on it and
-  our identify did not already run to its end for that silent vehicle: an identify order on
+  within `classifier_fresh_s` and the watch counts it identified, agents/roe.py `identified`: a
+  camera far off that sees the contact but cannot identify it does not hold it), no look of ours
+  is on it and our identify did not already run to its end for that silent vehicle: an identify order on
   the track by the unarmed vehicle with an EO/IR that can orbit, fit (health, navigation, battery
   over the free line), not engaging, not recovering, not claimed by a card or order of ours, soonest
   there at its cruise speed (then most battery, lowest uid). Unlike a look it may take a vehicle off
@@ -138,14 +140,23 @@ def holding(play_names: tuple[str, ...], target: str, b: Beliefs, led: Ledger) -
     return None
 
 
-def classify_reason(tr: Track, b: Beliefs) -> str | None:
-    """An unsettled classification as a reason to look, or None while a classifying sensor of
-    ours is settling it: one (EO/IR, sonar) detected the track within `classifier_fresh_s`, the
-    identity confidence rose by `classify_rise_min` within `classify_rise_s`, and for no more than
-    `classify_wait_max_s` since a sensor of ours first held it unsettled (DECISIONS.md, the
-    playbook's fix rounds: sensor coverage). An identity conflict is a reason of its own, apart."""
+def unsettled(tr: Track, b: Beliefs) -> str | None:
+    """Why the track's identity is not settled, apart from a conflict (a reason to look of its own):
+    the scenario's watch does not count it identified (agents/roe.py `shortfall` with the conflict
+    left out: under the bar, short of its domain's level, or from none of its domain's sensors);
+    None when it does but for any conflict."""
+    return b.cfg.roe.shortfall(tr.as_read, conflict=False)
+
+
+def classify_reason(tr: Track, b: Beliefs, short: str) -> str | None:
+    """An unsettled identity (`unsettled`: `short` says why) as a reason to look, or None while a
+    classifying sensor of ours is settling it: one (EO/IR, sonar) detected the track within
+    `classifier_fresh_s`, the identity confidence rose by `classify_rise_min` within
+    `classify_rise_s`, and for no more than `classify_wait_max_s` since a sensor of ours first held
+    it unsettled (DECISIONS.md, the playbook's fix rounds: sensor coverage). An identity conflict
+    is a reason of its own, apart."""
     th = b.cfg.t
-    head = f"classification {tr.kind_conf:.2f} under {th['classification_settled']:.2f}"
+    head = f"not identified ({short})"
     held = sorted({s for _, s, last in tr.sources if s in CLASSIFYING and b.t - last <= th["classifier_fresh_s"]})
     if not held:
         return f"{head}, no EO/IR or sonar of ours on it"
@@ -182,11 +193,11 @@ def look_reasons(tr: Track, b: Beliefs) -> tuple[list[str], str | None]:
     if not where:
         return [], "outside the watch"
     worth = []
-    # settled by confidence alone, at any level and from any sensor (so a confident size class
-    # counts); stage S7 of docs/SCENARIO-SETTINGS.md moves this, custody_held and the ledger's
-    # `see_classification` to agents/roe.py `Roe.identified`, re-taking the golden it moves
-    if tr.kind_conf < th["classification_settled"]:
-        why = classify_reason(tr, b)
+    # settled when the scenario's watch counts it identified (agents/roe.py; until stage S7 of
+    # docs/SCENARIO-SETTINGS.md by its confidence alone, at any level and from any sensor)
+    short = unsettled(tr, b)
+    if short is not None:
+        why = classify_reason(tr, b, short)
         if why:
             worth.append(why)
     if tr.speed is not None and tr.speed > th["fast_mps"]:
@@ -422,9 +433,12 @@ def alternatives(free: list[Vehicle], busy: list[tuple[Vehicle, str]], point: tu
 
 
 def look_thresholds(b: Beliefs) -> dict[str, Any]:
+    """The numbers a look's record cites: the playbook's, and the watch's bar (what its identity is
+    settled at, with its domain's level and sensors; `classification_settled` until stage S7)."""
     th = b.cfg.t
-    return {k: th[k] for k in ("existence_min", "classification_settled", "fast_mps", "cpa_alert_m", "tcpa_max_s",
-                               "unseen_s", "affiliation_min", "orbit_range_fraction", "orbit_turn_margin")}
+    return {"bar": b.cfg.roe.bar,
+            **{k: th[k] for k in ("existence_min", "fast_mps", "cpa_alert_m", "tcpa_max_s", "unseen_s",
+                                  "affiliation_min", "orbit_range_fraction", "orbit_turn_margin")}}
 
 
 def _fact(record: dict[str, Any], suffix: str) -> dict[str, Any]:
@@ -820,10 +834,10 @@ def custody_holders(tr: Track, b: Beliefs) -> tuple[list[tuple[Vehicle, str, str
 
 def custody_held(tr: Track, now: list[tuple[Vehicle, str]], b: Beliefs) -> bool:
     """Custody is held: a classifying sensor of a vehicle still reporting has the track now and
-    its identity is settled (a camera far off that sees it but cannot identify it does not hold it:
-    the identity stays under the engagement rules' confidence and the fix loosens). Confidence
-    alone until stage S7 moves it to agents/roe.py `Roe.identified` (look_reasons says why)."""
-    return bool(now) and tr.kind_conf >= b.cfg.t["classification_settled"]
+    the scenario's watch counts it identified (agents/roe.py `identified`, a conflict included: a
+    camera far off that sees it but cannot identify it does not hold it, its identity stays under
+    the bar and the fix loosens; by confidence alone until stage S7 of docs/SCENARIO-SETTINGS.md)."""
+    return bool(now) and b.cfg.roe.identified(tr.as_read)
 
 
 def custody_capable(v: Vehicle) -> bool:
@@ -923,16 +937,17 @@ class Custody(Play):
                         {"ref": f"vehicle:{holder.uid}.standing", "value": how,
                          "position_age_s": R.r1(holder.position_age_s)}],
                     derived=derived,
-                    thresholds={k: th[k] for k in ("classifier_fresh_s", "classification_settled", "link_gap_factor",
-                                                   "affiliation_min")},
+                    thresholds={"bar": b.cfg.roe.bar,
+                                **{k: th[k] for k in ("classifier_fresh_s", "link_gap_factor", "affiliation_min")}},
                     withdraw_if=[f"{holder.callsign} is heard again",
-                                 f"a classifying sensor of ours that is reporting has {tid} with its identity settled",
+                                 f"a classifying sensor of ours that is reporting has {tid} and the watch counts it "
+                                 f"identified",
                                  f"{tid} is dropped or out of view, or shown neutral or assumed friend at affiliation "
                                  f"confidence {th['affiliation_min']:.1f} or more", "the sensor is no longer fit for the task"],
                     basis={"holder": holder.uid, "affiliation": tr.shown, "declared": decl},
                     trigger=[f"{holder.callsign}'s {sensor} held {tid} and it is {how}",
-                             (f"{', '.join(f'{x.callsign} {xs}' for x, xs in now)} has it, its identity "
-                              f"{tr.kind_conf:.2f} under {th['classification_settled']:.2f}") if now else
+                             (f"{', '.join(f'{x.callsign} {xs}' for x, xs in now)} has it, not identified "
+                              f"({b.cfg.roe.shortfall(tr.as_read)})") if now else
                              (f"no classifying sensor of ours that is reporting has had {tid} within "
                               f"{th['classifier_fresh_s']:.0f} s")],
                     alternatives=[{"uid": a.uid, "callsign": a.callsign, "eta_s": R.r0(eta_s(a, point)),

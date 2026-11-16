@@ -1,12 +1,15 @@
 # Rules 21 (bd murmur-bia): nothing identifies the boat PUMA 1 is sent to (the night, the haze:
 # the runner's track stays recognised only). The order's deadline is its dispatch, the time to
-# get there at the Puma's cruise speed, and five minutes on station (`identify::ON_STATION_S`);
-# at it the order ends failed, not identified, and the Puma holds.
+# get there at the Puma's cruise speed, and five minutes on station (`identify::ON_STATION_S`;
+# from rules 33 the scenario's `[watch] identify_on_station_s`, 300 s standing); at it the order
+# ends failed, not identified, and the Puma holds. From rules 33 (docs/SCENARIO-SETTINGS.md) the
+# timeout says the vehicle's best look of its own (none here) and the criteria; rules 32
+# (`--rules 32`) said "not identified by the order's deadline; holding: no order to go back to".
 title = "An identify order ends failed at its deadline"
 invariant = "identify"
 attack = "no look identifies the track"
 expect = "failed"
-expect_identify = ["ended failed: track T-0001 not identified by the order's deadline; holding: no order to go back to"]
+expect_identify = ["ended failed: track T-0001 not identified by the order's deadline; puma-1 had no look of its own at it since the order went out (the bar is 0.6, identification by EO/IR); holding: no order to go back to"]
 end_s = 380
 
 [[operator]]
@@ -39,8 +42,3 @@ track = "T-0001"
 at_s = 200
 action = "expect"
 task_state = "dispatched"
-
-# Rules 33 (being built: docs/SCENARIO-SETTINGS.md): the timeout says the vehicle's best look of its
-# own (none here) and the criteria.
-[since.33]
-expect_identify = ["ended failed: track T-0001 not identified by the order's deadline; puma-1 had no look of its own at it since the order went out (the bar is 0.6, identification by EO/IR); holding: no order to go back to"]

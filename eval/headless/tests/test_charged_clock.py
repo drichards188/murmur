@@ -234,7 +234,10 @@ def test_the_record_names_the_condition_and_its_constants(flood):
     assert rec["v2"]["condition"]["clock"] == "charged" and rec["episode_class"] == "scored"
     from eval.headless.v2.aggregate import cond_key, meta_of
 
-    assert cond_key(meta_of(rec)) == "approve-all;watch.toml;charged"
+    # the policy the run was given: a v2 world's, on the legacy sensing model, the watch policy's
+    # supplement (eval/headless/situations.py `run_policy`, since rules 33 became the default), so
+    # an aggregate keeps these records apart from those run under watch.toml before
+    assert cond_key(meta_of(rec)) == "approve-all;legacy-v1v2.toml;charged"
 
 
 FEED_ID = re.compile(r'"cursor": ?"([0-9a-f]+):')

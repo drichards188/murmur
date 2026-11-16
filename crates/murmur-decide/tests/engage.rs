@@ -179,6 +179,7 @@ fn engage_world(t: Time) -> WorldSnapshot {
     blade.velocity_mps = Some(Fact::new([0.0, 0.0], t));
     w.vehicles.insert(uid("blade-1"), blade);
     w.tracks.insert("T-0001".into(), target(t, TARGET_AT, [0.0, 0.0], true));
+    level_from_label(&mut w, "T-0001");
     w
 }
 

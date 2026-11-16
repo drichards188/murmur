@@ -496,6 +496,22 @@ result as a run logs it), and
 `eval/tests/test_situation.py` holds it to the shipped policy. Name `sim/policy.toml` to let
 the shipped policy dispatch an agent's routine orbit itself.
 
+**The scenario's settings** (decision rules 33, docs/SCENARIO-SETTINGS.md): what counts as
+identified, stale and approaching, each domain's deadline, the reserve and the engagement's
+identity are the policy's (`[watch]`, `[rules]`), standing in `sim/policy.toml`. A situation that
+wants others names a supplement that extends `watch.toml` and sets only them, with its circle in
+`[watch.area]` (as `policies/golden-gate-v3-watch.toml`, `san-diego-watch.toml` and
+`golden-gate-scale-watch.toml` do); its `[playbook]` table never repeats that circle. The AI's
+brief carries the scenario's ROE card after the brief's own text (`eval/roe_card.py`, from the
+policy as the run is given it: the circle, each domain's deadline, level and sensors, the bar, an
+identify order's time on station, the neutral call, the approach horizon, stale and the look
+distance, the reserve, the engagement's identity and signers, anything loosened), and the agents
+read the same from MCP `get_policy`'s `watch`. Headless, a situation in `golden-gate` (the legacy
+sensing model, as Harbor watch and every family built on it) runs `policies/legacy-v1v2.toml`
+instead of `watch.toml`: the same, but `neutral_after_bar = false`, since that model's tracker
+calls a contact neutral by its classification from 0.3 (`eval/headless/situations.py`
+`run_policy`); live, the same situation runs the physical model under its own policy.
+
 Tests: `.venv/bin/python -m pytest eval/tests/test_situation.py` (the format, the status
 document and what a blinded one hides, the launch contract, the AI's own directory and
 environment, its process group, the preflight, the port block and check, the audit tail, the

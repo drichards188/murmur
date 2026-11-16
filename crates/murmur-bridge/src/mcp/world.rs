@@ -376,13 +376,19 @@ pub fn identify_reach_note(mut v: Value, rules: &murmur_decide::RulesConfig, wat
 
 /// `get_policy`.
 pub fn policy(mcp: &Mcp) -> Value {
-    json!({
+    let mut out = json!({
         "t": clock::wall(),
         "note": "First matching tier wins; no match means human. An intent with any unverified check is never auto-approved. submitter_authorizes concerns human operators only: an agent's proposal in a human tier always waits in the inbox for an operator.",
         "policy": mcp.decision.policy_json(),
         // the watch settings the run decides under (docs/SCENARIO-SETTINGS.md section 3)
         "watch": mcp.decision.watch_json(),
-    })
+    });
+    // rules 33: a nomination's defaults where it names none, as `GET /api/policy` gives them (the
+    // effect radius is the policy's from rules 33; before them the answer was as it was)
+    if mcp.decision.rules().scenario_settings() {
+        out["engage_defaults"] = mcp.decision.policy_api_json()["engage_defaults"].clone();
+    }
+    out
 }
 
 /// Age fields for an intent's JSON (`created_t` and `expires_t` are engine milliseconds).

@@ -379,14 +379,16 @@ def test_the_scripted_agents_choices():
     plan = sc.ScriptedPlan.from_spec({"engage": None, "cover": {"window_s": 300}})
     assert plan.engage is None and plan.as_dict()["cover"]["window_s"] == 300 and plan.collect is None
     # a nomination's radius and window, where the plan names none, are the run's policy's
-    # (get_policy; docs/SCENARIO-SETTINGS.md S4): a tailored 90 m and 900 s; under rules below 33
-    # the served policy names no radius and the engine's own applies
+    # (get_policy's engage_defaults; docs/SCENARIO-SETTINGS.md S4, S7): a tailored 90 m and 900 s;
+    # a run of rules below 33 serves none, and its plan must name both
     plan = sc.ScriptedPlan.from_spec({})
     assert plan.as_dict()["engage"]["effect_radius_m"] is None and plan.as_dict()["engage"]["window_s"] is None
-    tailored = {"policy": {"rules": {"engage": {"default_effect_radius_m": 90.0, "default_window_s": 900}}}}
+    tailored = {"policy": {"rules": {"engage": {"default_effect_radius_m": 90.0, "default_window_s": 900}}},
+                "engage_defaults": {"effect_radius_m": 90.0, "window_s": 900}}
     assert sc.policy_defaults(tailored) == {"effect_radius_m": 90.0, "window_s": 900}
     older = {"policy": {"rules": {"engage": {"default_window_s": 600}}}}
-    assert sc.policy_defaults(older) == {"effect_radius_m": sc.ENGINE_EFFECT_RADIUS_M, "window_s": 600}
+    with pytest.raises(ValueError, match="engage_defaults"):
+        sc.policy_defaults(older)
     with pytest.raises(ValueError):
         sc.policy_defaults({"policy": {"rules": {}}})
     with pytest.raises(ValueError):

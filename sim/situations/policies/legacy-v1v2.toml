@@ -1,0 +1,26 @@
+# The watch policy of the v1 and v2 worlds (docs/SCENARIO-SETTINGS.md section 4): the situations'
+# watch policy (watch.toml: sim/policy.toml and the agent-tasking tier) for a run on the legacy
+# sensing model (docs/SENSING.md), which eval/headless/situations.py `run_policy` gives every
+# situation of the Golden Gate's own world headless (the v1 world, and the v2 families built on
+# Harbor watch) and eval/headless/fullstack.py its full-stack copies, the runs that pin
+# MURMUR_SENSE_MODEL=legacy (the Phase G stacks of eval/stack.py run their own eval/policy files).
+# It sets only what rules 33 would otherwise state wrongly there.
+#
+# - `neutral_after_bar = false`: the legacy model's tracker calls a contact neutral by its
+#   classification from 0.3 whatever the watch says (the bar holds the call back on the physical
+#   model only, stage S4), so the run's logged settings, MCP get_policy's `watch` and the ROE card
+#   in a model's brief say what its tracker does. It decides nothing: with it, get_policy's
+#   `watch` is v0's (sim/policy-v0-watch.toml), what the agents read there under rules 32.
+#
+# Nothing else. Measured on the Harbor watch golden (seed 1) and the three paused episodes
+# (eval/headless/tests/test_charged_clock.py) under rules 33 with the standing settings, the
+# playbook's settle check on agents/roe.py: the same events at the same times, the same decisions
+# and proposals as under rules 32, only what is logged and said differing. The standing criteria
+# (identification by EO/IR, or AIS on the surface; recognition by sonar under water; the bar 0.6)
+# are within what the legacy model delivers: its EO/IR and sonar classify at the identification
+# level with dwell (EO/IR to 0.95, sonar to 0.8), and an identify order's own look is an EO/IR's.
+
+extends = "watch.toml"
+
+[watch]
+neutral_after_bar = false

@@ -197,10 +197,22 @@ class Track:
     declared: dict[str, Any] | None
     sources: tuple[tuple[int, str, float], ...]  # (uid, sensor, last_t)
     review: tuple[str, ...]
+    # the identity's level and the sensors that support it (the feed's `identity.level` and
+    # `supported_by`): what the watch's criteria read (agents/roe.py `identified`)
+    level: str | None = None
+    supported_by: tuple[str, ...] = ()
 
     @property
     def where(self) -> tuple[float, float] | None:
         return self.predicted or self.position
+
+    @property
+    def as_read(self) -> dict[str, Any]:
+        """The part of the track as `get_tracks` gave it that agents/roe.py judges: its domain and
+        identity (confidence, level, the sensors supporting it, any conflict)."""
+        return {"domain": self.domain, "identity": {"kind": self.kind, "confidence": self.kind_conf,
+                                                    "level": self.level, "supported_by": list(self.supported_by),
+                                                    "conflict": self.conflict}}
 
     @property
     def declared_affiliation(self) -> str | None:
@@ -269,6 +281,8 @@ def tracks_of(reads: Reads) -> dict[str, Track]:
                                   for s in t.get("sources") or [] if s.get("uid") is not None),
                                  key=lambda s: (s[0], s[1]))),
             review=tuple(sorted(str(r.get("kind") if isinstance(r, dict) else r) for r in t.get("review") or [])),
+            level=str(ident["level"]) if isinstance(ident.get("level"), str) else None,
+            supported_by=tuple(str(s) for s in ident.get("supported_by") or [] if isinstance(s, str)),
         )
     return out
 

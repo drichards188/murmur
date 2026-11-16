@@ -1254,12 +1254,14 @@ def ai_command(
     return None
 
 
-def situation_card(sit: Situation, rules: int | None = None) -> tuple[str | None, Any, int]:
+def situation_card(sit: Situation, rules: int | None = None, policy: Path | None = None) -> tuple[str | None, Any, int]:
     """The scenario's ROE card a situation's brief carries (docs/SCENARIO-SETTINGS.md section 3,
     stage S6), the settings it states and the decision rules (`rules`, else the run's:
     eval/policy_file.py `rules_in_force`): from rules 33 eval/roe_card.py `render` of the settings
     its policy file gives under them (eval/headless/v3/settings.py `for_run`; a file the decision
-    layer refuses raises eval/policy_file.py's `PolicyError`), None under older rules."""
+    layer refuses raises eval/policy_file.py's `PolicyError`), None under older rules. `policy`:
+    the file the run is given in place of the situation's own (eval/headless/situations.py
+    `run_policy`: the legacy sensing model's supplement for the v1 world)."""
     from eval.headless.v3.settings import WATCH_SINCE, for_run
     from eval.policy_file import rules_in_force
     from eval.roe_card import render
@@ -1267,16 +1269,16 @@ def situation_card(sit: Situation, rules: int | None = None) -> tuple[str | None
     r = rules_in_force() if rules is None else int(rules)
     if r < WATCH_SINCE:
         return None, None, r
-    st, policy, r = for_run(sit.policy or REPO / "sim" / "policy.toml", sit.world, r)
+    st, policy, r = for_run(policy or sit.policy or REPO / "sim" / "policy.toml", sit.world, r)
     return render(st, r, sit.world, policy), st, r
 
 
-def brief_text(sit: Situation, rules: int | None = None) -> str:
+def brief_text(sit: Situation, rules: int | None = None, policy: Path | None = None) -> str:
     """What the AI is told: the title and the operator's brief, never the director's notes,
     the timeline or the watch items; from decision rules 33 the scenario's ROE card after them
-    (`situation_card`)."""
+    (`situation_card`, of `policy` when the run is given another file than the situation's)."""
     text = f"# {sit.title}\n\n{sit.brief}\n"
-    card, _, _ = situation_card(sit, rules)
+    card, _, _ = situation_card(sit, rules, policy)
     return text if card is None else f"{text}\n{card}\n"
 
 
