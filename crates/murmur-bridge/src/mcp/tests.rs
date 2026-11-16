@@ -122,6 +122,7 @@ fn rig_on(manifest: PathBuf, tweak: impl FnOnce(&mut Policy)) -> Rig {
             scripted: Vec::new(),
             carried_from: Vec::new(),
             pointer: None,
+            policy_layers: Vec::new(),
         },
     )
     .expect("engine");
@@ -892,6 +893,46 @@ async fn fleet_facts_carry_age_and_staleness() {
     assert_eq!(v["status"], 404);
 }
 
+/// Rules 33 (staged, docs/SCENARIO-SETTINGS.md): `get_policy`'s `watch` is the policy's own
+/// `[watch]`, its circle included, in the design's schema (what agents/roe.py reads), and the
+/// logged policy carries the same; under the default rules the legacy values keep the circle.
+#[tokio::test(start_paused = true)]
+async fn get_policy_serves_the_watch_the_run_decides_under() {
+    let area = || murmur_decide::WatchArea {
+        name: "the drill's pier".into(),
+        center: [-122.40, 37.80],
+        radius_m: 2000.0,
+    };
+    let r = rig_policy(|p| {
+        p.rules.rules_version = murmur_decide::SCENARIO_SETTINGS_SINCE;
+        let w = p.watch.as_mut().expect("written out");
+        w.approach_horizon_s = 240.0;
+        w.area = Some(area());
+    });
+    let policy = r.ok(&planner(), "get_policy", json!({})).await;
+    let w = &policy["watch"];
+    let mut keys: Vec<&str> = w.as_object().expect("a table").keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["approach_horizon_s", "area", "bar", "domain", "identify_on_station_s", "look_m", "neutral_after_bar", "no_velocity_mps", "stale_s", "still_mps"]
+    );
+    assert_eq!(w["approach_horizon_s"], 240.0);
+    assert_eq!(w["area"], json!({"name": "the drill's pier", "center": [-122.40, 37.80], "radius_m": 2000.0}));
+    let mut domains: Vec<&str> = w["domain"].as_object().expect("a table of tables").keys().map(String::as_str).collect();
+    domains.sort_unstable();
+    assert_eq!(domains, ["air", "ground", "subsurface", "surface"]);
+    assert_eq!(w["domain"]["air"], json!({"level": "identify", "sensors": ["eo_ir"], "grace_s": 30.0}));
+    assert_eq!(&policy["policy"]["watch"], w);
+    // the default rules: the legacy values with the scenario's circle, nothing logged
+    let r = rig_policy(|p| p.watch.as_mut().expect("written out").area = Some(area()));
+    let policy = r.ok(&planner(), "get_policy", json!({})).await;
+    let mut legacy = murmur_decide::WatchSettings::legacy().clone();
+    legacy.area = Some(area());
+    assert_eq!(policy["watch"], serde_json::to_value(legacy).expect("json"));
+    assert!(policy["policy"].get("watch").is_none());
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_other_reads_answer() {
     let r = rig();
@@ -901,6 +942,10 @@ async fn the_other_reads_answer() {
     assert!(areas["areas"].to_string().contains("alcatraz"));
     let policy = r.ok(&planner(), "get_policy", json!({})).await;
     assert!(policy["policy"]["tier"].as_array().is_some_and(|t| !t.is_empty()), "{policy}");
+    // the watch the run decides under (docs/SCENARIO-SETTINGS.md): under the default rules the
+    // legacy values, the shipped policy naming no circle; the logged policy carries none
+    assert_eq!(policy["watch"], serde_json::to_value(murmur_decide::WatchSettings::legacy()).expect("json"), "{policy}");
+    assert!(policy["policy"].get("watch").is_none(), "{policy}");
     let platforms = r.ok(&planner(), "get_platforms", json!({})).await;
     assert!(platforms["platforms"].as_array().is_some_and(|p| p.len() > 20));
     // a hold: the mode change is a vehicle event

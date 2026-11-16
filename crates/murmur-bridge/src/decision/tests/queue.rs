@@ -231,6 +231,7 @@ fn restart_as(r: &Rig, auth: murmur_decide::AuthMode) -> (Arc<Decision>, MemoryS
             scripted: Vec::new(),
             carried_from: Vec::new(),
             pointer: None,
+            policy_layers: Vec::new(),
         },
     )
     .expect("engine");

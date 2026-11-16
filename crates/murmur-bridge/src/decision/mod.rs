@@ -496,6 +496,10 @@ pub struct Decision {
     auth: AuthMode,
     terrain: Terrain,
     rules: murmur_decide::RulesConfig,
+    /// The watch settings this run decides under (`Policy::effective_watch`; see
+    /// docs/SCENARIO-SETTINGS.md): the policy's `[watch]` from rules 33, else the legacy values
+    /// with the scenario's area. MCP `get_policy` serves them.
+    watch: murmur_decide::WatchSettings,
     /// The track store (tests inject one; the bridge uses the process-wide one).
     tracks: Option<Arc<Tracks>>,
     audit_path: PathBuf,
@@ -554,6 +558,9 @@ pub struct Parts {
     /// Rules 15: the station's `.last-run` pointer, by its file name (`run.started`'s `pointer`):
     /// a later start whose pointer can't be read falls back to this station's newest log.
     pub pointer: Option<String>,
+    /// Rules 33: the files the policy was built from (`Policy::load_layers`), logged in
+    /// `run.started` (`policy_layers`); empty for a policy not read from a file (a test).
+    pub policy_layers: Vec<murmur_decide::Layer>,
 }
 
 /// The decision rules a run is asked to decide under (`MURMUR_RULES`): none (unset or empty) for
@@ -585,7 +592,7 @@ impl Decision {
     /// Load policy, catalog and areas, open the audit log and start the engine. Any failure
     /// stops the bridge: without the decision layer nothing may reach a vehicle.
     pub fn load(world: Arc<World>, s: &Settings) -> Result<Arc<Decision>, String> {
-        let mut policy = Policy::load(&s.policy).map_err(|e| e.to_string())?;
+        let (mut policy, policy_layers) = Policy::load_layers(&s.policy).map_err(|e| e.to_string())?;
         // the decision rules being built, only when asked for by number
         if let Some(n) = rules_asked(std::env::var("MURMUR_RULES").ok().as_deref())? {
             if n != policy.rules.rules_version {
@@ -687,6 +694,7 @@ impl Decision {
                 study: s.study.clone(),
                 carried_from,
                 pointer,
+                policy_layers,
             },
         )
         .map_err(undo)?;
@@ -830,6 +838,8 @@ impl Decision {
         let clock = SharedClock(p.clock);
         let rules = p.policy.rules.clone();
         let queue_cfg = p.policy.queue();
+        // rules 33: the watch this run decides under, with the scenario's area under older rules
+        let watch = p.policy.effective_watch();
         // the operators this run admits, logged in run.started: every engagement operator
         // must be an operator too, or the bridge does not start
         let roster = murmur_decide::Roster::new(p.operators.clone(), p.engage_operators.clone())
@@ -869,6 +879,7 @@ impl Decision {
                         .as_ref()
                         .map_or_else(|| crate::tracks::Settings::from_env().drop_s, |t| t.drop_s()),
                 ),
+                policy_layers: p.policy_layers,
             },
             Box::new(clock.clone()),
             p.sink,
@@ -886,6 +897,7 @@ impl Decision {
             auth: p.auth,
             terrain: p.terrain,
             rules,
+            watch,
             tracks: p.tracks,
             audit_path: p.audit_path,
             anchors: std::sync::OnceLock::new(),

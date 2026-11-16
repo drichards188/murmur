@@ -145,7 +145,7 @@ use crate::policy::{self, Policy, PolicyDecision, Tier};
 use crate::queue::{self as queue, Basis, CarriedApproval, OpenIntent, Verdict};
 use crate::rules::{
     self, CheckResult, OPERATOR_AUTH_SINCE, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE,
-    STEP_UP_SCHEMA_SINCE,
+    SCENARIO_SETTINGS_SCHEMA_SINCE, STEP_UP_SCHEMA_SINCE,
 };
 use crate::space::{self, ScenarioMap, SpaceAnswer, SpaceOracle, SpaceOrder};
 use crate::time::Time;
@@ -2283,6 +2283,12 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::IDENTIFY_CLASS_SINCE, "\"size_class\":{", "a camera's reach by size class (a decision's fact)"),
     (rules::IDENTIFY_CLASS_SINCE, "\"size_class\":\"", "the size class an identify order's standoff was sized for"),
     (rules::REACH_NOW_SINCE, "\"reach_now\":{", "a vehicle's sensors' reach under the conditions now (a decision's fact)"),
+    (rules::SCENARIO_SETTINGS_SINCE, "\"watch\":{\"bar\":", "the scenario's settings for the watch (the policy's [watch])"),
+    (rules::SCENARIO_SETTINGS_SINCE, "\"loosened\":{", "the policy's named loosenings"),
+    (rules::SCENARIO_SETTINGS_SINCE, "\"silent\":{\"drift_mps\":", "the policy's figures for a silent vehicle ([rules.silent])"),
+    (rules::SCENARIO_SETTINGS_SINCE, "\"min_identity_level\":\"", "an engagement's identity level in the policy"),
+    (rules::SCENARIO_SETTINGS_SINCE, "\"default_effect_radius_m\":", "the policy's default effect radius"),
+    (rules::SCENARIO_SETTINGS_SINCE, "\"policy_layers\":[", "the files the policy was built from"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2417,15 +2423,33 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
     }
     // the policy file's schema
     let schema = policy_schema.unwrap_or(1);
-    if schema > crate::rules::POLICY_SCHEMA {
+    if schema > crate::rules::POLICY_SCHEMA_NEWEST {
         bad(
             r,
             first,
             None,
             "logged policy schema is newer than this replay knows",
             schema.to_string(),
-            crate::rules::POLICY_SCHEMA.to_string(),
+            crate::rules::POLICY_SCHEMA_NEWEST.to_string(),
         );
+    }
+    // rules 33: the scenario's settings and the named loosenings are schema 8 (the engagement's
+    // two keys are checked with the section's others below)
+    for (set, key) in [
+        (policy.watch.is_some(), "watch"),
+        (policy.loosened.is_some(), "loosened"),
+        (policy.rules.silent.is_some(), "rules.silent"),
+    ] {
+        if set && schema < SCENARIO_SETTINGS_SCHEMA_SINCE {
+            bad(
+                r,
+                first,
+                None,
+                "logged policy uses a key of a later policy schema than it claims",
+                format!("{key} (schema {SCENARIO_SETTINGS_SCHEMA_SINCE})"),
+                format!("schema {schema}"),
+            );
+        }
     }
     if policy.queue.is_some() && schema < 3 {
         bad(

@@ -143,6 +143,11 @@ pub enum EngineError {
     /// 30): nothing was logged.
     #[error("node loss: {0}")]
     NodeLoss(String),
+    /// Rules 33: a policy the run's decision rules can't decide with as written (scenario
+    /// settings other than the standing values under rules that don't read them,
+    /// [`crate::Policy::fits_rules`]): the engine did not start.
+    #[error("{0}")]
+    Policy(String),
 }
 
 /// Rules 12: what a start carries over from earlier runs' logs ([`Engine::start`]): the entries of
@@ -157,11 +162,18 @@ pub struct StartCarry {
     /// Rules 16: the bridge's tracker's drop age (s), logged as `run.started`'s
     /// `track_drop_s`; none without a tracker that drops (a test).
     pub track_drop_s: Option<f64>,
+    /// Rules 33: the files the policy was built from ([`crate::Policy::load_layers`]), logged as
+    /// `run.started`'s `policy_layers` (each path never absolute, [`crate::Layer::for_log`]);
+    /// none for a policy not read from a file (a test).
+    pub policy_layers: Vec<crate::policy::Layer>,
 }
 
 impl From<Vec<crate::replay::CarriedFrom>> for StartCarry {
     fn from(from: Vec<crate::replay::CarriedFrom>) -> Self {
-        StartCarry { pointer: None, from, track_drop_s: None }
+        StartCarry {
+            from,
+            ..StartCarry::default()
+        }
     }
 }
 
@@ -660,7 +672,16 @@ impl Engine {
             pointer,
             from: mut carried_from,
             track_drop_s,
+            policy_layers,
         } = carry.into();
+        // rules 33: a policy whose scenario settings these rules would not read is refused, and
+        // the files it was built from are logged (no build of older rules logged them)
+        policy.fits_rules().map_err(|e| EngineError::Policy(e.to_string()))?;
+        let policy_layers: Vec<crate::policy::Layer> = if policy.rules.scenario_settings() {
+            policy_layers.iter().map(crate::policy::Layer::for_log).collect()
+        } else {
+            Vec::new()
+        };
         // rules 16: the tracker's drop age (no build of older rules logged it)
         let track_drop_s = track_drop_s.filter(|_| policy.rules.lost_contacts());
         // rules 15: the station's pointer, the spent platforms carried, a failed carry's fleet
@@ -783,7 +804,7 @@ impl Engine {
         let started = e.emit(EventBody::RunStarted {
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
             rules_version: Some(policy.rules.rules_version),
-            policy_schema: Some(crate::rules::POLICY_SCHEMA),
+            policy_schema: Some(policy.rules.policy_schema()),
             build: Some(crate::audit::BuildInfo::current()),
             roster: Some(roster),
             policy,
@@ -791,6 +812,7 @@ impl Engine {
             carried_from: carried_from.clone(),
             pointer,
             track_drop_s,
+            policy_layers,
         })?;
         // rules 12: what earlier runs still owed, owed back from here on (rules 15: and the
         // platforms they had spent stay spent)

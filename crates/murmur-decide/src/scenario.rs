@@ -1373,7 +1373,7 @@ pub fn run(
 ) -> Result<ScenarioResult, ScenarioError> {
     let setup = |e: String| ScenarioError::Setup(file.to_string(), e);
     let rel = |p: &Option<String>, d: &str| root.join(p.as_deref().unwrap_or(d));
-    let mut policy = Policy::load(&rel(&sc.policy, "sim/policy.toml")).map_err(|e| setup(e.to_string()))?;
+    let (mut policy, policy_layers) = Policy::load_layers(&rel(&sc.policy, "sim/policy.toml")).map_err(|e| setup(e.to_string()))?;
     // the rules being built, when the scenario is designed for them (and nothing asks otherwise)
     if let Some(v) = sc.min_rules.filter(|_| opts.rules_version.is_none()) {
         if v > crate::rules::RULES_NEWEST {
@@ -1513,6 +1513,7 @@ pub fn run(
             pointer: None,
             from: carried,
             track_drop_s: Some(TRACK_DROP_S),
+            policy_layers,
         },
         Box::new(clock.clone()),
         Box::new(log.clone()),
@@ -2610,6 +2611,7 @@ fn earlier_log(sc: &Scenario, c: &CarriedDef, policy: &Policy, catalog: &Catalog
             pointer: None,
             from: Vec::new(),
             track_drop_s: Some(TRACK_DROP_S),
+            policy_layers: Vec::new(),
         },
         Box::new(clock),
         Box::new(sink.clone()),

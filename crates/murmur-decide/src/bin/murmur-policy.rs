@@ -2,17 +2,20 @@
 //! as one line of JSON, for anything outside the engine that needs the merged values
 //! (docs/SCENARIO-SETTINGS.md section 3: Python reads them only from here or from a log).
 //!
-//! `{"policy": ..., "layers": [{"path": ..., "sha256": ...}], "watch": null}`:
+//! `{"policy": ..., "layers": [{"path": ..., "sha256": ...}], "watch": {...}}`:
 //! - `policy`: exactly what `run.started` logs for it (`Policy::load`, then `Policy::as_logged`):
 //!   a supplement (`extends`) merged over the files it extends, its defaults written out;
 //! - `layers`: the files it was built from, the one given first, then each file it extends in
 //!   turn, each path as written (the first as given, each further one as its child's `extends`
 //!   says, relative to the child) with the SHA-256 of its bytes;
-//! - `watch`: the scenario's settings for watching (none yet).
+//! - `watch`: the watch settings a run given this file decides under (`Policy::effective_watch`,
+//!   what MCP `get_policy` serves): from rules 33 the policy's `[watch]`; under older rules what
+//!   they meant, `sim/policy-v0-watch.toml`'s `[watch]`, with the file's `[watch.area]`.
 //!
 //! `--rules N` reads it as a run deciding under rules N would (the bridge's `MURMUR_RULES`, the
-//! scenario runner's `--rules`): older rules log no `[identification]` and no step-up factors.
-//! Default: the current rules.
+//! scenario runner's `--rules`): older rules log no `[identification]` and no step-up factors,
+//! and none of rules 33's settings, and refuse a file whose settings differ from the standing
+//! values (as the bridge does). Default: the build's default rules (`RULES_VERSION`).
 //!
 //! Exit status: 0 printed; 2 the file was refused (the reason on stderr, naming the file and
 //! the key) or usage.
@@ -21,7 +24,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use murmur_decide::rules::RULES_NEWEST;
-use murmur_decide::{Layer, Policy};
+use murmur_decide::{Layer, Policy, WatchSettings};
 
 const USAGE: &str = "usage: murmur-policy show <policy.toml> [--rules N]";
 
@@ -29,8 +32,8 @@ const USAGE: &str = "usage: murmur-policy show <policy.toml> [--rules N]";
 struct Show<'a> {
     policy: &'a Policy,
     layers: &'a [Layer],
-    /// The scenario's `[watch]` settings (docs/SCENARIO-SETTINGS.md stage S2): none yet.
-    watch: Option<()>,
+    /// The watch settings a run of this policy decides under (`Policy::effective_watch`).
+    watch: &'a WatchSettings,
 }
 
 fn parse_args(args: &[String]) -> Result<(String, Option<u32>), String> {
@@ -79,8 +82,14 @@ fn main() -> ExitCode {
     if let Some(n) = rules {
         policy.rules.rules_version = n;
     }
+    // what the bridge refuses under these rules, refused here too
+    if let Err(e) = policy.fits_rules() {
+        eprintln!("murmur-policy: {path}: {e}");
+        return ExitCode::from(2);
+    }
+    let watch = policy.effective_watch();
     let policy = policy.as_logged();
-    match serde_json::to_string(&Show { policy: &policy, layers: &layers, watch: None }) {
+    match serde_json::to_string(&Show { policy: &policy, layers: &layers, watch: &watch }) {
         Ok(s) => {
             println!("{s}");
             ExitCode::SUCCESS

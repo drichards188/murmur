@@ -102,6 +102,74 @@ def test_a_logged_watch_is_read_from_run_started(tmp_path):
         S.from_policy({"watch": _watch(stale=12)})
 
 
+def test_a_saved_record_keeps_the_settings_its_run_logged():
+    """A saved record keeps no run.started (batch.py drops `audit_text`): the v3 recorder copies
+    what the run logged into `rec["settings"]` (`record_settings`, rules 33 on), and `of_record`
+    reads it first. Under older rules nothing is added (the record digests stay)."""
+    w = _watch(bar=0.75, stale_s=12)
+    w["area"] = {"name": "the drill's pier", "center": [-122.40, 37.80], "radius_m": 2000.0}
+    layers = [{"path": "sim/situations/policies/drill.toml", "sha256": "a" * 64},
+              {"path": "watch.toml", "sha256": "b" * 64}]
+    started = {"seq": 1, "type": "run.started", "rules_version": 33, "policy_layers": layers,
+               "policy": {"watch": w, "loosened": {"identification.nominate_unconfirmed": "the drill"},
+                          "rules": {"reserve_pct": 25.0, "task_duration_s": 600,
+                                    "engage": {"min_identity_confidence": 0.8, "min_identity_level": "identify"}}}}
+    kept = S.record_settings(started)
+    assert kept == {"rules_version": 33, "watch": w, "reserve_pct": 25.0, "task_duration_s": 600,
+                    "engage": {"min_identity_confidence": 0.8, "min_identity_level": "identify"},
+                    "loosened": {"identification.nominate_unconfirmed": "the drill"}, "policy_layers": layers}
+    # read first, with no run.started anywhere (a saved record)
+    s = S.of_record({"world": {"name": "golden-gate-v3"}, "settings": kept})
+    assert s.source == "logged" and (s.bar, s.stale_s) == (0.75, 12.0)
+    assert s.area == S.Area("the drill's pier", (-122.40, 37.80), 2000.0)
+    assert s.loosened == (("identification.nominate_unconfirmed", "the drill"),)
+    # the same values as reading the run.started itself
+    assert s == S.of_record({"world": {"name": "golden-gate-v3"}, "audit_text": json.dumps(started)})
+    # a run that logged no [watch] (rules below 33): nothing kept, v0's
+    assert S.record_settings({"type": "run.started", "rules_version": 32, "policy": {"rules": {}}}) is None
+    assert S.record_settings(None) is None
+
+
+def test_the_recorder_keeps_settings_only_when_the_run_logged_a_watch():
+    """episode.py's v3 part: `settings` from the audit log's run.started when it holds a [watch],
+    no key at all otherwise."""
+    from types import SimpleNamespace
+
+    from eval.headless.episode import Episode
+
+    def part(policy: dict) -> dict:
+        ep = Episode.__new__(Episode)
+        ep.opts = SimpleNamespace(agent="none", replicate=None)
+        ep.operator = None
+        ep.e = SimpleNamespace(policy="sim/situations/policies/golden-gate-v3-watch.toml")
+        ep.sim_epoch = 0.0
+        ep.picture_enc = SimpleNamespace(finish=lambda: {"times": []})
+        text = json.dumps({"seq": 1, "t": 0, "type": "run.started", "rules_version": 33, "policy": policy}) + "\n"
+        return ep.v2_part(text, "v3")
+
+    assert "settings" not in part({"rules": {}})
+    got = part({"watch": _watch(), "rules": {"reserve_pct": 20.0, "task_duration_s": 900}})
+    assert got["settings"]["watch"] == _watch() and got["settings"]["rules_version"] == 33
+
+
+def test_policy_file_show_returns_the_effective_watch():
+    """`murmur-policy show` (eval/policy_file.py): under the default rules the legacy watch with the
+    scenario's circle; under rules 33 the merged [watch], which the logged policy carries too."""
+    from eval.policy_file import show
+
+    shown = show("sim/situations/policies/san-diego-watch.toml")
+    w = shown["watch"]
+    v0 = S.v0("san-diego")
+    assert S.watch_of(w, "logged").watch() == v0.watch()
+    assert "watch" not in shown["policy"]
+    assert [layer["path"] for layer in shown["layers"]][1:] == ["watch.toml", "../../policy.toml"]
+    new = show("sim/situations/policies/san-diego-watch.toml", rules=33)
+    assert new["watch"] == new["policy"]["watch"] and new["watch"]["neutral_after_bar"] is True
+    assert S.from_policy(new["policy"]).area == v0.area
+    # the standing policy names no circle
+    assert "area" not in show("sim/policy.toml")["watch"]
+
+
 #: one record per (result directory, world): the mission text each was briefed with
 RECORDS = [
     ("v3-baseline-2026-11-14/v3-f1-fast-boat-gg-none-s5000-r0.json.gz", "golden-gate-v3", "before_isxg"),

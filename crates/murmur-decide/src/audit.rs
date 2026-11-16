@@ -138,6 +138,12 @@ pub enum EventBody {
         /// rules 16.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         track_drop_s: Option<f64>,
+        /// Rules 33 ([`crate::rules::SCENARIO_SETTINGS_SINCE`]): the files the policy was built
+        /// from, the one the run was given first, then each file it extends in turn, each path as
+        /// written (never absolute) with the SHA-256 of its bytes. Absent for a policy not read
+        /// from a file (a test) and before rules 33.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        policy_layers: Vec<crate::policy::Layer>,
     },
 
     /// A new area set is in force (the first one, if none was given at start, or a

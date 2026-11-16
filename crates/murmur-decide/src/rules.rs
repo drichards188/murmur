@@ -292,7 +292,27 @@ pub const RULES_VERSION: u32 = REACH_NOW_SINCE;
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
 /// and this to [`RULES_VERSION`] again.
-pub const RULES_NEWEST: u32 = RULES_VERSION;
+pub const RULES_NEWEST: u32 = SCENARIO_SETTINGS_SINCE;
+
+/// The rules version from which the thresholds are the scenario's (docs/SCENARIO-SETTINGS.md, the
+/// owner's decision of 2026-11-16, DECISIONS.md "Thresholds are the scenario's"; built in stages,
+/// [`RULES_NEWEST`] until the last makes it the default). Up to rules 32 what counts as identified,
+/// stale, approaching or adrift was a constant here, another in the bridge and others again in the
+/// agents and the scoring, and they disagreed (the engine ended an identify order on a first naming
+/// at 0.11 confidence; the brief counted a contact identified only at 0.6). From this version the
+/// policy holds them: its `[watch]` table ([`crate::watch::WatchSettings`]: the bar, each domain's
+/// level, sensors and grace, the horizon, the time on station, stale and still, the look, the
+/// scenario's circle), `[rules.engage] min_identity_level` and `default_effect_radius_m`,
+/// `[rules.silent] drift_mps`, and `loosened`, each loosening a file makes named with its reason
+/// (policy schema 8, [`SCENARIO_SETTINGS_SCHEMA_SINCE`]). They are logged with the policy, and
+/// `run.started` logs the files the policy was built from (`policy_layers`). Under older rules none
+/// of it is logged and [`crate::watch::WatchSettings::legacy`] is what they meant, whatever the file
+/// says: a run of older rules refuses a policy whose `[watch]` (the area aside) or new keys differ
+/// from the standing values ([`crate::Policy::fits_rules`]). Stage S2 parses, bounds, logs and
+/// replays them; the decisions that read them come in S3 and S4. Every gate of that change reads
+/// this constant, never a literal (the held branch `rules33-class-reach` numbers itself 33 too: the
+/// one that lands second renumbers here).
+pub const SCENARIO_SETTINGS_SINCE: u32 = 33;
 
 /// The rules version from which a sensor's reach is judged under the conditions where its vehicle
 /// is now (bd murmur-ahss; the owner's "I want those scored" of 2026-11-15 for scoring v3's F9 night
@@ -688,7 +708,18 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 /// A renamed or removed key stays an optional field of its own, so an old log both parses
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
+/// A run under rules being built logs the schema those rules add ([`RulesConfig::policy_schema`]);
+/// this is the one a run of the default rules logs.
 pub const POLICY_SCHEMA: u32 = PASSKEY_SCHEMA_SINCE;
+
+/// The newest policy schema this build reads and replay accepts: [`POLICY_SCHEMA`], or the one the
+/// rules being built add.
+pub const POLICY_SCHEMA_NEWEST: u32 = SCENARIO_SETTINGS_SCHEMA_SINCE;
+
+/// The policy schema that adds `[watch]`, `loosened`, `[rules.silent]` and `[rules.engage]
+/// min_identity_level` and `default_effect_radius_m` (with [`SCENARIO_SETTINGS_SINCE`]): named so
+/// that a branch merging beside another schema bump renumbers it in one line.
+pub const SCENARIO_SETTINGS_SCHEMA_SINCE: u32 = 8;
 
 /// The policy schema that adds `[approval] step_up_factor` and `login_factor` (with
 /// [`PASSKEY_SINCE`]): named so that a branch merging beside another schema bump renumbers it
@@ -745,6 +776,16 @@ pub struct RulesConfig {
     /// it from the policy (the engine and replay call it).
     #[serde(skip)]
     pub identification: crate::ident::IdentConfig,
+    /// Rules 33 (policy schema 8): `[rules.silent]`, the figures for a silent vehicle (its
+    /// drift); the defaults (today's constants) when absent. Not logged under older rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silent: Option<crate::silent::SilentRules>,
+    /// Rules 33: the policy's `[watch]` (a top-level section; the standing values when it has
+    /// none), copied here so the rules read it. Not a key of `[rules]` and not logged here:
+    /// [`crate::Policy::sync`] sets it. Read it through [`RulesConfig::watch`], which gives
+    /// [`crate::watch::WatchSettings::legacy`] under older rules.
+    #[serde(skip)]
+    pub watch: crate::watch::WatchSettings,
 }
 
 impl RulesConfig {
@@ -901,6 +942,38 @@ impl RulesConfig {
         self.rules_version >= REACH_NOW_SINCE
     }
 
+    /// Rules 33 ([`SCENARIO_SETTINGS_SINCE`]): the thresholds are the scenario's (its policy's
+    /// `[watch]`, `[rules.silent]` and the new `[rules.engage]` keys).
+    pub fn scenario_settings(&self) -> bool {
+        self.rules_version >= SCENARIO_SETTINGS_SINCE
+    }
+
+    /// The watch settings these rules decide under: the policy's `[watch]` from rules 33, and
+    /// before them what they meant, [`crate::watch::WatchSettings::legacy`], whatever the file
+    /// says.
+    pub fn watch(&self) -> &crate::watch::WatchSettings {
+        if self.scenario_settings() {
+            &self.watch
+        } else {
+            crate::watch::WatchSettings::legacy()
+        }
+    }
+
+    /// `[rules.silent]`, or its defaults.
+    pub fn silent_rules(&self) -> crate::silent::SilentRules {
+        self.silent.clone().unwrap_or_default()
+    }
+
+    /// The policy schema a run under these rules logs (`run.started`'s `policy_schema`): the
+    /// schema the rules being built add once a run decides under them, else [`POLICY_SCHEMA`].
+    pub fn policy_schema(&self) -> u32 {
+        if self.scenario_settings() {
+            SCENARIO_SETTINGS_SCHEMA_SINCE.max(POLICY_SCHEMA)
+        } else {
+            POLICY_SCHEMA
+        }
+    }
+
     /// `[rules.engage]`, or its defaults.
     pub fn engage_rules(&self) -> EngageRules {
         let mut e = self.engage.clone().unwrap_or_default();
@@ -924,6 +997,8 @@ impl Default for RulesConfig {
             space: None,
             engage: None,
             identification: crate::ident::IdentConfig::default(),
+            silent: None,
+            watch: crate::watch::WatchSettings::default(),
         }
     }
 }

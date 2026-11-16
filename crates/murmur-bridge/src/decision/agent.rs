@@ -274,6 +274,12 @@ impl Decision {
         serde_json::to_value(self.lock().engine.policy()).unwrap_or(Value::Null)
     }
 
+    /// The watch settings this run decides under (docs/SCENARIO-SETTINGS.md): the policy's
+    /// `[watch]` from rules 33, else the legacy values with the scenario's area.
+    pub fn watch_json(&self) -> Value {
+        serde_json::to_value(&self.watch).unwrap_or(Value::Null)
+    }
+
     /// The areas the rules and policy read (approved, no-go), with their polygons.
     pub fn areas(&self) -> &AreaSet {
         &self.areas

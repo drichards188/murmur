@@ -77,6 +77,49 @@ pub const ROTARY_FALL_RATIO: f64 = 1.0;
 /// How fast the wind carries an airship that makes no way, m/s (GUESS; the Gate's world draws
 /// 3 to 8 m/s at the bridge).
 pub const AIR_DRIFT_MPS: f64 = 10.0;
+
+/// `[rules.silent]` (rules 33, [`crate::rules::SCENARIO_SETTINGS_SINCE`], policy schema 8): the
+/// scenario's figures for a silent vehicle, today's constants by default. Parsed, bounded and
+/// logged from rules 33; nothing reads them yet (stage S3 of docs/SCENARIO-SETTINGS.md), and under
+/// older rules the constants stand whatever a file says.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SilentRules {
+    /// How fast the water or the wind carries one of ours that makes no way, m/s.
+    pub drift_mps: SilentDrift,
+}
+
+/// `[rules.silent] drift_mps`: by domain (a ground vehicle's drift is a distance,
+/// [`GROUND_DRIFT_M`], not a speed).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SilentDrift {
+    pub surface: f64,
+    pub subsurface: f64,
+    pub air: f64,
+}
+
+impl Default for SilentDrift {
+    fn default() -> Self {
+        SilentDrift {
+            surface: SURFACE_DRIFT_MPS,
+            subsurface: SUBSURFACE_DRIFT_MPS,
+            air: AIR_DRIFT_MPS,
+        }
+    }
+}
+
+impl SilentRules {
+    pub fn validate(&self) -> Result<(), String> {
+        let d = &self.drift_mps;
+        for (v, n) in [(d.surface, "surface"), (d.subsurface, "subsurface"), (d.air, "air")] {
+            if !(v.is_finite() && (0.0..=30.0).contains(&v)) {
+                return Err(format!("rules.silent.drift_mps.{n} must be within 0..30, got {v}"));
+            }
+        }
+        Ok(())
+    }
+}
 /// The turn rate assumed for one of ours whose catalog gives none, degrees a second: the
 /// stand-ins' own default (GUESS for anything real). A turn back at a waypoint swings it out by
 /// its turning circle's diameter (radius: cruise speed over turn rate).

@@ -76,6 +76,20 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    policy, so a supplement logs what the whole file it stands for would. `murmur-policy show
    <file> [--rules N]` prints that policy as `run.started` would log it, with the files it was
    built from and their SHA-256 (Python reads merged values only there, `eval/policy_file.py`).
+   The scenario's settings (rules 33, being built; docs/SCENARIO-SETTINGS.md): `[watch]` (the
+   bar, `neutral_after_bar`, the horizon, the time on station, `stale_s`, `still_mps`, `look_m`,
+   `no_velocity_mps`, each domain's `level`, `sensors` and `grace_s`, an optional `area`),
+   `[rules.engage] min_identity_level` and `default_effect_radius_m`, `[rules.silent]
+   drift_mps`; every file writes their standing values out, `run.started` logs them (and
+   `policy_layers`) from rules 33 only, and a run of older rules refuses values other than the
+   standing ones, the area aside (`Policy::fits_rules`). A floor no file loosens, refused at
+   load and by replay: `min_identity_confidence` at least `watch.bar`, `min_identity_level =
+   "identify"`, no watch domain at `detect`. A file that sets `identification.nominate_unconfirmed
+   = true`, or `rules.engage.min_identity_confidence` below what it extends (a file that extends
+   none: below the code's 0.6), names it, `loosened = { "<key>" = "<why>" }`; a `loosened` entry
+   that loosens nothing is refused. MCP `get_policy` and `murmur-policy show` serve the effective
+   `watch` (`Policy::effective_watch`: under older rules `sim/policy-v0-watch.toml`'s, with the
+   scenario's area).
 4. **Approval**: a human tier needs a human decision, and who that is depends on where
    the intent came from.
    - **A human's own submission** (`Engine::submit`, `amend_collect`; the console's
@@ -2513,6 +2527,18 @@ Rules versions:
   `v32-identify-in-fog-refused-until-it-lifts-scenario-146.jsonl` (relabelled rules 31, its reach
   now is caught, and with it taken out its refusal).
 
+- **33** (`SCENARIO_SETTINGS_SINCE`, being built behind `RULES_NEWEST`: docs/SCENARIO-SETTINGS.md
+  section 6; policy schema 8): *the thresholds are the scenario's*. Stage S2 (this build): the
+  policy's `[watch]` (`watch::WatchSettings`), `loosened`, `[rules.silent]` and the new
+  `[rules.engage]` keys are logged with the policy, and `run.started` logs `policy_layers`, each
+  file the policy was built from (path as written, never absolute, and SHA-256); under older
+  rules none of it is logged, `RulesConfig::watch` is `WatchSettings::legacy` (the frozen
+  `sim/policy-v0-watch.toml`'s), and `Engine::start` refuses a policy whose settings differ from
+  the standing ones but for the area (`EngineError::Policy`). Replay re-checks the floor on the
+  logged copy (`Policy::validate`). Markers: a logged `watch`, `loosened`, `silent`,
+  `min_identity_level`, `default_effect_radius_m`, `policy_layers`. No decision reads the
+  settings yet (stages S3 and S4); `tests/scenario_settings.rs`.
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -2526,7 +2552,11 @@ keys refused: `rule_declaration`, `attribution_threshold`, `nominate_unconfirmed
 `corroboration`, `corroboration_window_s`)
 and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9); **7** adds
 `[approval] step_up_factor` (`password`, `passkey`) and `login_factor` (`either`, `password`,
-`passkey`), both optional (`PASSKEY_SCHEMA_SINCE`, rules 10).
+`passkey`), both optional (`PASSKEY_SCHEMA_SINCE`, rules 10); **8** adds `[watch]`, `loosened`,
+`[rules.silent]` and `[rules.engage] min_identity_level` and `default_effect_radius_m`, each
+optional and written out with its default (`SCENARIO_SETTINGS_SCHEMA_SINCE`, rules 33, being
+built: a run under rules 33 logs schema 8 and one under the default rules still logs 7,
+`RulesConfig::policy_schema`; replay accepts up to `POLICY_SCHEMA_NEWEST`).
 
 ## Integration contract for the bridge
 

@@ -159,6 +159,7 @@ pub(super) fn engage_rig_full(
             scripted,
             carried_from: carry.from,
             pointer: carry.pointer,
+            policy_layers: Vec::new(),
         },
     )
     .expect("engine");

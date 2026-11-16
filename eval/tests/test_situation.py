@@ -782,6 +782,27 @@ def test_the_watch_policy_is_the_shipped_one_plus_agent_tasking():
     assert {k: v for k, v in pol.items() if k != "tier"} == {k: v for k, v in sim.items() if k != "tier"}
 
 
+def test_the_v3_watches_policies_are_the_watch_policy_and_their_circle():
+    """golden-gate-v3-watch, san-diego-watch and golden-gate-scale-watch each name a supplement of
+    the watch policy that sets only its `[watch.area]`, v0's circle for its world
+    (sim/policy-v0-watch.toml; docs/SCENARIO-SETTINGS.md stage S2). Under the default rules a run
+    logs exactly the watch policy and serves the legacy watch with that circle; under rules 33 the
+    circle is in the logged policy."""
+    from eval.headless.v3 import settings as V
+    from eval.policy_file import show
+
+    watch = show(S.SITUATIONS / "policies" / "watch.toml")
+    for name in WATCHES_V3:
+        sit = S.load_situation(name)
+        assert sit.policy == (S.SITUATIONS / "policies" / f"{name}.toml").resolve()
+        shown = show(sit.policy)
+        assert [layer["path"] for layer in shown["layers"]][1:] == ["watch.toml", "../../policy.toml"]
+        assert shown["policy"] == watch["policy"], name
+        assert V.watch_of(shown["watch"], "logged").watch() == V.v0(sit.world).watch(), name
+        new = show(sit.policy, rules=33)
+        assert new["policy"]["watch"]["area"] == V.v0(sit.world).watch()["area"], name
+
+
 # ---- the scripted operators ----------------------------------------------------------------------
 
 

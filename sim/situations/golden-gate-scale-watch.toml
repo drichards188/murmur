@@ -26,7 +26,7 @@ conditions are drawn per episode from the world's ranges.
 """
 
 world = "golden-gate-scale"
-policy = "sim/situations/policies/watch.toml"
+policy = "sim/situations/policies/golden-gate-scale-watch.toml"
 duration_s = 1800
 ai_start_s = 45
 ready_timeout_s = 300

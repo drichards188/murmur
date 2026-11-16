@@ -14,6 +14,9 @@
 # an engagement-authority operator's act; agents can't declare, confirm, revoke, sign, stop
 # or release.
 
+# rules 33 (S2): the loosening named, as eval/policy/minimal.toml names it
+loosened = { "identification.nominate_unconfirmed" = "the minimal-approval profile measures what really needs a person: a rule declaration on clear evidence may be nominated at once, and stays a review item" }
+
 [approval]
 expire_s = 120
 submitter_authorizes = true                 # default for human tiers that don't set it

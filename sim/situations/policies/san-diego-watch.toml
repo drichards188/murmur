@@ -1,0 +1,13 @@
+# The watch policy for sim/situations/san-diego-watch.toml: the situations' watch policy
+# (watch.toml: sim/policy.toml and the agent-tasking tier) and this scenario's circle
+# (docs/SCENARIO-SETTINGS.md section 3). The circle is v0's for the world (sim/policy-v0-watch.toml
+# `[area.san-diego]`: sim/worlds/san-diego.toml's `[mission]`), so a run of older rules is briefed
+# and graded as before. The silent drift stays the standing one, the Golden Gate's current, until a
+# figure comes from San Diego's own currents (a known gap, docs/SCENARIO-SETTINGS.md section 3).
+
+extends = "watch.toml"
+
+[watch.area]
+name = "the bay entrance off Ballast Point"
+center = [-117.2290, 32.6860]               # [lon, lat]
+radius_m = 3000

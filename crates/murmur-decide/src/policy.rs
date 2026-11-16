@@ -52,7 +52,20 @@
 //! naming the file and the key. Neither `extends` nor `before` is part of the merged policy, so
 //! a supplement logs exactly what the whole file it stands for would: what is logged is the
 //! policy, not the files. [`Policy::load_layers`] also says which files it was built from
-//! (`murmur-policy show`).
+//! (`murmur-policy show`; from rules 33 `run.started`'s `policy_layers`).
+//!
+//! **The scenario's settings and their floor** (rules 33, [`crate::rules::SCENARIO_SETTINGS_SINCE`],
+//! docs/SCENARIO-SETTINGS.md section 3). `[watch]` ([`crate::watch::WatchSettings`]),
+//! `[rules.silent]` and `[rules.engage] min_identity_level` and `default_effect_radius_m` are
+//! written out with their defaults when a file leaves them out, and logged from rules 33. A floor
+//! no file loosens, refused at load and by replay on the logged copy: the engagement identity bar
+//! (`min_identity_confidence`) at least the watch's `bar`, the engagement identity level
+//! `identify`, no watch domain at `detect`; and the engagement floor [`decide`] holds whatever the
+//! file says (never auto, never approved at submission, never by its proposer, two approvers at
+//! least). A loosening only when named ([`LOOSENABLE`]): a file that sets
+//! `identification.nominate_unconfirmed = true`, or `rules.engage.min_identity_confidence` below
+//! what it extends gives (a file that extends none: below the code's 0.6), says so in `loosened =
+//! { "<key>" = "<why>" }`, and an entry that names nothing this file loosens is refused.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -355,7 +368,21 @@ pub struct Policy {
     /// absent from logs written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identification: Option<crate::ident::IdentConfig>,
+    /// `[watch]` (rules 33, policy schema 8): the scenario's settings for the watch
+    /// ([`crate::watch::WatchSettings`]); written out with the standing values when a file has
+    /// none. Absent from logs of older rules ([`Policy::as_logged`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<crate::watch::WatchSettings>,
+    /// `loosened` (rules 33, policy schema 8): each key a file sets looser than what it extends,
+    /// with the reason it gives ([`LOOSENABLE`]). Absent from logs of older rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loosened: Option<BTreeMap<String, String>>,
 }
+
+/// The keys a policy file may set looser than the file it extends (a file that extends none:
+/// than the code's defaults) only by naming them in `loosened` with a reason: a rule-declared
+/// track nominated before an operator confirms it, and a lower engagement identity bar.
+pub const LOOSENABLE: [&str; 2] = ["identification.nominate_unconfirmed", "rules.engage.min_identity_confidence"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyError {
@@ -384,9 +411,35 @@ pub struct Layer {
     pub sha256: String,
 }
 
+impl Layer {
+    /// The layer as `run.started` logs it (rules 33, `policy_layers`): never an absolute path,
+    /// which would name the machine and the checkout. A file given by an absolute path is named
+    /// relative to the working directory when it is under it, else by its file name; the
+    /// SHA-256 says which file it was either way.
+    pub fn for_log(&self) -> Layer {
+        let p = Path::new(&self.path);
+        if !p.is_absolute() {
+            return self.clone();
+        }
+        let shown = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| p.strip_prefix(cwd).ok().map(Path::to_path_buf))
+            .or_else(|| p.file_name().map(PathBuf::from))
+            .map_or_else(|| self.path.clone(), |q| q.display().to_string());
+        Layer {
+            path: shown,
+            sha256: self.sha256.clone(),
+        }
+    }
+}
+
 impl Policy {
     pub fn from_toml(text: &str) -> Result<Self, PolicyError> {
-        Self::finish(toml::from_str(text)?)
+        let p: Policy = toml::from_str(text)?;
+        // rules 33: a file that extends none is compared with the code's defaults
+        let table: toml::Table = toml::from_str(text)?;
+        check_loosened(&table, None, table.get("loosened"), SAFE_VALUES).map_err(PolicyError::Invalid)?;
+        Self::finish(p)
     }
 
     /// What every file gets once read: its defaults written out, its bounds checked, synced.
@@ -394,6 +447,15 @@ impl Policy {
         // The file default: a human's own submission authorizes it. Written out explicitly
         // so the logged copy says so (an unset value in a log means false).
         p.approval.submitter_authorizes.get_or_insert(true);
+        // rules 33: the scenario's settings, the standing values where the file sets none,
+        // written out so a run logs what it decided under (as_logged drops them under older
+        // rules); the engagement's only where the file has a [rules.engage]
+        p.watch.get_or_insert_with(crate::watch::WatchSettings::default);
+        p.rules.silent.get_or_insert_with(crate::silent::SilentRules::default);
+        if let Some(e) = p.rules.engage.as_mut() {
+            e.min_identity_level.get_or_insert(crate::identify::Level::Identify);
+            e.default_effect_radius_m.get_or_insert(crate::engage::DEFAULT_EFFECT_RADIUS_M);
+        }
         p.validate()?;
         p.sync();
         Ok(p)
@@ -411,15 +473,84 @@ impl Policy {
             self.approval.step_up_factor = None;
             self.approval.login_factor = None;
         }
+        // rules 33: the scenario's settings, logged from rules 33 only (a run of older rules
+        // logs the policy it always did, and decides as it always did); from 33 always logged
+        if self.rules.scenario_settings() {
+            self.watch.get_or_insert_with(crate::watch::WatchSettings::default);
+        } else {
+            self.watch = None;
+            self.loosened = None;
+            self.rules.silent = None;
+            if let Some(e) = self.rules.engage.as_mut() {
+                e.min_identity_level = None;
+                e.default_effect_radius_m = None;
+            }
+        }
         self.sync();
         self
     }
 
     /// Copy what the rules read from other sections into [`RulesConfig`] (rules 9: the
-    /// `[identification]` settings the engagement checks read). The engine and replay call
-    /// it on the policy they decide with.
+    /// `[identification]` settings the engagement checks read; rules 33: `[watch]`). The engine
+    /// and replay call it on the policy they decide with.
     pub fn sync(&mut self) {
         self.rules.identification = self.identification.clone().unwrap_or_default();
+        self.rules.watch = self.watch.clone().unwrap_or_default();
+    }
+
+    /// The watch settings a run of this policy decides under, as MCP `get_policy` and
+    /// `murmur-policy show` serve them: the policy's `[watch]` from rules 33 (the standing values
+    /// where it has none); under older rules what those rules meant,
+    /// [`crate::watch::WatchSettings::legacy`], with the scenario's `[watch.area]`.
+    pub fn effective_watch(&self) -> crate::watch::WatchSettings {
+        let own = self.watch.clone().unwrap_or_default();
+        if self.rules.scenario_settings() {
+            own
+        } else {
+            crate::watch::WatchSettings {
+                area: own.area,
+                ..crate::watch::WatchSettings::legacy().clone()
+            }
+        }
+    }
+
+    /// Whether a run under this policy's rules version can decide with it as written: under rules
+    /// below 33 nothing reads the scenario's settings, so a policy whose `[watch]` (the area
+    /// aside), `[rules.silent]` or `[rules.engage] min_identity_level` or
+    /// `default_effect_radius_m` differ from the standing values is refused, saying which, rather
+    /// than run on values it would not use. [`crate::Engine::start`] asks it before it logs
+    /// anything.
+    pub fn fits_rules(&self) -> Result<(), PolicyError> {
+        if self.rules.scenario_settings() {
+            return Ok(());
+        }
+        let mut differ = self
+            .watch
+            .as_ref()
+            .map(|w| w.differs_from(&crate::watch::WatchSettings::default()))
+            .unwrap_or_default();
+        if self.rules.silent.as_ref().is_some_and(|s| *s != crate::silent::SilentRules::default()) {
+            differ.push("rules.silent.drift_mps".into());
+        }
+        if let Some(e) = &self.rules.engage {
+            if e.min_identity_level() != crate::identify::Level::Identify {
+                differ.push("rules.engage.min_identity_level".into());
+            }
+            if e.default_effect_radius() != crate::engage::DEFAULT_EFFECT_RADIUS_M {
+                differ.push("rules.engage.default_effect_radius_m".into());
+            }
+        }
+        if differ.is_empty() {
+            return Ok(());
+        }
+        let (one, it) = if differ.len() == 1 { ("differs", "it") } else { ("differ", "them") };
+        Err(PolicyError::Invalid(format!(
+            "{} {one} from the standing values (sim/policy.toml), and decision rules {} do not read the scenario's settings (rules {} do): run under rules {} (MURMUR_RULES), or leave {it} as sim/policy.toml has {it}",
+            differ.join(", "),
+            self.rules.rules_version,
+            crate::rules::SCENARIO_SETTINGS_SINCE,
+            crate::rules::SCENARIO_SETTINGS_SINCE,
+        )))
     }
 
     /// `[identification]`, or its defaults (rule declaration off).
@@ -429,8 +560,11 @@ impl Policy {
 
     /// Every bound a policy file must meet (what [`Policy::from_toml`] checks after parsing).
     /// Replay runs it on the logged policy too, so a log can't carry thresholds no file
-    /// could. The engagement floor (two approvers, never auto, never the proposer) is not a
-    /// bound here: `policy::decide` applies it whatever the file says.
+    /// could. Rules 33's floor is here (the engagement identity bar at least the watch's, its
+    /// level `identify`, no watch domain at `detect`, a loosening only of a [`LOOSENABLE`] key
+    /// with a reason); the engagement floor (two approvers, never auto, never at submission,
+    /// never the proposer) is not a bound here: `policy::decide` applies it whatever the file
+    /// says.
     pub fn validate(&self) -> Result<(), PolicyError> {
         let p = self;
         if p.tiers.is_empty() {
@@ -508,6 +642,33 @@ impl Policy {
         if let Some(i) = &p.identification {
             i.validate().map_err(PolicyError::Invalid)?;
         }
+        // rules 33: the scenario's settings, and the floor no file loosens
+        if let Some(s) = &r.silent {
+            s.validate().map_err(PolicyError::Invalid)?;
+        }
+        if let Some(w) = &p.watch {
+            w.validate().map_err(PolicyError::Invalid)?;
+            let bar = r.engage_rules().min_identity_confidence;
+            if bar < w.bar {
+                return Err(PolicyError::Invalid(format!(
+                    "rules.engage.min_identity_confidence = {bar} is below watch.bar = {}: an engagement's target is identified at least as surely as the watch counts a contact identified (the floor, no override)",
+                    w.bar
+                )));
+            }
+        }
+        if let Some(lo) = &p.loosened {
+            for (key, why) in lo {
+                if !LOOSENABLE.contains(&key.as_str()) {
+                    return Err(PolicyError::Invalid(format!(
+                        "loosened: {key:?} is not a key a policy loosens ({})",
+                        LOOSENABLE.join(", ")
+                    )));
+                }
+                if why.trim().is_empty() {
+                    return Err(PolicyError::Invalid(format!("loosened: {key:?} gives no reason")));
+                }
+            }
+        }
         for t in &p.tiers {
             if t.approvers == Some(0) {
                 return Err(PolicyError::Invalid(format!(
@@ -542,6 +703,7 @@ impl Policy {
         }];
         if !table.contains_key("extends") {
             no_before(&table, &shown)?;
+            check_loosened(&table, None, table.get("loosened"), SAFE_VALUES).map_err(|why| refused(&shown, why))?;
             return Ok((Self::from_toml(&text)?, layers));
         }
         let own = std::fs::canonicalize(path).map_err(|e| PolicyError::Io(shown.clone(), e))?;
@@ -623,6 +785,7 @@ fn layered(
 ) -> Result<toml::Table, PolicyError> {
     let Some(extends) = table.remove("extends") else {
         no_before(&table, shown)?;
+        check_loosened(&table, None, table.get("loosened"), SAFE_VALUES).map_err(|why| refused(shown, why))?;
         return Ok(table);
     };
     let toml::Value::String(rel) = extends else {
@@ -649,6 +812,8 @@ fn layered(
     });
     chain.push(canonical);
     let mut merged = layered(base, &parent, &rel, layers, chain)?;
+    let inherited = merged.clone();
+    let own_loosened = table.get("loosened").cloned();
     for (key, value) in table {
         if key == "tier" {
             insert_tiers(&mut merged, value, shown, &rel)?;
@@ -656,7 +821,83 @@ fn layered(
             merge_key(&mut merged, key.clone(), value, &key, shown, &rel)?;
         }
     }
+    // rules 33: what this file loosens against what it extends, each named with its reason
+    check_loosened(&merged, Some(&inherited), own_loosened.as_ref(), &rel).map_err(|why| refused(shown, why))?;
     Ok(merged)
+}
+
+/// What a file that extends none is compared with: the code's own values.
+const SAFE_VALUES: &str = "the code's default";
+
+/// Each [`LOOSENABLE`] key `policy` (a merged policy table) sets looser than `parent` (None: the
+/// code's defaults), with what it sets and what it loosens, in [`LOOSENABLE`]'s order.
+fn loosenings(policy: &toml::Table, parent: Option<&toml::Table>) -> Vec<(&'static str, String, String)> {
+    fn at<'a>(t: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
+        let mut parts = path.split('.');
+        let mut v = t.get(parts.next()?)?;
+        for p in parts {
+            v = v.as_table()?.get(p)?;
+        }
+        Some(v)
+    }
+    let flag = |t: Option<&toml::Table>, path: &str| t.and_then(|t| at(t, path)).and_then(toml::Value::as_bool).unwrap_or(false);
+    let number = |t: Option<&toml::Table>, path: &str, default: f64| {
+        t.and_then(|t| at(t, path))
+            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+            .unwrap_or(default)
+    };
+    let mut out = Vec::new();
+    let [nominate, confidence] = LOOSENABLE;
+    if flag(Some(policy), nominate) && !flag(parent, nominate) {
+        out.push((nominate, "true".to_string(), "false".to_string()));
+    }
+    let safe = crate::engage::EngageRules::default().min_identity_confidence;
+    let (own, theirs) = (number(Some(policy), confidence, safe), number(parent, confidence, safe));
+    if own < theirs {
+        out.push((confidence, own.to_string(), theirs.to_string()));
+    }
+    out
+}
+
+/// Rules 33: a file names each loosening it makes in its own `loosened` (`own`), with a reason,
+/// and names nothing else. `policy` is the file merged over what it extends, `parent` what it
+/// extends merged (None: a file that extends none, compared with the code's defaults), named
+/// `inherited` in the refusal.
+fn check_loosened(
+    policy: &toml::Table,
+    parent: Option<&toml::Table>,
+    own: Option<&toml::Value>,
+    inherited: &str,
+) -> Result<(), String> {
+    let named: BTreeMap<String, toml::Value> = match own {
+        None => BTreeMap::new(),
+        Some(toml::Value::Table(t)) => t.clone().into_iter().collect(),
+        Some(v) => {
+            return Err(format!(
+                "`loosened` = {v}: a table of reasons by key, loosened = {{ \"<key>\" = \"<why>\" }}"
+            ));
+        }
+    };
+    let made = loosenings(policy, parent);
+    for (key, sets, gives) in &made {
+        match named.get(*key) {
+            Some(toml::Value::String(why)) if !why.trim().is_empty() => {}
+            Some(_) => return Err(format!("`loosened.\"{key}\"`: the reason, a sentence")),
+            None => {
+                return Err(format!(
+                    "`{key}` = {sets} is looser than {inherited} ({gives}): a file that loosens a key names it with its reason, loosened = {{ \"{key}\" = \"<why>\" }}"
+                ));
+            }
+        }
+    }
+    if let Some(key) = named.keys().find(|k| !made.iter().any(|(m, _, _)| m == k)) {
+        return Err(if LOOSENABLE.contains(&key.as_str()) {
+            format!("`loosened` names {key:?}, which this file does not set looser than {inherited}: a loosening is named only where one is made")
+        } else {
+            format!("`loosened` names {key:?}, which is not a key a policy loosens ({})", LOOSENABLE.join(", "))
+        });
+    }
+    Ok(())
 }
 
 /// A file that extends none has no tier to place among inherited ones.

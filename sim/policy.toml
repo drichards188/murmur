@@ -143,11 +143,14 @@ gnss_step_s = 300                           # gnss visibility sample step
 # Phase E: the engagement decision chain (crates/murmur-decide/src/engage.rs). The effect is
 # an abstract event (a point, a radius, a time); these thresholds are the fail-closed checks
 # on the nomination, the picture held after approval, the release and the assessment.
-min_identity_confidence = 0.6               # the track's identity confidence (0..1)
+min_identity_confidence = 0.6               # the track's identity confidence (0..1); the floor: at least
+                                            # [watch] bar
+min_identity_level = "identify"             # rules 33: the track's identity a kind (the floor: only identify)
 min_track_confidence = 0.5                  # the track's existence confidence now (0..1)
 max_track_age_s = 5                         # last detection no older than this
 max_sigma_fraction = 0.5                    # track 1-sigma now <= this x effect radius
 max_effect_radius_m = 250                   # largest effect radius a nomination may ask for
+default_effect_radius_m = 75                # rules 33: a nomination that names no radius
 keep_out_m = 200                            # keep-out = effect radius + this: none of our vehicles and
                                             # no protected track (anything but the target and tracks an
                                             # operator declared hostile) predicted inside it at the effect time
@@ -193,6 +196,12 @@ keep_out_vertical_m = 200                   # the keep-out above and below the e
                                             # (an unknown altitude leaves it 2D: no ceiling)
 track_alt_max_age_s = 10                    # a track's altitude counts for the 3D keep-out only while its
                                             # last ranged measurement (and that sensor's hit) is this recent, s
+
+# Rules 33 (policy schema 8; docs/SCENARIO-SETTINGS.md): how fast the water or the wind carries
+# one of ours that makes no way, m/s, by domain (crates/murmur-decide/src/silent.rs; the Gate's
+# current: a scenario elsewhere sets its own). A ground vehicle's drift is a distance, not here.
+[rules.silent]
+drift_mps = { surface = 2.5, subsurface = 2.5, air = 10.0 }
 
 [[tier]]
 name = "safety-commands"
@@ -293,3 +302,45 @@ reason = "routine task inside the approved area (tunable; approval fatigue is me
 rule_declaration = true
 attribution_threshold = 0.9
 nominate_unconfirmed = false
+
+# The watch: what counts as identified, in doubt and approaching (rules 33, policy schema 8;
+# docs/SCENARIO-SETTINGS.md section 3, crates/murmur-decide/src/watch.rs). One source per
+# scenario, read by the engine, the bridge, the agents (MCP get_policy's `watch`) and the
+# scoring; a scenario's policy extends this file and sets what it changes, and its `[watch.area]`
+# (name, center as [lon, lat], radius_m) is the circle it watches. Logged from rules 33; a run
+# of older rules means sim/policy-v0-watch.toml's values and refuses any but these (the area
+# aside). The floor, no override: no domain at "detect", and rules.engage.min_identity_confidence
+# at least the bar.
+[watch]
+bar = 0.6                                   # identity confidence that counts as identified
+neutral_after_bar = true                    # no neutral or assumed-friend call by classification below it
+approach_horizon_s = 300                    # a contact on its shown velocity this far ahead is approaching
+identify_on_station_s = 300                 # an identify order's time on station
+stale_s = 10                                # a track unseen this long is out of view
+still_mps = 0.5                             # a shown speed under this is no velocity
+look_m = 1000                               # an orbit this near a contact is a look on it
+
+[watch.no_velocity_mps]
+air = 25.0                                  # an aircraft shown without velocity comes straight in at this
+
+# Each domain: identified at `level` (recognise or identify) or better, by one of `sensors`,
+# within `grace_s` of coming inside the circle.
+[watch.domain.surface]
+level = "identify"
+sensors = ["eo_ir", "ais"]                  # AIS from a true broadcaster; an identify order ends on its camera
+grace_s = 60
+
+[watch.domain.air]
+level = "identify"
+sensors = ["eo_ir"]
+grace_s = 30
+
+[watch.domain.ground]
+level = "identify"
+sensors = ["eo_ir"]
+grace_s = 60
+
+[watch.domain.subsurface]
+level = "recognise"
+sensors = ["sonar"]
+grace_s = 300

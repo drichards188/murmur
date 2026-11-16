@@ -946,7 +946,7 @@ fn a_policy_schema_claim_must_fit_its_keys() {
     let mut ls = lines(&fixture(CURRENT));
     ls[0] = ls[0].replacen(
         &format!("\"policy_schema\":{POLICY_SCHEMA},"),
-        &format!("\"policy_schema\":{},", POLICY_SCHEMA + 1),
+        &format!("\"policy_schema\":{},", POLICY_SCHEMA_NEWEST + 1),
         1,
     );
     let r = replay_str(&rechain(&ls)).unwrap();

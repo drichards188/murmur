@@ -364,6 +364,8 @@ pub fn policy(mcp: &Mcp) -> Value {
         "t": clock::wall(),
         "note": "First matching tier wins; no match means human. An intent with any unverified check is never auto-approved. submitter_authorizes concerns human operators only: an agent's proposal in a human tier always waits in the inbox for an operator.",
         "policy": mcp.decision.policy_json(),
+        // the watch settings the run decides under (docs/SCENARIO-SETTINGS.md section 3)
+        "watch": mcp.decision.watch_json(),
     })
 }
 

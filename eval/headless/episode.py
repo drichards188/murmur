@@ -814,12 +814,21 @@ class Episode:
             engage = digest_engage(audit_text, self.sim_epoch)
             if engage is not None:
                 v2["engage"] = engage
-        return {
+        out = {
             "scoring": scoring,
             "episode_class": cls,
             "replicate": dict(self.opts.replicate) if self.opts.replicate else None,
             scoring: v2,
         }
+        if scoring == "v3":
+            # the settings the run logged (rules 33's [watch] and the rest, docs/SCENARIO-SETTINGS.md):
+            # a saved record keeps no run.started, so it keeps these; nothing under older rules
+            from .v3.settings import record_settings, run_started
+
+            kept = record_settings(run_started({"audit_text": audit_text}))
+            if kept is not None:
+                out["settings"] = kept
+        return out
 
 
 def audit_summary(text: str) -> dict[str, Any]:

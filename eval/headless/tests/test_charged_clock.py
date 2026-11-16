@@ -482,10 +482,15 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: rule (4 722 characters, was 4 356; cd695b9a...). The still speed, the look distance of 1000 m in
 #: the case file and in `map_proposal`, and reading get_policy at connect moved nothing, alone or
 #: with the three.
+#: The two model digests re-taken again when the bridge's get_policy began to carry the run's
+#: `watch` (stage S2: under rules 32 v0's values, the same the officer read from the frozen file
+#: before): the officer now logs them as `watch_settings` on its connect line, which it does only
+#: when the policy carries them. With that one line's settings left out this code gives the
+#: digests before (34748944..., 7554d022...) byte for byte; the playbook's did not move.
 PAUSED = {
-    "model harbor-watch s1": "34748944ce61203ba7402c04402248ac4785d014db50d60f13d28b2cd21d35cd",
+    "model harbor-watch s1": "ac7044b1260eb5cfc1024d4b99f26420d140c2e6b1d42d49632d63ba8da31a42",
     "playbook v2 fast-unknown 1000": "fd7d8c828ad4b87e24e48f18c05365ee1a1f60007bba5d1cc98dc0a238cedce7",
-    "model v2 fast-unknown 1000": "7554d022b986c4a62204a537bafabfdffd4b9169248aa41700b60ef9d9f1e6d9",
+    "model v2 fast-unknown 1000": "0f9c12cc05d0e7326f64cf1f03e2b21ed09cadce0be46fcecbed57c0ff79d065",
 }
 
 

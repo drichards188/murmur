@@ -170,6 +170,7 @@ fn rig_in(
             scripted: Vec::new(),
             carried_from: Vec::new(),
             pointer: None,
+            policy_layers: Vec::new(),
         },
     )
     .expect("engine");
@@ -320,6 +321,7 @@ fn the_bridge_does_not_start_with_an_engagement_operator_who_is_no_operator() {
         scripted: Vec::new(),
         carried_from: Vec::new(),
         pointer: None,
+        policy_layers: Vec::new(),
     };
     let world = || {
         World::new(Config {

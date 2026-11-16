@@ -1,0 +1,12 @@
+# The watch policy for sim/situations/golden-gate-v3-watch.toml: the situations' watch policy
+# (watch.toml: sim/policy.toml and the agent-tasking tier) and this scenario's circle
+# (docs/SCENARIO-SETTINGS.md section 3). The circle is v0's for the world (sim/policy-v0-watch.toml
+# `[area.golden-gate-v3]`: the bridge's mid-span, sim/worlds/golden-gate-v3.toml's `[mission]`),
+# so a run of older rules is briefed and graded as before.
+
+extends = "watch.toml"
+
+[watch.area]
+name = "the Golden Gate Bridge"
+center = [-122.4783, 37.8199]               # [lon, lat]
+radius_m = 3000

@@ -27,7 +27,7 @@ wind, sea state) are drawn per episode from the world's ranges.
 """
 
 world = "san-diego"                           # its fleet and traffic (contacts) and space snapshot
-policy = "sim/situations/policies/watch.toml"
+policy = "sim/situations/policies/san-diego-watch.toml"
 duration_s = 1800
 ai_start_s = 45
 ready_timeout_s = 240

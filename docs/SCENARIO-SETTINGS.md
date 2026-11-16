@@ -248,3 +248,16 @@ of this work.
   `sim/policy.toml` the three engage files would log the shipped values (scenarios 70, 71, 75
   and 81 still end as designed so, checked once); base.toml would need a way to change an
   inherited tier. Converting them is the owner's call: it moves those scenarios' logs.
+- S2 as built: `loosened` names a key by its dotted path (`identification.nominate_unconfirmed`,
+  `rules.engage.min_identity_confidence`); a file's own entries are checked against what it
+  extends, and its children inherit them. Every file writes the settings' standing values out
+  (`[watch]`, `[rules.silent]`, and the two engage keys where it has a `[rules.engage]`), so a
+  rules 33 run always logs a `[watch]`; a run under rules 32 logs none of it and schema 7, and
+  refuses any of them other than the standing values (the area aside), the silent drift and the
+  two engage keys included, since rules 32 would not read them. The engagement floor (two
+  approvers, never auto, never at submission, never the proposer) is `policy::decide`'s whatever
+  the file says (tests/engage.rs `the_policy_floor_holds_whatever_the_file_says`), so no tier is
+  refused at load for it. The v3 watches' records name their own policy files now
+  (`condition.policy`: `golden-gate-v3-watch.toml`, `san-diego-watch.toml`,
+  `golden-gate-scale-watch.toml`, was `watch.toml`), so an aggregate keyed on the condition keeps
+  new records apart from older ones.

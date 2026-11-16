@@ -151,8 +151,15 @@ pub struct EngageRules {
     /// pass `target_declared` before an operator confirms it.
     #[serde(skip)]
     pub nominate_unconfirmed: bool,
-    /// The track's identity confidence must be at least this (0..1).
+    /// The track's identity confidence must be at least this (0..1). From rules 33 at least the
+    /// policy's `[watch] bar` (the floor, checked at load and by replay).
     pub min_identity_confidence: f64,
+    /// Rules 33 (policy schema 8): the identity level an engagement's target must show, which the
+    /// floor holds at `identify` (a size class or a family at any confidence is not an
+    /// identification). Parsed, checked and logged; the check that reads it comes in stage S3 of
+    /// docs/SCENARIO-SETTINGS.md. Default `identify`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_identity_level: Option<crate::identify::Level>,
     /// The track's existence confidence now must be at least this (0..1).
     pub min_track_confidence: f64,
     /// The track's last detection may be at most this old, seconds.
@@ -162,6 +169,11 @@ pub struct EngageRules {
     pub max_sigma_fraction: f64,
     /// Largest effect radius a nomination may ask for, metres.
     pub max_effect_radius_m: f64,
+    /// Rules 33 (policy schema 8): the effect radius of a nomination that names none, metres
+    /// (today's 75 in the bridge's tools and its blocking look; they read it from stage S4).
+    /// Default 75.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_effect_radius_m: Option<f64>,
     /// Keep-out radius beyond the effect radius, metres: none of our vehicles and no
     /// protected track may be predicted inside `effect_radius_m + keep_out_m` of the effect
     /// point at the effect time.
@@ -266,6 +278,10 @@ fn rules_version_now() -> u32 {
     crate::rules::RULES_VERSION
 }
 
+/// The effect radius of a nomination that names none, metres, when the policy sets none
+/// (`[rules.engage] default_effect_radius_m`, rules 33).
+pub const DEFAULT_EFFECT_RADIUS_M: f64 = 75.0;
+
 impl EngageRules {
     /// [`EngageRules::token_ttl_s`] (or its old name) or its default.
     pub fn token_ttl(&self) -> f64 {
@@ -316,6 +332,16 @@ impl EngageRules {
     /// [`EngageRules::track_alt_max_age_s`] or its default.
     pub fn track_alt_max_age(&self) -> f64 {
         self.track_alt_max_age_s.unwrap_or(10.0)
+    }
+
+    /// [`EngageRules::min_identity_level`] or its default (`identify`, the floor).
+    pub fn min_identity_level(&self) -> crate::identify::Level {
+        self.min_identity_level.unwrap_or(crate::identify::Level::Identify)
+    }
+
+    /// [`EngageRules::default_effect_radius_m`] or its default.
+    pub fn default_effect_radius(&self) -> f64 {
+        self.default_effect_radius_m.unwrap_or(DEFAULT_EFFECT_RADIUS_M)
     }
 
     /// The decisions of rules version 2 on (see the changelog).
@@ -443,6 +469,13 @@ impl EngageRules {
         if self.track_alt_max_age_s.is_some() {
             keys.push((4, "track_alt_max_age_s"));
         }
+        let settings = crate::rules::SCENARIO_SETTINGS_SCHEMA_SINCE;
+        if self.min_identity_level.is_some() {
+            keys.push((settings, "min_identity_level"));
+        }
+        if self.default_effect_radius_m.is_some() {
+            keys.push((settings, "default_effect_radius_m"));
+        }
         keys
     }
 }
@@ -453,10 +486,12 @@ impl Default for EngageRules {
             rules_version: crate::rules::RULES_VERSION,
             nominate_unconfirmed: false,
             min_identity_confidence: 0.6,
+            min_identity_level: None,
             min_track_confidence: 0.5,
             max_track_age_s: 5.0,
             max_sigma_fraction: 0.5,
             max_effect_radius_m: 250.0,
+            default_effect_radius_m: None,
             keep_out_m: 200.0,
             keep_out_sigma: 2.0,
             default_window_s: 600,
@@ -542,6 +577,16 @@ impl EngageRules {
         within(self.vertical_rate(), 0.5, 100.0, "vertical_rate_mps")?;
         within(self.keep_out_vertical(), 50.0, 20_000.0, "keep_out_vertical_m")?;
         within(self.track_alt_max_age(), 1.0, 300.0, "track_alt_max_age_s")?;
+        // rules 33: the floor holds the engagement's identity level at identify, no override
+        if self.min_identity_level() != crate::identify::Level::Identify {
+            return Err(format!(
+                "rules.engage.min_identity_level = \"{}\": an engagement's target is identified, a kind, never a size class or a family (the floor, no override)",
+                self.min_identity_level().as_str()
+            ));
+        }
+        if let Some(r) = self.default_effect_radius_m {
+            within(r, 1.0, self.max_effect_radius_m, "default_effect_radius_m")?;
+        }
         if self.assess_window_s < self.assess_dwell_s {
             return Err("rules.engage.assess_window_s must be at least assess_dwell_s".into());
         }

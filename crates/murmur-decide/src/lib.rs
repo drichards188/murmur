@@ -311,6 +311,7 @@ pub mod silent;
 pub mod space;
 pub mod terrain;
 pub mod time;
+pub mod watch;
 pub mod world;
 
 pub use areas::{Area, AreaKind, AreaSet};
@@ -359,7 +360,7 @@ pub use passkey::{
     Study,
 };
 pub use policy::{
-    DeadlineBasis, KindApproval, Layer, LoginFactor, Policy, PolicyDecision, StepUpAct, StepUpFactor, Tier,
+    DeadlineBasis, KindApproval, LOOSENABLE, Layer, LoginFactor, Policy, PolicyDecision, StepUpAct, StepUpFactor, Tier,
     Until,
 };
 pub use queue::{
@@ -370,7 +371,7 @@ pub use reach::{ReachNow, SensorNow};
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
     ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, DAMAGE_SINCE, GUN_SINCE, HANDOVER_SINCE, IDENTIFY_CLASS_SINCE, MINE_SINCE, MISSILE_STANDOFF_SINCE, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, NODE_LOSS_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
-    QUEUE_FOLLOWUPS_SINCE, REACH_NOW_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_NEWEST, RULES_VERSION,
+    POLICY_SCHEMA_NEWEST, QUEUE_FOLLOWUPS_SINCE, REACH_NOW_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_NEWEST, RULES_VERSION, SCENARIO_SETTINGS_SCHEMA_SINCE, SCENARIO_SETTINGS_SINCE,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };
 pub use space::{
@@ -382,6 +383,8 @@ pub use nodes::{Evidence, EvidenceKind, LostMark, NodeLedger, Presumption, Revoc
 pub use engine::{LossOutcome, NodeStep};
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
+pub use watch::{DomainCriteria, WatchArea, WatchDomains, WatchSettings};
+pub use silent::{SilentDrift, SilentRules};
 pub use world::{
     AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LegSurfaces, LoggedInputs, LostLinkAction, LostLinkPlan, LostLinkSource, LostNode, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
     TrackPicture, VehicleDamage, VehicleFacts, WorldSnapshot, picture_hash,

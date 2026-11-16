@@ -16,6 +16,8 @@
 # or release.
 
 extends = "../../sim/policy.toml"
+# rules 33: a loosening is named with its reason (docs/SCENARIO-SETTINGS.md section 3)
+loosened = { "identification.nominate_unconfirmed" = "the minimal-approval profile measures what really needs a person: a rule declaration on clear evidence may be nominated at once, and stays a review item" }
 
 [approval]
 step_up_acts = []                           # minimal: no step-up besides engagement signatures

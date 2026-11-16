@@ -236,6 +236,7 @@ fn restart_on_the_bridge_clock(r: &Rig) -> (Arc<Decision>, MemorySink) {
             scripted: Vec::new(),
             carried_from: Vec::new(),
             pointer: None,
+            policy_layers: Vec::new(),
         },
     )
     .expect("engine");

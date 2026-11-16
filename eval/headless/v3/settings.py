@@ -2,7 +2,8 @@
 the watch's values (the bar, each domain's level, sensors and grace, the approach horizon, the
 speeds), the scenario's circle, and for a run before decision rules 33 the scoring-only rules the
 design retires. Scoring reads each record's own values through `of_record`, never a constant.
-Nothing reads this module yet (stage S6 moves the labels, metrics and report to it).
+Only the v3 recorder reads this module yet (`record_settings`; stage S6 moves the labels, metrics
+and report to it).
 
 - **v0** (`v0(world)`): every run before rules 33 was briefed and graded by one set of values,
   frozen in `sim/policy-v0-watch.toml` and pinned by its sha256 (`V0_SHA256`: reading an edited
@@ -11,13 +12,15 @@ Nothing reads this module yet (stage S6 moves the labels, metrics and report to 
   world's place name, centre and radius; `[mission_sha256.<world>]` the v0 mission text's sha256
   now (`current`) and before bd murmur-isxg added the circle's centre (`before_isxg`).
 - **A logged `[watch]`** (`from_policy`): the bridge logs its whole policy in `run.started` (from
-  S2 the merged layers, with `[watch]` and `loosened`). `of_record` reads it from the record's
-  audit log when the record still holds it (`audit_text`, the record as the episode builds it), or
-  from the audit log kept beside the record (`audit`: batch.py's `keep_audit` writes
-  `<name>.audit.jsonl`). A saved record holds neither on its own: the batch drops `audit_text`
-  before it writes the record, and the record keeps only the policy file's name
-  (`v3.condition.policy`) and the log's digest (`audit`). No run has logged a `[watch]` yet, so
-  every existing record is graded under v0.
+  rules 33, with `[watch]` and `loosened`, and the files it was built from, `policy_layers`). A
+  saved record holds no `run.started` (the batch drops `audit_text` before it writes the record),
+  so the v3 recorder (eval/headless/episode.py `v2_part`) copies what it needs into the record as
+  `settings` (`record_settings`) when the run logged a `[watch]`, and nothing under older rules (a
+  record of theirs is as it was). `of_record` reads `rec["settings"]` first, then the record's
+  audit log when it still holds it (`audit_text`, the record as the episode builds it) or the one
+  kept beside it (`audit`: batch.py's `keep_audit` writes `<name>.audit.jsonl`), else v0. No run
+  has logged a `[watch]` yet outside the rules being built, so every existing record is graded
+  under v0.
 """
 
 from __future__ import annotations
@@ -250,11 +253,43 @@ def logged_policy(rec: dict[str, Any], audit: Path | None = None) -> dict[str, A
     return p if isinstance(p, dict) else None
 
 
+def record_settings(started: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What a record keeps of the settings its run logged (`rec["settings"]`), from the run's
+    `run.started` event: the `[watch]`, the reserve (`reserve_pct`, `task_duration_s`), the
+    engagement's identity bar and level, what was loosened, the files the policy was built from
+    (`policy_layers`) and the rules version. None when the run logged no `[watch]` (rules below
+    33): such a record carries nothing new and is graded under v0."""
+    if not isinstance(started, dict):
+        return None
+    p = started.get("policy")
+    if not isinstance(p, dict) or p.get("watch") is None:
+        return None
+    rules = p.get("rules") or {}
+    engage = rules.get("engage") or {}
+    return {
+        "rules_version": started.get("rules_version"),
+        "watch": p["watch"],
+        "reserve_pct": rules.get("reserve_pct"),
+        "task_duration_s": rules.get("task_duration_s"),
+        "engage": {"min_identity_confidence": engage.get("min_identity_confidence"),
+                   "min_identity_level": engage.get("min_identity_level")},
+        "loosened": dict(p.get("loosened") or {}),
+        "policy_layers": list(started.get("policy_layers") or []),
+    }
+
+
 def of_record(rec: dict[str, Any], audit: Path | None = None) -> Settings:
-    """The settings a record's run was graded under: its logged `[watch]` when the run logged one,
-    else v0's for the record's world."""
+    """The settings a record's run was graded under: the settings the record kept
+    (`rec["settings"]`, `record_settings`: a saved record holds no `run.started`), else its logged
+    `[watch]` when the run logged one, else v0's for the record's world."""
     from .labels import world_of  # here, not at the top: the labels will read this module (S6)
 
+    kept = rec.get("settings")
+    if isinstance(kept, dict) and kept.get("watch") is not None:
+        lo = kept.get("loosened") or {}
+        if not isinstance(lo, dict):
+            raise ValueError(f"settings.loosened: a table of reasons by key, not {lo!r}")
+        return watch_of(kept["watch"], "logged", loosened=lo)
     p = logged_policy(rec, audit)
     if p is not None and p.get("watch") is not None:
         return from_policy(p)
