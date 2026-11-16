@@ -2622,3 +2622,70 @@ shared by every batch into the directory; `--no-build` after the first):
     v3-f8-decoys-gg on 5004; then v3-f6-shore-vehicle-sd, v3-f13-vehicle-faults-gg, v3-f12-gnss-sd
     and v3-f9-night-fog-gg on 5005, v3-f12-gnss-gg on 5000 and v3-f8-decoys-sd on 5008)
     .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-model-smoke-2026-11-15
+
+### 17.21 The smoke's result (2026-11-15)
+
+**Coverage.** golden-gate-v3 (20 of ours) and san-diego (24): air, ground, surface and subsurface
+vehicles; AIS, EO/IR, ESM, radar and sonar; needs on the ground, on the surface and under it, none in
+the air. 9 of 17.20's 12 situations, each once: by day 3, in twilight 2, at night 4; 6 at the Golden
+Gate, 3 in San Diego. The paused clock, the approve-all operator, Claude Sonnet 5.5 alone at medium
+effort (no consult). Run 2026-11-16 01:04-01:28Z on 0355d5b (clean), 36 episodes (the model,
+`none`, `playbook`, `oracle-v3-honest`), no harness error; the model's 9 all scored: no budget stop,
+API error, refusal or leakage hit. The free agents gave the selection batch's result in every one of
+the 9. Records kept in `eval/results/headless/v3-model-smoke-2026-11-15`. **Model results only**,
+about one model in simulated situations, never people; a smoke, not a finding to quote.
+
+**The halves.** The first half cost US$7.37 (US$1.23 an episode: the Golden Gate's US$1.19 to 1.76,
+San Diego's US$0.66 to 0.88). With six more at that mean and the US$1.50 margin it passed the cap
+even after all three listed drops (US$12.56): F6 5005, F12 in San Diego 5005 and F13 at the Gate 5005
+were dropped, and since the rule allows no other drop, the other three ran (San Diego's last, the
+cheapest). The whole cost US$10.27 (US$1.14 an episode, at most US$1.76) of the US$12 cap.
+
+| group | situation | light | model | `none` | `playbook` | honest ceiling |
+|---|---|---|---|---|---|---|
+| A | F6 shore vehicle, San Diego 5003 | day | **served** | no | no | served |
+| A | F13 vehicle faults, Golden Gate 5002 | twilight | no | no | no | served |
+| A | F8 decoys, Golden Gate 5007 | night | no | no | no | served |
+| A | F9 night and fog, Golden Gate 5005 | night | no | no | no | served |
+| B | F12 GNSS, Golden Gate 5002 | twilight | **kept** | served | served | no |
+| B | F8 decoys, San Diego 5007 | day | **kept** | served | served | no |
+| B | F8 decoys, San Diego 5008 | day | **kept** | served | served | no |
+| B | F12 GNSS, Golden Gate 5000 | night | lost | served | served | no |
+| B | F8 decoys, Golden Gate 5004 | night | lost | served | served | no |
+
+Pooled over the 9: orders not justified on the picture 2.67 an hour against the playbook's 20.0;
+harmful orders 0.89 an hour (2 orders) against the playbook's 0.44 (1); no order named more than one
+vehicle.
+
+**By 17.20's rule: no-go.** (a) A: the model served 1 of the 4 run (3 not run), fewer than 3 of 7;
+(b) B: it kept 3 of 5, fewer than 4; (c) its orders not justified held (2.67 against 20.0), its
+harmful orders did not (0.89 against 0.44).
+
+**Why each was lost**, judged on the picture the model had at the time. In all five the contact that
+mattered was on that picture, unknown, through its window, and the model's cameras went elsewhere:
+- F12 at the Gate 5000 (B): at 229 s, a second into the fast boat's need, it sent HUNTER 1, whose
+  camera, radar and sonar were on the boat (T-0025, shown at 13 m/s), to identify T-0026, an unknown
+  small craft shown at 2.7 m/s and due inside in 137 s (in truth a sailboat outbound): harmful (b).
+  It sent PUMA 2 to the boat at 361 s, 73 s past the deadline.
+- F8 at the Gate 5007 (A): at 433 s, 3 s into the need, it sent HUNTER 1 off the fast boat (T-0031,
+  9 m/s) to the AIS decoy (T-0034: AIS "cargo", a small craft at 4 m/s): harmful (b), F8's point.
+- F8 at the Gate 5004 (B): the fast boat (T-0034, 11 to 13 m/s) on the picture from its need's start,
+  348 s; no camera sent to it until 587 s, 180 s past the deadline. Standing still, our cameras had
+  it identified as its need began; the model's earlier looks changed that (which one, not traced;
+  none is labelled harmful, all before the need opened).
+- F9 at the Gate 5005 (A, night): the fast boat (T-0026, 14 to 21 m/s) on the picture from about
+  230 s; nothing sent to it; the model's one order in the window went to a ground contact. The honest
+  ceiling put five vehicles on it from 198 s.
+- F13 at the Gate 5002 (A): the UUV on the picture from 86 s, submerged, unknown, sonar only; in 14
+  orders over 1,200 s the model sent no sonar to it. The honest ceiling sent HUNTER 1's at 86 s.
+
+**What it shows.** The model works through the unknown contacts one by one (cars, walkers, slow
+boats, a drone), each order mostly justified on the picture, but it does not rank them by threat: an
+unknown boat at 13 to 21 m/s or a submerged contact got no more priority than a parked car, and twice
+it took the one camera already on the threat. All five losses are at the Golden Gate at night or in
+twilight; all three San Diego situations went its way (confounded with light; nine situations).
+Filed as bd murmur-335c (free steps first).
+
+**What it does not say.** Nine situations on dev seeds picked after the free agents, one replicate,
+the cheaper officer (no consult), the labels as built; not how often, and not about people. Spend:
+US$10.27 of the owner's US$12 for this smoke (the US$45 of 2026-11-14 stands at US$39.61).
