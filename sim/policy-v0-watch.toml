@@ -1,0 +1,88 @@
+# Frozen: the watch settings every run before decision rules 33 was briefed and graded by
+# (docs/SCENARIO-SETTINGS.md section 3, "Old results stay honest"). A record whose run logged no
+# `[watch]` is graded under these (eval/headless/v3/settings.py `v0`, `of_record`), and its brief
+# was the v0 mission text (eval/roe_card.py `render` under rules below 33). Never edit this file:
+# its sha256 is pinned (settings.py `V0_SHA256` and eval/headless/tests/test_v3_settings.py), so
+# a change fails loudly. A new value is a scenario's policy, never this file.
+#
+# Not a policy the bridge loads: the harness's record of what the code held before the values
+# became the scenario's. Each value names where it was read (file:line at 35e4a7c).
+
+[watch]
+bar = 0.6                     # eval/headless/v3/mission.py:36 RESOLVE_CONF
+# the tracker called a contact neutral by its classification from 0.3
+# (crates/murmur-bridge/src/tracks/model.rs:1897), below the bar
+neutral_after_bar = false
+approach_horizon_s = 300      # eval/headless/v2/labels.py:134 JUSTIFY_HORIZON_S (the scoring's)
+identify_on_station_s = 300   # crates/murmur-decide/src/identify.rs:82 ON_STATION_S
+# crates/murmur-bridge/src/tracks/model.rs:77 STALE_S; crates/murmur-decide/src/engage.rs:3553
+# OUT_OF_VIEW_S; agents/playbook/defaults.toml:36 classifier_fresh_s
+stale_s = 10
+still_mps = 0.5               # eval/headless/v3/mission.py:43 STILL_MPS
+look_m = 1000                 # eval/headless/v2/labels.py:132 AIM_FALLBACK_M (the scoring's)
+
+[watch.no_velocity_mps]
+air = 25.0                    # eval/headless/v3/mission.py:41 THREAT_MPS
+
+# eval/headless/v3/mission.py:65-70 DOMAINS (graces :57-60, the subsurface level :63)
+[watch.domain.surface]
+level = "identify"
+sensors = ["eo_ir", "ais"]    # AIS only from a contact that truly broadcasts its own (ais_counts)
+grace_s = 60
+
+[watch.domain.air]
+level = "identify"
+sensors = ["eo_ir"]
+grace_s = 30
+
+[watch.domain.ground]
+level = "identify"
+sensors = ["eo_ir"]
+grace_s = 60
+
+[watch.domain.subsurface]
+level = "recognise"
+sensors = ["sonar"]
+grace_s = 300
+
+# The scoring-only rules the design retires (eval/headless/v2/labels.py, read by v3's labels and
+# faults through it): a vehicle's low-reserve fault need opens at or under this true battery
+# (:129 LOW_RESERVE_OPEN_PCT, `Params.low_reserve_open_pct`); the reserve it is held to is the
+# true battery now (:128 RESERVE_PCT: the need's unmet line and harm (a)), not the engine's
+# reserve left after a task.
+[v0]
+low_reserve_open_pct = 35.0
+reserve_now_pct = 20.0
+
+# Each v3 world's circle: the place's name in the mission text (eval/headless/v3/mission.py:73-77
+# PLACES), its centre resolved from the world file's `[mission] center` point, its radius.
+[area.golden-gate-v3]
+name = "the Golden Gate Bridge"
+center = [-122.4783, 37.8199]  # sim/worlds/golden-gate-v3.toml:62 "bridge" (:45)
+radius_m = 3000.0              # :63
+
+[area.san-diego]
+name = "the bay entrance off Ballast Point"
+center = [-117.2290, 32.6860]  # sim/worlds/san-diego.toml:70 "bay_entrance" (:52)
+radius_m = 3000.0              # :71
+
+[area.golden-gate-scale]
+name = "the Golden Gate Bridge"
+center = [-122.4783, 37.8199]  # sim/worlds/golden-gate-scale.toml:62 "bridge" (:45)
+radius_m = 3000.0              # :63
+
+# The v0 mission text's sha256 per world (the records' `truth.stated.mission_sha256`).
+# `current`: mission.py `mission_sha256(world)` since 2d617e3 (2026-11-15, bd murmur-isxg: the
+# circle's centre given as [lon, lat]). `before_isxg`: the text from aba2de3 to 2d617e3's parent,
+# which named the place only. The Golden Gate scale world's texts are the Golden Gate's.
+[mission_sha256.golden-gate-v3]
+current = "a2a13f2a19aa8ef7a96fb12b0554d6b725f067f86a6687789028ed71d347dbba"
+before_isxg = "2d5e5c9b21e033cb76fc8db8aaf65b27f244619cb9efe2a4993e756a712a4fab"
+
+[mission_sha256.san-diego]
+current = "375d89d482db5dfed67669578590427917382e21314c0bb7f5ba247f85be6538"
+before_isxg = "3af369d3c888d102d1b13d502c39afe00bf80133786853d0a04b964d80e3adde"
+
+[mission_sha256.golden-gate-scale]
+current = "a2a13f2a19aa8ef7a96fb12b0554d6b725f067f86a6687789028ed71d347dbba"
+before_isxg = "2d5e5c9b21e033cb76fc8db8aaf65b27f244619cb9efe2a4993e756a712a4fab"
