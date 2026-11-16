@@ -27,6 +27,7 @@ from ..v2.record import load
 from .causes import cause_of, light, single_cause
 from .families import parse
 from .labels import episode_labels, picture, sensing_errors
+from .settings import of_record
 from .report import PAIRED_HEAD, PAIRED_NOTE, paired_arm, paired_rows, scored_meta
 
 #: the basic oracle with its F14-F16 additions (oracle_ops.py), whose attempts this report reads: agent
@@ -186,7 +187,7 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
     lab = episode_labels(rec, none_labels=none_labels)
     pic = picture(rec)
     truth = Truth(rec)
-    wrong = sensing_errors(pic, truth)
+    wrong = sensing_errors(pic, truth, of_record(rec))
     needs = []
     for n in lab["needs"]:
         row = {k: n[k] for k in ("contact", "domain", "eligible", "served", "pre_served", "time_to_serve")}

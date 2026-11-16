@@ -32,12 +32,15 @@ import pytest
 from eval import REPO
 from eval.headless.v2.labels import Params
 from eval.headless.v3 import labels as L
+from eval.headless.v3.settings import v0
 from playbook.config import make
 from roe import Roe
 from watch.stakes import watch_of
 
 WATCH = tomllib.loads((REPO / "sim" / "policy-v0-watch.toml").read_text())["watch"]
 R = Roe(WATCH)
+#: the scoring's copy of the same table (eval/headless/v3/settings.py)
+S0 = v0("golden-gate-v3")
 BRIDGE = (-122.4783, 37.8199)
 AREA = {"name": "the Golden Gate Bridge", "center": list(BRIDGE), "radius_m": 3000.0}
 
@@ -106,8 +109,8 @@ class OnePicture:
 def today(track: dict[str, Any], meta: dict[str, Any]) -> dict[str, bool]:
     """Each predicate of today on the row, keyed as the rows name them, beside what roe answers."""
     return {
-        "labels.resolved": L.resolved_at(OnePicture(track), 0, "C-1", meta),  # type: ignore[arg-type]
-        "labels.in_doubt": L.in_doubt(track),
+        "labels.resolved": L.resolved_at(OnePicture(track), 0, "C-1", meta, S0),  # type: ignore[arg-type]
+        "labels.in_doubt": L.in_doubt(track, S0),
     }
 
 
@@ -169,6 +172,6 @@ def test_approaching_agrees_with_the_officer_and_the_scoring(case, approaches, d
     assert officer is not None and officer.roe is R
     theirs = {"stakes": officer.entry(where, vel, domain, horizon_s=h) is not None,
               "labels": L.approaches({"position": where, "velocity": vel, "last_seen_s": 0.0}, domain, 0.0,
-                                     Params(justify_horizon_s=h), BRIDGE, AREA["radius_m"])[0]}
+                                     Params(justify_horizon_s=h), BRIDGE, AREA["radius_m"], S0)[0]}
     for name, got in theirs.items():
         assert (got != approaches) == (name in differs), (name, got)

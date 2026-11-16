@@ -4,10 +4,20 @@ timeline's `step`s: GNSS jam and spoof, battery, reboot, stop) as faults open on
 hold or an rtl on it is a fault response (v2's label) and every action on it carries `also_fault`.
 And a diagnostic of no need: the vehicles lost by the end (`lost_vehicles`).
 
-- **Low reserve** (v2's rule, version 2: eval/headless/v2/labels.py `fault_needs`): opens when the
-  vehicle's true battery is at or under 35 %; met when the vehicle is **safe at home** at a sample
-  from the opening and before its battery reaches the reserve (20 %); unmet when the reserve comes
-  first; censored when neither by the end. Safe at home (choice 27): an aircraft as v2 has it, on the
+- **Low reserve** (v2's rule, version 2: eval/headless/v2/labels.py `fault_needs`), for a record
+  graded under v0 (settings.py `of_record`: every run before decision rules 33): opens when the
+  vehicle's true battery is at or under 35 % (v0's `low_reserve_open_pct`, scaled by the
+  multiverse's `Params.low_reserve_open_pct` over its default); met when the vehicle is **safe at
+  home** at a sample from the opening and before its battery reaches the reserve (v0's battery-now
+  20 %); unmet when the reserve comes first; censored when neither by the end.
+- **Low reserve, version 2** (stage S6, a record whose run logged its settings: rules 33 on): the
+  need opens when the engine would refuse the vehicle a further task for reserves (crates/
+  murmur-decide rules.rs `reserves`: endurance left after the task under `reserve_pct`), taken at
+  the vehicle's own spot: its true battery under `reserve_pct` plus one `task_duration_s` at its
+  catalog endurance (sim/platforms.toml `endurance_h`), or, with no endurance figure, under
+  `reserve_pct` itself (the engine's battery-now rule); the multiverse scales that line as v0's.
+  It is unmet when the battery reaches `reserve_pct` away from home, met and censored as v0's.
+  Safe at home (choice 27): an aircraft as v2 has it, on the
   ground (disarmed) within 150 m of the home it had at its last armed sample, after having flown; a
   boat, a sub or a UGV within 150 m of its home and stopped there (disarmed, or under 0.5 m/s for
   `STOPPED_S`), a sub at the surface (above 1 m deep), after having moved (armed) since the episode
@@ -31,6 +41,7 @@ from ..labels import dist_m
 from ..v2 import labels as V2
 from ..v2.labels import Params, instrument, landed_at_home
 from ..v2.record import Picture
+from .settings import Settings
 
 #: a vehicle that is not an aircraft is at rest when slower than this for this long
 STOPPED_MPS = 0.5
@@ -39,6 +50,8 @@ STOPPED_S = 10.0
 SURFACE_M = -1.0
 #: a reboot that comes back armed (an aircraft's watchdog restore) is a fault for this long
 REBOOT_OPEN_S = 60.0
+#: the low-reserve need of a record graded under its logged settings (module doc)
+LOW_RESERVE_V2 = {"name": "v3.low_reserve", "version": "2"}
 
 
 @lru_cache(maxsize=1)
@@ -49,6 +62,19 @@ def _catalog_domains() -> dict[str, str]:
 
     cat = tomllib.loads((REPO / "sim" / "platforms.toml").read_text())
     return {k: str(v.get("domain") or "air") for k, v in cat.items() if isinstance(v, dict)}
+
+
+@lru_cache(maxsize=1)
+def _catalog_endurance_s() -> dict[str, float]:
+    """Each platform's catalog endurance at cruise, s (sim/platforms.toml `endurance_h`; absent or
+    not positive: none, as the engine's reserves check reads it)."""
+    import tomllib
+
+    from .. import REPO
+
+    cat = tomllib.loads((REPO / "sim" / "platforms.toml").read_text())
+    return {k: 3600.0 * float(v["endurance_h"]) for k, v in cat.items()
+            if isinstance(v, dict) and isinstance(v.get("endurance_h"), (int, float)) and v["endurance_h"] > 0}
 
 
 def platform_domains(pic: Picture) -> dict[str, str]:
@@ -81,29 +107,47 @@ def safe_at_home(series: list[tuple[float, dict[str, Any]]], t_from: float, doma
     return None
 
 
-def fault_needs(rec: dict[str, Any], pic: Picture, p: Params) -> list[dict[str, Any]]:
-    """Low reserve per vehicle in every domain (module doc): v2's rule with the domain's safe at
-    home. An aircraft's need is v2's, value for value."""
+def fault_needs(rec: dict[str, Any], pic: Picture, p: Params, s: Settings) -> list[dict[str, Any]]:
+    """Low reserve per vehicle in every domain (module doc), on the record's settings `s`: v0's
+    rule with the domain's safe at home (an aircraft's need is v2's, value for value), or version 2
+    for a record graded under its logged settings."""
     doms = platform_domains(pic)
+    plats = {str(v["uid"]): str(v.get("platform")) for v in pic.fleet}
+    scale = p.low_reserve_open_pct / Params().low_reserve_open_pct
+    reserve = s.reserve_now()
     out = []
     for uid in pic.uids():
         dom = doms.get(str(uid), "air")
         series = pic.vehicle_series(uid)
-        t_open = next((t for t, v in series if v.get("battery_pct") is not None
-                       and v["battery_pct"] <= p.low_reserve_open_pct), None)
+        if s.v0 is not None:
+            open_pct = p.low_reserve_open_pct * (s.v0.low_reserve_open_pct / Params().low_reserve_open_pct)
+            t_open = next((t for t, v in series if v.get("battery_pct") is not None
+                           and v["battery_pct"] <= open_pct), None)
+        else:
+            endurance = _catalog_endurance_s().get(plats.get(str(uid), ""))
+            task_s = float(s.task_duration_s or 0.0)
+            open_pct = scale * (reserve + (100.0 * task_s / endurance if endurance else 0.0))
+            t_open = next((t for t, v in series if v.get("battery_pct") is not None
+                           and v["battery_pct"] < open_pct), None)
         if t_open is None:
             continue
         t_reserve = next((t for t, v in series if t >= t_open and v.get("battery_pct") is not None
-                          and v["battery_pct"] <= V2.RESERVE_PCT), None)
+                          and v["battery_pct"] <= reserve), None)
         t_home = safe_at_home(series, t_open, dom)
         met = t_home is not None and (t_reserve is None or t_home < t_reserve)
         status = "met" if met else ("unmet" if t_reserve is not None else "censored")
-        out.append({"kind": "low_reserve", "uid": int(uid) if str(uid).isdigit() else uid, "domain": dom,
-                    "t_open": t_open, "t_reserve": t_reserve, "t_met": t_home if met else None,
-                    "met_by": ("on the ground at home" if dom == "air" else "stopped at home") if met else None,
-                    "t_landed": t_home, "t_closed": t_home, "status": status, "open_pct": p.low_reserve_open_pct,
-                    "instrument": instrument("fault_need") if dom == "air" else
-                    {"name": "v3.fault_need", "version": "3"}})
+        if s.v0 is not None:
+            inst = instrument("fault_need") if dom == "air" else {"name": "v3.fault_need", "version": "3"}
+        else:
+            inst = dict(LOW_RESERVE_V2)
+        row = {"kind": "low_reserve", "uid": int(uid) if str(uid).isdigit() else uid, "domain": dom,
+               "t_open": t_open, "t_reserve": t_reserve, "t_met": t_home if met else None,
+               "met_by": ("on the ground at home" if dom == "air" else "stopped at home") if met else None,
+               "t_landed": t_home, "t_closed": t_home, "status": status, "open_pct": open_pct,
+               "instrument": inst}
+        if s.v0 is None:
+            row["reserve_pct"] = reserve
+        out.append(row)
     return out
 
 

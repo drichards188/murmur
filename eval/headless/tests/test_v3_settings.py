@@ -29,8 +29,10 @@ RESULTS = Path(os.environ.get("MURMUR_RECORDS") or REPO / "eval" / "results" / "
 @pytest.fixture(autouse=True)
 def _fresh():
     S.frozen.cache_clear()
+    S.v0.cache_clear()
     yield
     S.frozen.cache_clear()
+    S.v0.cache_clear()
 
 
 def test_the_frozen_file_is_pinned():
@@ -46,26 +48,39 @@ def test_an_edited_frozen_file_is_refused(tmp_path, monkeypatch):
         S.v0("golden-gate-v3")
 
 
+#: the place each v3 world's v0 text names (what mission.py's `PLACES` held before stage S6 moved
+#: it into the frozen file)
+PLACES = {"golden-gate-v3": "the Golden Gate Bridge", "golden-gate-scale": "the Golden Gate Bridge",
+          "san-diego": "the bay entrance off Ballast Point"}
+
+
 def test_v0_holds_what_the_code_held():
-    """Each frozen value against the constant it was read from (mission.py, v2/labels.py, the
-    worlds), and the current mission text's sha256 per world."""
+    """Each frozen value against what the code held before stage S6 (mission.py's constants, which
+    S6 removed: the values here are theirs; v2/labels.py's, still there; the worlds' `[mission]`
+    tables, which S6 removed: each world's named point and 3 km), and the current mission text's
+    sha256 per world."""
+    centre = {"golden-gate-v3": "bridge", "golden-gate-scale": "bridge", "san-diego": "bay_entrance"}
     for world in ("golden-gate-v3", "san-diego", "golden-gate-scale"):
         s = S.v0(world)
         assert s.source == "v0" and s.is_v0 and s.loosened == ()
-        assert s.bar == M.RESOLVE_CONF and s.still_mps == M.STILL_MPS
-        assert dict(s.no_velocity_mps) == M.THREAT_MPS
+        assert s.bar == V2.RESOLVE_CONF == 0.6 and s.still_mps == 0.5
+        assert dict(s.no_velocity_mps) == {"air": 25.0}
         assert s.approach_horizon_s == V2.JUSTIFY_HORIZON_S and s.look_m == V2.AIM_FALLBACK_M
         assert (s.identify_on_station_s, s.stale_s, s.neutral_after_bar) == (300.0, 10.0, False)
-        for d, r in M.DOMAINS.items():
+        held = {"surface": ("identify", 60.0, ("eo_ir", "ais")), "air": ("identify", 30.0, ("eo_ir",)),
+                "ground": ("identify", 60.0, ("eo_ir",)), "subsurface": ("recognise", 300.0, ("sonar",))}
+        for d, (level, grace, sensors) in held.items():
             c = s.domain(d)
-            assert c is not None
-            assert (c.level, c.grace_s) == (r.level, r.grace_s)
-            assert c.sensors == r.sensors + (("ais",) if r.ais_counts else ())
-        m = load_world(world).mission
-        assert s.area == S.Area(M.PLACES[world], m.center, m.radius_m)
+            assert c is not None and (c.level, c.grace_s, c.sensors) == (level, grace, sensors)
+            r = s.rule(d)
+            assert r.sensors == tuple(x for x in sensors if x != "ais") and r.ais_counts == ("ais" in sensors)
+        assert s.area == S.Area(PLACES[world], load_world(world).point(centre[world]), 3000.0)
         assert s.v0 is not None
         assert (s.v0.low_reserve_open_pct, s.v0.reserve_now_pct) == (V2.LOW_RESERVE_OPEN_PCT, V2.RESERVE_PCT)
+        assert s.reserve_now() == V2.RESERVE_PCT
         assert s.v0.mission_sha256 == M.mission_sha256(world)
+        # the worlds no longer hold the circle: the frozen file and a scenario's policy do
+        assert load_world(world).mission is None
     assert S.v0("san-diego").area.center == (-117.229, 32.686)
     with pytest.raises(ValueError, match="no v0 circle"):
         S.v0("golden-gate")
@@ -195,7 +210,7 @@ def test_existing_records_are_graded_under_v0(where, world, which):
         pytest.skip(f"no record at {RESULTS / where}")
     rec = json.loads(gzip.open(path).read())
     s = S.of_record(rec)
-    assert s == S.v0(world) and s.area is not None and s.area.name == M.PLACES[world]
+    assert s == S.v0(world) and s.area is not None and s.area.name == PLACES[world]
     assert S.logged_policy(rec) is None  # a saved record keeps no run.started
     assert s.v0 is not None
     want = s.v0.mission_sha256 if which == "current" else s.v0.mission_sha256_before_isxg

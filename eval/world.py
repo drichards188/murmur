@@ -24,8 +24,11 @@ What a world names (sim/worlds/README.md has the format with the Golden Gate's f
 - `[links]` and `[[ground_station]]`: the link profiles and where the operator's radios are;
 - `[points]`: named reference points, `[lon, lat]`;
 - `operating_box`: the operating area and a margin (the oracle's link map covers it);
-- `[mission]`: the circle a contact must be identified in (its centre a point's name or
-  `[lon, lat]`, its radius) and the grace after a contact first comes inside it;
+- `[mission]` (v1's and v2's world only, optional): the circle a contact must be identified in
+  (its centre a point's name or `[lon, lat]`, its radius) and the grace after a contact first
+  comes inside it. The v3 worlds have none since stage S6 (docs/SCENARIO-SETTINGS.md): a v3
+  scenario's circle is its policy's `[watch.area]`, and every run before decision rules 33 was
+  graded by the frozen v0 circle (sim/policy-v0-watch.toml, eval/headless/v3/settings.py);
 - `[conditions]`: the ranges a situation's conditions are drawn from (`draw_conditions`).
 
 Nothing here is read by the bridge or an agent: a world is the harness's description of the
@@ -113,7 +116,7 @@ class World:
     ground_stations: list[GroundStation]
     points: dict[str, tuple[float, float]]
     operating_box: dict[str, float]
-    mission: Mission
+    mission: Mission | None
     conditions: dict[str, Any] = field(default_factory=dict)
     # world v3's worlds (none in the Golden Gate's: every situation before them names its own
     # contacts and runs without a snapshot unless the batch asks)
@@ -249,18 +252,20 @@ def _load(path: Path) -> World:
         stations.append(GroundStation(name=str(g.get("name", f"station {i + 1}")), lat=float(g["lat"]),
                                       lon=float(g["lon"]), alt_m=float(g["alt_m"])))
     m = _table(raw, "mission", MISSION_KEYS, path)
-    if not {"center", "radius_m"} <= set(m):
-        raise WorldError(f"{path}: [mission] needs center and radius_m")
-    if isinstance(m["center"], str):
-        if m["center"] not in points:
-            raise WorldError(f"{path}: [mission] center {m['center']!r} is not a point")
-        center, center_name = points[m["center"]], str(m["center"])
-    elif _lonlat(m["center"]):
-        center, center_name = (float(m["center"][0]), float(m["center"][1])), None
-    else:
-        raise WorldError(f"{path}: [mission] center is a point's name or [lon, lat]")
-    mission = Mission(center=center, center_name=center_name, radius_m=float(m["radius_m"]),
-                      grace_s=float(m.get("grace_s", 60.0)))
+    mission: Mission | None = None
+    if m:
+        if not {"center", "radius_m"} <= set(m):
+            raise WorldError(f"{path}: [mission] needs center and radius_m")
+        if isinstance(m["center"], str):
+            if m["center"] not in points:
+                raise WorldError(f"{path}: [mission] center {m['center']!r} is not a point")
+            center, center_name = points[m["center"]], str(m["center"])
+        elif _lonlat(m["center"]):
+            center, center_name = (float(m["center"][0]), float(m["center"][1])), None
+        else:
+            raise WorldError(f"{path}: [mission] center is a point's name or [lon, lat]")
+        mission = Mission(center=center, center_name=center_name, radius_m=float(m["radius_m"]),
+                          grace_s=float(m.get("grace_s", 60.0)))
     cond = _table(raw, "conditions", CONDITIONS_KEYS, path)
     for k in CONDITION_RANGES:
         if k in cond and not (_lonlat(cond[k]) and cond[k][0] <= cond[k][1]):

@@ -44,7 +44,7 @@ from eval.agent import _mcp_args
 
 from ..agents_v2 import ANCHOR_AGENT
 from .oracle import NEED_AFFILIATIONS, Path2, to_ll
-from .planner import CLASSIFYING, P60, HonestCeiling, NeedV3, UnitV3, domain_sensor, p_resolved, sense_only
+from .planner import HonestCeiling, NeedV3, UnitV3, domain_sensor, p_resolved, sense_only
 
 FERRY_LOOK_S = 90.0
 
@@ -107,10 +107,10 @@ class Behind(Perturbed):
     def look_range(self, u: UnitV3, n: NeedV3) -> float:
         q = self.quality_of(u, n)
         if q is not None:
-            r = q.reach(0.8, "active") if q.sensor == "sonar" else q.reach(P60)
+            r = q.reach(0.8, "active") if q.sensor == "sonar" else q.reach()
             if r > 0.0:
                 return r
-        return u.range_m(domain_sensor(n.domain)) or 1000.0
+        return u.range_m(domain_sensor(n.domain, self.st) or "eo_ir") or 1000.0
 
     def place(self, u: UnitV3, n: NeedV3, centre: tuple[float, float], now: float) -> tuple[float, float]:
         v = getattr(n.path, "v", (0.0, 0.0))
@@ -179,6 +179,11 @@ class Ferries(Perturbed):
         super().__init__(*a, **kw)
         self.looked: set[str] = set()
 
+    def domain_sensors(self, tr: dict[str, Any] | None) -> tuple[str, ...]:
+        """The sensors whose support settles a track of its domain (the settings')."""
+        c = self.st.domain(str((tr or {}).get("domain") or "surface")) or self.st.domain("surface")
+        return c.sensors if c is not None else ()
+
     def after_plan(self, now: float, plan: list[dict[str, Any]]) -> None:
         for u in sorted(self.units.values(), key=lambda u: u.uid):
             o = u.order
@@ -190,7 +195,8 @@ class Ferries(Perturbed):
             why = None
             if tr is None:
                 why = f"{tid} was dropped"
-            elif float(idn.get("confidence") or 0.0) >= P60 and set(idn.get("supported_by") or []) & set(CLASSIFYING):
+            elif float(idn.get("confidence") or 0.0) >= self.st.bar \
+                    and set(idn.get("supported_by") or []) & set(self.domain_sensors(tr)):
                 why = f"{tid} is classified"
             elif now - float(o["t"]) >= FERRY_LOOK_S:
                 why = f"looked at {tid} for {FERRY_LOOK_S:.0f} s"
@@ -254,7 +260,7 @@ class PullOff(Perturbed):
         for n in sorted(self.needs.values(), key=lambda n: (n.deadline, n.id)):
             if n.id in self.abandoned or n.resolved_t is not None or n.opened_t is None:
                 continue
-            key = f"{u.uid}:{domain_sensor(n.domain)}"
+            key = f"{u.uid}:{domain_sensor(n.domain, self.st)}"
             before, after = _hits(self.shown_before.get(n.id), key), _hits(self.shown.get(n.id), key)
             if after > before:
                 return n, before, after
@@ -290,7 +296,7 @@ class PullOff(Perturbed):
                 v = 0.0
                 if q is not None:
                     lk = self.look_value(u, n, q, at, now, u.xy, ts, pos, exists)
-                    v = p_resolved([lk]) + lk.low + lk.conf
+                    v = p_resolved([lk], self.st.bar) + lk.low + lk.conf
                 cands.append((round(v, 4), radius, k, at))
         cands.sort()
         for _, radius, k, at in cands[:10]:
@@ -321,7 +327,7 @@ class WrongSensor(Perturbed):
 
     def wrong(self, u: UnitV3, n: NeedV3) -> bool:
         """The unit carries no sensor the need's domain is identified by."""
-        return domain_sensor(n.domain) not in u.sensors
+        return domain_sensor(n.domain, self.st) not in u.sensors
 
     def plan(self, now: float) -> list[dict[str, Any]]:
         out = []

@@ -89,14 +89,17 @@ def test_each_value_moves_the_card():
     assert R.render(s, 33, "san-diego", {**policy, "rules": {**policy["rules"], "reserve_pct": 28}}) != base
 
 
-def test_the_card_needs_its_circle_and_the_policy_s_values():
+def test_the_card_needs_the_policy_s_values_and_says_when_no_circle_is_set():
     s, policy = tailored()
     with pytest.raises(ValueError, match="rules.reserve_pct"):
         R.render(s, 33, "san-diego", {"rules": {"task_duration_s": 900, "engage": {"min_identity_confidence": 0.8}}})
-    with pytest.raises(ValueError, match="circle"):
-        w = s.watch()
-        del w["area"]
-        R.render(S.watch_of(w, "logged"), 33, "san-diego", policy)
+    # a scenario whose policy sets no circle (a situation outside the v3 watches, stage S6): the
+    # card says so and points at the brief, every value still stated
+    w = s.watch()
+    del w["area"]
+    card = R.render(S.watch_of(w, "logged"), 33, "san-diego", policy)
+    assert "sets none ([watch.area])" in card and "inside the watched area" in card and "km around" not in card
+    assert "0.77" in card
     # the floor's level and two signers when the policy names neither
     bare = {"rules": {"reserve_pct": 20, "task_duration_s": 900, "engage": {"min_identity_confidence": 0.8}}}
     assert "at its kind (the identification level) at 0.8 or more, and two people" in R.render(s, 33, "san-diego", bare)

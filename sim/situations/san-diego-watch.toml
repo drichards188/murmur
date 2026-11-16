@@ -144,15 +144,10 @@ vehicles = { callsign = "FERRET 1" }
 route = [[-117.2230, 32.6950], [-117.2150, 32.6960]]
 note = "Opening order: patrol North Island's west shore"
 
+# The watch area and the protected point are the policy's [watch.area] (agents/playbook/config.py
+# `under` takes it when this table names none; docs/SCENARIO-SETTINGS.md, stage S6)
 [playbook]
 sensor_platform = "puma"
-[[playbook.watch_area]]
-name = "the San Diego Bay entrance"
-center = [-117.2290, 32.6860]  # the world's mission centre (sim/worlds/san-diego.toml bay_entrance; bd murmur-4h2z)
-radius_m = 3000
-[[playbook.protected]]
-name = "the bay entrance channel"
-point = [-117.2290, 32.6860]
 
 [autoplay]
 preset = "default"

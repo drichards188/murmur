@@ -10,6 +10,11 @@ extends, in turn), and the watch settings a run given the file decides under (`w
 `[watch.area]`). Under rules below 33 a file whose settings differ from the standing values (the
 area aside) is refused, as the bridge refuses it.
 
+`rules_in_force()` is the decision rules a run started now decides under: `MURMUR_RULES` when set
+(the bridge's and the headless simulator's, eval/headless/sim.py passes it on), else the build's
+default, `RULES_VERSION` as crates/murmur-decide/src/rules.rs defines it (read from the source, never
+copied here).
+
     from eval.policy_file import show
     show("sim/situations/policies/watch.toml")["policy"]["tier"]
 """
@@ -18,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +32,7 @@ from typing import Any
 from . import REPO
 
 BINARY = REPO / "target" / "release" / "murmur-policy"
+RULES_RS = REPO / "crates" / "murmur-decide" / "src" / "rules.rs"
 
 _built: set[Path] = set()
 
@@ -65,3 +72,26 @@ def show(path: str | Path, rules: int | None = None) -> dict[str, Any]:
     if p.returncode != 0:
         raise PolicyError(p.stderr.strip() or f"murmur-policy exited {p.returncode}")
     return json.loads(p.stdout)
+
+
+def default_rules() -> int:
+    """The build's default decision rules: `RULES_VERSION` in crates/murmur-decide/src/rules.rs,
+    followed through the named constants it is defined by (`pub const RULES_VERSION: u32 =
+    REACH_NOW_SINCE;`, `pub const REACH_NOW_SINCE: u32 = 32;`)."""
+    text = RULES_RS.read_text()
+    consts = dict(re.findall(r"(?m)^pub const ([A-Z0-9_]+): u32 = ([A-Z0-9_]+);", text))
+    name = "RULES_VERSION"
+    for _ in range(8):
+        v = consts.get(name)
+        if v is None:
+            break
+        if v.isdigit():
+            return int(v)
+        name = v
+    raise PolicyError(f"{RULES_RS}: no numeric RULES_VERSION (stopped at {name})")
+
+
+def rules_in_force() -> int:
+    """The decision rules a run started now decides under: `MURMUR_RULES`, else `default_rules`."""
+    asked = (os.environ.get("MURMUR_RULES") or "").strip()
+    return int(asked) if asked else default_rules()

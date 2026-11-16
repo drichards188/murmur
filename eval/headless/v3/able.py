@@ -22,7 +22,7 @@ from typing import Any
 from eval.world import load_world
 
 from ..situations import at_unix, fleet_plan
-from .mission import rule
+from .settings import of_record
 
 REACH_SHARE = 0.7
 CAPABLE_M = {"eo_ir": 150.0, "sonar": 35.0}
@@ -88,13 +88,15 @@ def able(rec: dict[str, Any], needs: list[dict[str, Any]]) -> dict[str, list[str
     """Per need (its contact), the platform types that could answer it (module doc)."""
     world = str((rec.get("world") or {}).get("name") or "golden-gate-v3")
     w = load_world(world)
-    lon, lat = w.mission.center
+    st = of_record(rec)
+    assert st.area is not None
+    lon, lat = st.area.center
     at = (rec.get("world") or {}).get("conditions", {}).get("at")
     cond = conditions(rec)
     targets = stated_targets(rec)
     out: dict[str, list[str]] = {}
     for n in needs:
-        r = rule(n["domain"])
+        r = st.rule(n["domain"])
         sensor = r.sensors[0]
         level = 2 if r.level == "identify" else 1
         tgt = targets.get(n["contact"], {"alt_m": 0.0, "speed_mps": 0.0})

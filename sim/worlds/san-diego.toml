@@ -64,12 +64,11 @@ airport = [-117.1897, 32.7336]             # San Diego International (Lindbergh 
 point_loma_mast = [-117.2440, 32.6900]     # the ground station
 far_orbit = [-117.5500, 32.5500]           # HAWK 1's orbit, offshore
 
-# The labels' rule: unknown, suspect or hostile within 3 km of the bay entrance needs a look
-# within 60 s (the channel from Point Loma's tip to Shelter Island, North Island's west shore).
-[mission]
-center = "bay_entrance"
-radius_m = 3000.0
-grace_s = 60.0
+# No [mission] (docs/SCENARIO-SETTINGS.md, stage S6): the circle a contact must be identified in is
+# a scenario's policy's [watch.area] (sim/situations/policies/san-diego-watch.toml), and every run
+# before decision rules 33 was graded by the frozen v0 circle (sim/policy-v0-watch.toml,
+# [area.san-diego]: 3 km around "bay_entrance", the channel from Point Loma's tip to Shelter
+# Island, North Island's west shore).
 
 # What a situation's conditions are drawn from (eval/world.py `draw_conditions`).
 [conditions]

@@ -38,6 +38,10 @@ ahead), earliest deadline first:
 It answers what happens as it happens (a vehicle that stops answering, lands or loses its link is
 dropped from the plan), never before. It does not plan around the link (no link map: a basic oracle)
 nor the reserve beyond the checks' own refusals.
+
+The circle, each domain's grace, sensors and level, and the bar are the run's own settings (MCP
+`get_policy` once, settings.py `of_answer`; v0's for a run before decision rules 33), as the
+planners read them (stage S6).
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ from ..agents_v2 import ENDED, SessionAgent
 from ..situations import at_unix, fleet_plan
 from .labels import FAMILY
 from .linkmap import link_map
-from .mission import rule
+from .settings import Settings, of_answer
 
 M = 111_320.0
 CONTACT_ACCEL_MPS2 = 0.5
@@ -140,13 +144,13 @@ class Path2:
 
 
 class Need:
-    def __init__(self, c: dict[str, Any], path: Path2, t_need: float):
+    def __init__(self, c: dict[str, Any], path: Path2, t_need: float, st: Settings):
         self.id = path.id
         self.kind = str(c.get("kind"))
         self.domain = str(c.get("domain") or "surface")
         self.path = path
         self.t_need = t_need
-        self.rule = rule(self.domain)
+        self.rule = st.rule(self.domain)
         self.deadline = t_need + self.rule.grace_s
         self.resolved_t: float | None = None
         self.assigned: list[int] = []
@@ -211,7 +215,8 @@ class OracleV3(SessionAgent):
         super().__init__(ep)
         self.end = float(ep.e.duration_s)
         self.world = load_world(ep.e.map)
-        self.origin = self.world.mission.center
+        self._st: Settings | None = None
+        self._answer: dict[str, Any] | None = None
         self.needs: dict[str, Need] = {}
         self.units: dict[int, Unit] = {}
         self.reach: dict[tuple[str, str], float] = {}
@@ -226,6 +231,25 @@ class OracleV3(SessionAgent):
                                    "never an agent under test"}
 
     # ---- the sensing model's predictions (privileged) ---------------------------------------------
+
+    @property
+    def policy_answer(self) -> dict[str, Any]:
+        """MCP `get_policy`'s answer, read once."""
+        if self._answer is None:
+            self._answer = self.call("get_policy")
+        return self._answer
+
+    @property
+    def settings(self) -> Settings:
+        """The run's settings (settings.py `of_answer` of `get_policy`'s answer)."""
+        if self._st is None:
+            self._st = of_answer(self.policy_answer, self.world.name)
+        return self._st
+
+    @property
+    def origin(self) -> tuple[float, float]:
+        assert self.settings.area is not None, "the run's settings name no circle"
+        return self.settings.area.center
 
     def conditions(self) -> dict[str, Any]:
         c = self.ep.e.conditions or {}
@@ -305,7 +329,8 @@ class OracleV3(SessionAgent):
         self.privileged["contacts_file"] = Path(path).name if path else None
         contacts = list(tomllib.loads(Path(path).read_text()).get("contact") or []) if path else []
         c0 = float(ep.opts.calibration.contacts_start_s)
-        r = self.world.mission.radius_m
+        assert self.settings.area is not None
+        r = self.settings.area.radius_m
         for c in contacts:
             if str(c.get("affiliation") or "").lower() not in NEED_AFFILIATIONS or not c.get("route"):
                 continue
@@ -313,7 +338,7 @@ class OracleV3(SessionAgent):
             t_need = p.first_within(r, p.t0, self.end)
             if t_need is None:
                 continue
-            n = Need(c, p, t_need)
+            n = Need(c, p, t_need, self.settings)
             self.needs[n.id] = n
             self.write("need", contact=n.id, domain=n.domain, t_need=round(t_need, 1), deadline=round(n.deadline, 1))
         catalog = {str(x["id"]): x for x in self.call("get_platforms").get("platforms") or []}
@@ -370,7 +395,7 @@ class OracleV3(SessionAgent):
             kind = idn.get("kind")
             ok = kind == n.kind or (n.rule.level == "recognise" and kind == FAMILY.get(n.kind))
             sb = set(idn.get("supported_by") or [])
-            if tr and ok and not idn.get("conflict") and float(idn.get("confidence") or 0.0) >= 0.6 \
+            if tr and ok and not idn.get("conflict") and float(idn.get("confidence") or 0.0) >= self.settings.bar \
                     and sb & set(n.rule.sensors):
                 n.resolved_t = now
                 self.write("need.resolved", contact=n.id, t=round(now, 1))

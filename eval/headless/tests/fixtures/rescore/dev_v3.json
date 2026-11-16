@@ -1,0 +1,885 @@
+{
+ "episodes": [
+  {
+   "actions": {},
+   "agent": "none",
+   "conditions": {
+    "at": "2026-06-14T19:00:00Z",
+    "local_time": "12:00",
+    "visibility_km": 20.0
+   },
+   "contact_domains": [
+    "surface"
+   ],
+   "contacts": 1,
+   "decoy_looks": 0,
+   "decoys": 0,
+   "family": "v3-f1-fast-boat-gg",
+   "fault_needs": [
+    {
+     "domain": "air",
+     "platform": "puma",
+     "status": "unmet",
+     "uid": 4
+    }
+   ],
+   "feasibility": {},
+   "fleet_count": {
+    "puma": 2
+   },
+   "fleet_types": [
+    "puma"
+   ],
+   "group_orders": 0,
+   "kinds_task": [],
+   "light": "day",
+   "lost": [],
+   "metrics": {
+    "actions": 0,
+    "bad_card_share": null,
+    "by_domain": {
+     "surface": {
+      "eligible": 1,
+      "grace_s": 60.0,
+      "pre_served": 0,
+      "rmst": 29.5,
+      "served": 1,
+      "served_share": 1.0,
+      "time_to_serve_served": [
+       29.5
+      ]
+     }
+    },
+    "cards": 0,
+    "cards_per_10min": 0.0,
+    "fault_met_share": 0.0,
+    "harmful_kinds": {},
+    "nominations": {},
+    "not_justified_share": null,
+    "per_hour": {
+     "cards": 0.0,
+     "duplicate": 0.0,
+     "fault_actions": 0.0,
+     "fault_response": 0.0,
+     "follow_up": 0.0,
+     "harmful": 0.0,
+     "harmful_a": 0.0,
+     "harmful_b": 0.0,
+     "harmful_c": 0.0,
+     "justified": 0.0,
+     "not_justified": 0.0,
+     "orders": 0.0,
+     "redundant": 0.0,
+     "refused": 0.0,
+     "served_no_need": 0.0,
+     "useful": 0.0
+    },
+    "repeats": 0,
+    "review": {},
+    "rmst": 29.5,
+    "served_no_need_share": null,
+    "served_share": 1.0,
+    "unjudged_actions": 0
+   },
+   "name": "v3-f1-fast-boat-gg-none-s5000-r0",
+   "needs": [
+    {
+     "able": [
+      "corsair",
+      "fvr90",
+      "lta",
+      "magura",
+      "puma",
+      "saildrone",
+      "seahunter",
+      "ugv_logistics",
+      "ugv_recon",
+      "x10"
+     ],
+     "contact": "boat",
+     "deadline": 160.5,
+     "domain": "surface",
+     "eligible": true,
+     "identified_with": [
+      "puma"
+     ],
+     "kind": "small_fast_boat",
+     "pre_served": false,
+     "sensing_error": false,
+     "served": true,
+     "t_need": 100.5,
+     "t_served": 130.0,
+     "time_to_serve": 29.5
+    }
+   ],
+   "per_hour": {
+    "cards": 0.0,
+    "fault_actions": 0.0,
+    "fault_response": 0.0,
+    "harmful": 0.0,
+    "justified": 0.0,
+    "not_justified": 0.0,
+    "orders": 0.0
+   },
+   "reach": {},
+   "seed": 5000,
+   "sensors": [
+    "eo_ir"
+   ]
+  },
+  {
+   "actions": {
+    "duplicate": 1,
+    "fault_response": 1,
+    "justified": 1
+   },
+   "agent": "oracle-v3-shown",
+   "conditions": {
+    "at": "2026-06-14T19:00:00Z",
+    "local_time": "12:00",
+    "visibility_km": 20.0
+   },
+   "contact_domains": [
+    "surface"
+   ],
+   "contacts": 1,
+   "decoy_looks": 0,
+   "decoys": 0,
+   "family": "v3-f1-fast-boat-gg",
+   "fault_needs": [
+    {
+     "domain": "air",
+     "platform": "puma",
+     "status": "unmet",
+     "uid": 4
+    }
+   ],
+   "feasibility": {},
+   "fleet_count": {
+    "puma": 2
+   },
+   "fleet_types": [
+    "puma"
+   ],
+   "group_orders": 0,
+   "kinds_task": [
+    "orbit",
+    "rtl"
+   ],
+   "light": "day",
+   "lost": [],
+   "metrics": {
+    "actions": 3,
+    "bad_card_share": null,
+    "by_domain": {
+     "surface": {
+      "eligible": 1,
+      "grace_s": 60.0,
+      "pre_served": 0,
+      "rmst": 29.5,
+      "served": 1,
+      "served_share": 1.0,
+      "time_to_serve_served": [
+       29.5
+      ]
+     }
+    },
+    "cards": 0,
+    "cards_per_10min": 0.0,
+    "fault_met_share": 0.0,
+    "harmful_kinds": {},
+    "nominations": {},
+    "not_justified_share": 0.0,
+    "per_hour": {
+     "cards": 0.0,
+     "duplicate": 9.0,
+     "fault_actions": 9.0,
+     "fault_response": 9.0,
+     "follow_up": 0.0,
+     "harmful": 0.0,
+     "harmful_a": 0.0,
+     "harmful_b": 0.0,
+     "harmful_c": 0.0,
+     "justified": 9.0,
+     "not_justified": 0.0,
+     "orders": 27.0,
+     "redundant": 0.0,
+     "refused": 0.0,
+     "served_no_need": 9.0,
+     "useful": 0.0
+    },
+    "repeats": 0,
+    "review": {},
+    "rmst": 29.5,
+    "served_no_need_share": 0.333333,
+    "served_share": 1.0,
+    "unjudged_actions": 0
+   },
+   "name": "v3-f1-fast-boat-gg-oracle-v3-shown-s5000-r0",
+   "needs": [
+    {
+     "contact": "boat",
+     "deadline": 160.5,
+     "domain": "surface",
+     "eligible": true,
+     "identified_with": [
+      "puma"
+     ],
+     "kind": "small_fast_boat",
+     "pre_served": false,
+     "sensing_error": false,
+     "served": true,
+     "t_need": 100.5,
+     "t_served": 130.0,
+     "time_to_serve": 29.5
+    }
+   ],
+   "per_hour": {
+    "cards": 0.0,
+    "fault_actions": 9.0,
+    "fault_response": 9.0,
+    "harmful": 0.0,
+    "justified": 9.0,
+    "not_justified": 0.0,
+    "orders": 27.0
+   },
+   "reach": {},
+   "seed": 5000,
+   "sensors": [
+    "eo_ir"
+   ]
+  },
+  {
+   "actions": {},
+   "agent": "none",
+   "conditions": {
+    "at": "2026-06-14T19:00:00Z",
+    "local_time": "12:00",
+    "visibility_km": 20.0
+   },
+   "contact_domains": [
+    "surface"
+   ],
+   "contacts": 1,
+   "decoy_looks": 0,
+   "decoys": 0,
+   "family": "v3-f1-fast-boat-sd",
+   "fault_needs": [
+    {
+     "domain": "air",
+     "platform": "puma",
+     "status": "unmet",
+     "uid": 4
+    }
+   ],
+   "feasibility": {},
+   "fleet_count": {
+    "puma": 2
+   },
+   "fleet_types": [
+    "puma"
+   ],
+   "group_orders": 0,
+   "kinds_task": [],
+   "light": "day",
+   "lost": [],
+   "metrics": {
+    "actions": 0,
+    "bad_card_share": null,
+    "by_domain": {},
+    "cards": 0,
+    "cards_per_10min": 0.0,
+    "fault_met_share": 0.0,
+    "harmful_kinds": {},
+    "nominations": {},
+    "not_justified_share": null,
+    "per_hour": {
+     "cards": 0.0,
+     "duplicate": 0.0,
+     "fault_actions": 0.0,
+     "fault_response": 0.0,
+     "follow_up": 0.0,
+     "harmful": 0.0,
+     "harmful_a": 0.0,
+     "harmful_b": 0.0,
+     "harmful_c": 0.0,
+     "justified": 0.0,
+     "not_justified": 0.0,
+     "orders": 0.0,
+     "redundant": 0.0,
+     "refused": 0.0,
+     "served_no_need": 0.0,
+     "useful": 0.0
+    },
+    "repeats": 0,
+    "review": {},
+    "rmst": null,
+    "served_no_need_share": null,
+    "served_share": null,
+    "unjudged_actions": 0
+   },
+   "name": "v3-f1-fast-boat-sd-none-s5000-r0",
+   "needs": [],
+   "per_hour": {
+    "cards": 0.0,
+    "fault_actions": 0.0,
+    "fault_response": 0.0,
+    "harmful": 0.0,
+    "justified": 0.0,
+    "not_justified": 0.0,
+    "orders": 0.0
+   },
+   "reach": {},
+   "seed": 5000,
+   "sensors": [
+    "eo_ir"
+   ]
+  },
+  {
+   "actions": {
+    "fault_response": 1,
+    "justified": 1,
+    "not_justified": 1
+   },
+   "agent": "oracle-v3-shown",
+   "conditions": {
+    "at": "2026-06-14T19:00:00Z",
+    "local_time": "12:00",
+    "visibility_km": 20.0
+   },
+   "contact_domains": [
+    "surface"
+   ],
+   "contacts": 1,
+   "decoy_looks": 0,
+   "decoys": 0,
+   "family": "v3-f1-fast-boat-sd",
+   "fault_needs": [
+    {
+     "domain": "air",
+     "platform": "puma",
+     "status": "unmet",
+     "uid": 4
+    }
+   ],
+   "feasibility": {},
+   "fleet_count": {
+    "puma": 2
+   },
+   "fleet_types": [
+    "puma"
+   ],
+   "group_orders": 0,
+   "kinds_task": [
+    "orbit",
+    "rtl"
+   ],
+   "light": "day",
+   "lost": [],
+   "metrics": {
+    "actions": 3,
+    "bad_card_share": null,
+    "by_domain": {},
+    "cards": 0,
+    "cards_per_10min": 0.0,
+    "fault_met_share": 0.0,
+    "harmful_kinds": {},
+    "nominations": {},
+    "not_justified_share": 0.333333,
+    "per_hour": {
+     "cards": 0.0,
+     "duplicate": 0.0,
+     "fault_actions": 9.0,
+     "fault_response": 9.0,
+     "follow_up": 0.0,
+     "harmful": 0.0,
+     "harmful_a": 0.0,
+     "harmful_b": 0.0,
+     "harmful_c": 0.0,
+     "justified": 9.0,
+     "not_justified": 9.0,
+     "orders": 27.0,
+     "redundant": 0.0,
+     "refused": 0.0,
+     "served_no_need": 18.0,
+     "useful": 0.0
+    },
+    "repeats": 0,
+    "review": {},
+    "rmst": null,
+    "served_no_need_share": 0.666667,
+    "served_share": null,
+    "unjudged_actions": 0
+   },
+   "name": "v3-f1-fast-boat-sd-oracle-v3-shown-s5000-r0",
+   "needs": [],
+   "per_hour": {
+    "cards": 0.0,
+    "fault_actions": 9.0,
+    "fault_response": 9.0,
+    "harmful": 0.0,
+    "justified": 9.0,
+    "not_justified": 9.0,
+    "orders": 27.0
+   },
+   "reach": {},
+   "seed": 5000,
+   "sensors": [
+    "eo_ir"
+   ]
+  }
+ ],
+ "summary": {
+  "coverage": {
+   "agents": [
+    "none",
+    "oracle-v3-shown"
+   ],
+   "episodes": 4,
+   "light": {
+    "day": 2
+   },
+   "situations": 2,
+   "tasks_ordered": [
+    "orbit",
+    "rtl"
+   ],
+   "worlds": {
+    "golden-gate-v3": {
+     "by_domain": {
+      "air": 2
+     },
+     "contact_domains": [
+      "surface"
+     ],
+     "contacts": 1,
+     "sensors": [
+      "eo_ir"
+     ],
+     "types": [
+      "puma"
+     ],
+     "vehicles": 2
+    },
+    "san-diego": {
+     "by_domain": {
+      "air": 2
+     },
+     "contact_domains": [
+      "surface"
+     ],
+     "contacts": 1,
+     "sensors": [
+      "eo_ir"
+     ],
+     "types": [
+      "puma"
+     ],
+     "vehicles": 2
+    }
+   }
+  },
+  "families": {
+   "v3-f1-fast-boat-gg": {
+    "agents": {
+     "none": {
+      "actions": {},
+      "by_domain": {
+       "surface": {
+        "eligible": 1,
+        "served": 1
+       }
+      },
+      "by_light": {
+       "day": {
+        "eligible": 1,
+        "served": 1
+       }
+      },
+      "decoy_looks": 0,
+      "decoy_situations_looked": 0,
+      "eligible": 1,
+      "fault_needs": {
+       "censored": 0,
+       "met": 0,
+       "met_share": 0.0,
+       "unmet": 1
+      },
+      "group_orders": 0,
+      "identified_with": {
+       "puma": 1
+      },
+      "lost_by": {},
+      "lost_vehicles": 0,
+      "per_hour": {
+       "cards": 0.0,
+       "fault_response": 0.0,
+       "harmful": 0.0,
+       "justified": 0.0,
+       "not_justified": 0.0,
+       "orders": 0.0
+      },
+      "pre_served": 0,
+      "sensing_errors": 0,
+      "served": 1,
+      "share": 1.0,
+      "single_cause": {
+       "counts": {},
+       "lost": 0,
+       "share": null,
+       "share_coarse": null,
+       "top": null,
+       "top_coarse": null
+      },
+      "situations": 1,
+      "time_to_serve_mean_s": 29.5,
+      "time_to_serve_median_s": 29.5
+     },
+     "oracle-v3-shown": {
+      "actions": {
+       "duplicate": 1,
+       "fault_response": 1,
+       "justified": 1
+      },
+      "by_domain": {
+       "surface": {
+        "eligible": 1,
+        "served": 1
+       }
+      },
+      "by_light": {
+       "day": {
+        "eligible": 1,
+        "served": 1
+       }
+      },
+      "decoy_looks": 0,
+      "decoy_situations_looked": 0,
+      "eligible": 1,
+      "fault_needs": {
+       "censored": 0,
+       "met": 0,
+       "met_share": 0.0,
+       "unmet": 1
+      },
+      "group_orders": 0,
+      "identified_with": {
+       "puma": 1
+      },
+      "lost_by": {},
+      "lost_vehicles": 0,
+      "per_hour": {
+       "cards": 0.0,
+       "fault_response": 9.0,
+       "harmful": 0.0,
+       "justified": 9.0,
+       "not_justified": 0.0,
+       "orders": 27.0
+      },
+      "pre_served": 0,
+      "sensing_errors": 0,
+      "served": 1,
+      "share": 1.0,
+      "single_cause": {
+       "counts": {},
+       "lost": 0,
+       "share": null,
+       "share_coarse": null,
+       "top": null,
+       "top_coarse": null
+      },
+      "situations": 1,
+      "time_to_serve_mean_s": 29.5,
+      "time_to_serve_median_s": 29.5
+     }
+    },
+    "capable_types": {
+     "median": 10,
+     "min": 10,
+     "needs_with_fewer_than_2": 0,
+     "of": 1
+    },
+    "domain": "surface",
+    "family": "f1-fast-boat",
+    "flags": [],
+    "foreknowledge": null,
+    "redesign": false,
+    "room": {
+     "ceiling": "oracle-v3-shown",
+     "ceiling_share": 1.0,
+     "discordant": 0,
+     "floor": "none",
+     "floor_share": 1.0,
+     "hi": null,
+     "lo": null,
+     "mean_difference": 0.0,
+     "method": "exact sign test",
+     "min_room": 0.1,
+     "n_situations": 1,
+     "p": 1.0,
+     "verdict": "no data"
+    },
+    "world": "golden-gate-v3"
+   },
+   "v3-f1-fast-boat-sd": {
+    "agents": {
+     "none": {
+      "actions": {},
+      "by_domain": {},
+      "by_light": {
+       "day": {
+        "eligible": 0,
+        "served": 0
+       }
+      },
+      "decoy_looks": 0,
+      "decoy_situations_looked": 0,
+      "eligible": 0,
+      "fault_needs": {
+       "censored": 0,
+       "met": 0,
+       "met_share": 0.0,
+       "unmet": 1
+      },
+      "group_orders": 0,
+      "identified_with": {},
+      "lost_by": {},
+      "lost_vehicles": 0,
+      "per_hour": {
+       "cards": 0.0,
+       "fault_response": 0.0,
+       "harmful": 0.0,
+       "justified": 0.0,
+       "not_justified": 0.0,
+       "orders": 0.0
+      },
+      "pre_served": 0,
+      "sensing_errors": 0,
+      "served": 0,
+      "share": null,
+      "single_cause": {
+       "counts": {},
+       "lost": 0,
+       "share": null,
+       "share_coarse": null,
+       "top": null,
+       "top_coarse": null
+      },
+      "situations": 1,
+      "time_to_serve_mean_s": null,
+      "time_to_serve_median_s": null
+     },
+     "oracle-v3-shown": {
+      "actions": {
+       "fault_response": 1,
+       "justified": 1,
+       "not_justified": 1
+      },
+      "by_domain": {},
+      "by_light": {
+       "day": {
+        "eligible": 0,
+        "served": 0
+       }
+      },
+      "decoy_looks": 0,
+      "decoy_situations_looked": 0,
+      "eligible": 0,
+      "fault_needs": {
+       "censored": 0,
+       "met": 0,
+       "met_share": 0.0,
+       "unmet": 1
+      },
+      "group_orders": 0,
+      "identified_with": {},
+      "lost_by": {},
+      "lost_vehicles": 0,
+      "per_hour": {
+       "cards": 0.0,
+       "fault_response": 9.0,
+       "harmful": 0.0,
+       "justified": 9.0,
+       "not_justified": 9.0,
+       "orders": 27.0
+      },
+      "pre_served": 0,
+      "sensing_errors": 0,
+      "served": 0,
+      "share": null,
+      "single_cause": {
+       "counts": {},
+       "lost": 0,
+       "share": null,
+       "share_coarse": null,
+       "top": null,
+       "top_coarse": null
+      },
+      "situations": 1,
+      "time_to_serve_mean_s": null,
+      "time_to_serve_median_s": null
+     }
+    },
+    "capable_types": {
+     "median": null,
+     "min": null,
+     "needs_with_fewer_than_2": 0,
+     "of": 0
+    },
+    "domain": "surface",
+    "family": "f1-fast-boat",
+    "flags": [],
+    "foreknowledge": null,
+    "redesign": false,
+    "room": {
+     "ceiling": "oracle-v3-shown",
+     "ceiling_share": null,
+     "discordant": 0,
+     "floor": "none",
+     "floor_share": null,
+     "hi": null,
+     "lo": null,
+     "mean_difference": null,
+     "method": "exact sign test",
+     "min_room": 0.1,
+     "n_situations": 0,
+     "p": 1.0,
+     "verdict": "no data"
+    },
+    "world": "san-diego"
+   }
+  },
+  "pooled": {
+   "f1-fast-boat": {
+    "none": {
+     "decoy_looks": 0,
+     "decoy_situations_looked": 0,
+     "eligible": 1,
+     "fault_needs": {
+      "censored": 0,
+      "met": 0,
+      "met_share": 0.0,
+      "unmet": 2
+     },
+     "group_orders": 0,
+     "lost_by": {},
+     "lost_vehicles": 0,
+     "per_hour": {
+      "cards": 0.0,
+      "fault_response": 0.0,
+      "harmful": 0.0,
+      "justified": 0.0,
+      "not_justified": 0.0,
+      "orders": 0.0
+     },
+     "served": 1,
+     "share": 1.0,
+     "single_cause": {
+      "counts": {},
+      "lost": 0,
+      "share": null,
+      "share_coarse": null,
+      "top": null,
+      "top_coarse": null
+     },
+     "time_to_serve_median_s": 29.5
+    },
+    "oracle-v3-shown": {
+     "decoy_looks": 0,
+     "decoy_situations_looked": 0,
+     "eligible": 1,
+     "fault_needs": {
+      "censored": 0,
+      "met": 0,
+      "met_share": 0.0,
+      "unmet": 2
+     },
+     "group_orders": 0,
+     "lost_by": {},
+     "lost_vehicles": 0,
+     "per_hour": {
+      "cards": 0.0,
+      "fault_response": 9.0,
+      "harmful": 0.0,
+      "justified": 9.0,
+      "not_justified": 4.5,
+      "orders": 27.0
+     },
+     "served": 1,
+     "share": 1.0,
+     "single_cause": {
+      "counts": {},
+      "lost": 0,
+      "share": null,
+      "share_coarse": null,
+      "top": null,
+      "top_coarse": null
+     },
+     "time_to_serve_median_s": 29.5
+    }
+   }
+  },
+  "restraint": {
+   "all": {
+    "none": {
+     "episodes": 2,
+     "families": [
+      "f1-fast-boat"
+     ],
+     "per_hour": {
+      "cards": 0.0,
+      "fault_response": 0.0,
+      "harmful": 0.0,
+      "justified": 0.0,
+      "not_justified": 0.0,
+      "orders": 0.0
+     }
+    },
+    "oracle-v3-shown": {
+     "episodes": 2,
+     "families": [
+      "f1-fast-boat"
+     ],
+     "per_hour": {
+      "cards": 0.0,
+      "fault_response": 9.0,
+      "harmful": 0.0,
+      "justified": 9.0,
+      "not_justified": 4.5,
+      "orders": 27.0
+     }
+    }
+   },
+   "f1-fast-boat": {
+    "none": {
+     "episodes": 2,
+     "families": [
+      "f1-fast-boat"
+     ],
+     "per_hour": {
+      "cards": 0.0,
+      "fault_response": 0.0,
+      "harmful": 0.0,
+      "justified": 0.0,
+      "not_justified": 0.0,
+      "orders": 0.0
+     }
+    },
+    "oracle-v3-shown": {
+     "episodes": 2,
+     "families": [
+      "f1-fast-boat"
+     ],
+     "per_hour": {
+      "cards": 0.0,
+      "fault_response": 9.0,
+      "harmful": 0.0,
+      "justified": 9.0,
+      "not_justified": 4.5,
+      "orders": 27.0
+     }
+    }
+   }
+  }
+ }
+}

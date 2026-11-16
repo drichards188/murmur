@@ -31,7 +31,7 @@ from typing import Any
 from ..labels import Truth
 from ..v2.record import Picture
 from .labels import FAMILY
-from .mission import rule
+from .settings import of_record
 
 LOOK_BEFORE_S = 60.0
 
@@ -123,12 +123,13 @@ def cause_of(rec: dict[str, Any], pic: Picture, truth: Truth, n: dict[str, Any],
     if n.get("ais_spoofed") and idn and idn["kind"] != true_kind:
         # the picture still believes the spoofed AIS (or a family of it): no camera identified it
         return f"spoof_believed@{lt}"
+    st = of_record(rec)
     if idn and (idn.get("conflict") or shown == "wrong_kind"):
-        looked = new_hits(pic, cid, rule(n["domain"]).sensors, t0 - LOOK_BEFORE_S, D)
+        looked = new_hits(pic, cid, st.rule(n["domain"]).sensors, t0 - LOOK_BEFORE_S, D)
         who = [str(u) for u in wrong if str(u) in looked]
         return f"misidentified:{plat.get(who[0], 'unknown') if who else 'unknown'}"
     sent = agent_vehicles(rec, cid)
-    sensors = tuple(rule(n["domain"]).sensors)
+    sensors = tuple(st.rule(n["domain"]).sensors)
     if sent:
         hit = new_hits(pic, cid, sensors, t0 - LOOK_BEFORE_S, D)
         lost = [s for s in sent if s["end"] is not None and s["end"] < D and hit.get(s["uid"], 0) == 0]

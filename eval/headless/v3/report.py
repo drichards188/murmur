@@ -14,6 +14,14 @@ no need are not justified or justified (SCORING-V3.md 2.5 item 6, choice 40), no
 situation-hour being the judgment measure, and the burden (orders and cards per situation-hour,
 whatever their labels) is reported apart, per family and world and pooled over both worlds. The episodes are
 summarized in name order, so a report is the same whatever its workers. MODEL RESULTS ONLY.
+
+**Settings** (stage S6, docs/SCENARIO-SETTINGS.md): every episode is labelled under its record's own
+settings (settings.py `of_record`). The coverage of `dev_v3.md` states them per world and settings
+sha256, and whether they came from the logged run or from v0; a scored row keeps a logged run's
+settings (`settings`), and the JSON's coverage states them only when some episode's were logged (a
+batch graded under v0 alone writes its `dev_v3.json` exactly as before). A batch whose episodes'
+values differ (beside each world's own circle: `Settings.values_sha256`) is reported per set of
+values, each summarized alone, never pooled (`by_settings`).
 """
 
 from __future__ import annotations
@@ -37,8 +45,8 @@ from .families import WORLDS, family_domain, parse
 from ..v2.labels import Params
 from .labels import episode_labels, mark_spoofed, picture, pointed_at, sensing_errors
 from .metrics import episode_metrics
-from .mission import rule
 from .room import CEILING, FORESIGHT, room
+from .settings import Settings, describe, from_dict, of_record, v0
 
 #: the ceiling (room.py): the oracle the room, lesson 3 and the capable types read
 ORACLE = CEILING
@@ -63,7 +71,8 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
     met = episode_metrics(rec, lab)
     pic = picture(rec)
     truth = mark_spoofed(rec, Truth(rec))
-    wrong = sensing_errors(pic, truth)
+    st = of_record(rec)
+    wrong = sensing_errors(pic, truth, st)
     plat = {str(v["uid"]): str(v.get("platform")) for v in pic.fleet}
     needs = []
     for n in lab["needs"]:
@@ -72,9 +81,13 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
         if n["eligible"] and not n["served"]:
             row["cause"] = cause_of(rec, pic, truth, n, wrong[n["contact"]]["wrong_observers"])
         if n["served"] and n["t_identified"] is not None:
-            hit = new_hits(pic, n["contact"], rule(n["domain"]).sensors, n["t_need"] - 300.0, n["t_identified"] + 1.0)
+            hit = new_hits(pic, n["contact"], st.rule(n["domain"]).sensors, n["t_need"] - 300.0, n["t_identified"] + 1.0)
             row["identified_with"] = sorted({plat.get(u, u) for u in hit})
         needs.append(row)
+    extra: dict[str, Any] = {}
+    if not st.is_v0:
+        # a logged run's settings (a v0 row keeps none: its world says which)
+        extra["settings"] = st.as_dict()
     if meta["agent"] == "none":
         # the types the sensing model says could answer each need: once a situation, on its `none`
         for row, types in zip(needs, (able(rec, lab["needs"]) or {}).values()):
@@ -115,7 +128,7 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
             "decoys": len(decoys),
             # one order to several vehicles (a group order: its known faults are bd murmur-3kqi's)
             "group_orders": sum(1 for a in lab["actions"] if len(a.get("uids") or []) > 1),
-            "per_hour": {k: met["per_hour"].get(k) for k in RESTRAINT_RATES + ("fault_actions",)}}
+            "per_hour": {k: met["per_hour"].get(k) for k in RESTRAINT_RATES + ("fault_actions",)}, **extra}
 
 
 def decoy_only(pointed: set[str], decoys: set[str], needs: set[str]) -> bool:
@@ -215,10 +228,31 @@ def platform_domains() -> dict[str, str]:
     return {k: str(v.get("domain")) for k, v in cat.items() if isinstance(v, dict)}
 
 
-def capable(reach: dict[str, float], domain: str, movers: set[str], need: str | None = None) -> list[str]:
+def row_settings(s: dict[str, Any]) -> Settings:
+    """A scored row's settings: the logged run's it keeps, else v0's for its family's world."""
+    kept = s.get("settings")
+    world = parse(s["family"])[1]
+    return from_dict(kept, world) if isinstance(kept, dict) else v0(world)
+
+
+def settings_coverage(scored: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per world, each settings set its episodes were labelled under (by sha256): where they came
+    from, its values and how many episodes."""
+    out: dict[str, Any] = {}
+    for s in scored:
+        st = row_settings(s)
+        w = out.setdefault(parse(s["family"])[1], {})
+        row = w.setdefault(st.sha256(), {"source": st.source, "values": st.values(), "episodes": 0, "line": describe(st)})
+        row["episodes"] += 1
+    return out
+
+
+def capable(reach: dict[str, float], domain: str, movers: set[str], need: str | None = None, *,
+            st: Settings) -> list[str]:
     """The platform types whose reach for a need (`need`: its contact; every need of the episode
-    when None, as with one need an episode) is at least `CAPABLE_M` of the domain's sensor."""
-    s = rule(domain).sensors[0]
+    when None, as with one need an episode) is at least `CAPABLE_M` of the domain's sensor (the
+    settings' first)."""
+    s = st.rule(domain).sensors[0]
     return sorted({k.split(":")[0] for k, v in reach.items() if float(v) >= CAPABLE_M[s] and k.split(":")[0] in movers
                    and (need is None or k.split(":", 1)[1] == need)})
 
@@ -261,6 +295,9 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                        "tasks_ordered": sorted({k for s in scored for k in s["kinds_task"]}),
                        "situations": len({(s["family"], s["seed"]) for s in scored}),
                        "episodes": len(scored)}
+    if any("settings" in s for s in scored):
+        # stated in the JSON only when some run logged its settings (a v0 batch's file is as it was)
+        out["coverage"]["settings"] = settings_coverage(scored)
     for f in fams:
         fam, world = parse(f)
         rows = [s for s in scored if s["family"] == f]
@@ -300,7 +337,7 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                 if s["agent"] not in PLANNERS:
                     continue
                 for n in s["needs"]:
-                    caps.append(len(capable(s["reach"], n["domain"], movers, n["contact"])))
+                    caps.append(len(capable(s["reach"], n["domain"], movers, n["contact"], st=row_settings(s))))
         block["capable_types"] = {"min": min(caps) if caps else None, "median": statistics.median(caps) if caps else None,
                                   "needs_with_fewer_than_2": sum(1 for c in caps if c < 2), "of": len(caps)}
         # 10.1, the room test (replacing v2's fixed conditions, the owner's decision of 2026-10-25)
@@ -374,14 +411,17 @@ def _served(rows: list[dict[str, Any]]) -> tuple[int, int]:
     return sum(1 for n in needs if n["served"]), len(needs)
 
 
-def model_arm(d: Path, scored: list[dict[str, Any]]) -> dict[str, Any] | None:
+def model_arm(d: Path, scored: list[dict[str, Any]], only: set[str] | None = None) -> dict[str, Any] | None:
     """The model watch officer's episodes (run.py's model arm), per family and world: how many were
     scored and why the rest were not (the cost guard, a call the API refused as such, the leakage
     scan), need served beside `none` on the same situations, and what they cost (US dollars at list
     prices, from the officer's totals in the index), wakes, calls, errors and refusals by their
     `stop_details` category; and the needs paired by situation against the playbook and `none`
-    (`paired_arm`). None for a batch without the model."""
+    (`paired_arm`). None for a batch without the model. `only`: the episodes of one set of settings
+    (a batch that mixes them, `write`)."""
     index = json.loads((d / "episodes_v3.json").read_text())
+    if only is not None:
+        index = [m for m in index if m["name"] in only]
     metas = [m for m in index if m.get("agent") == "model"]
     if not metas:
         return None
@@ -513,7 +553,16 @@ def restraint_markdown(restraint: dict[str, Any]) -> list[str]:
     return lines
 
 
-def markdown(summary: dict[str, Any], d: Path) -> str:
+def settings_markdown(cov: dict[str, Any]) -> list[str]:
+    """The coverage's settings lines: per world, each settings set and its episodes."""
+    out = []
+    for w, sets in sorted(cov.items()):
+        for _, x in sorted(sets.items()):
+            out.append(f"- Settings in **{w}** ({x['episodes']} episodes): {x['line']}")
+    return out
+
+
+def markdown(summary: dict[str, Any], d: Path, settings: dict[str, Any] | None = None) -> str:
     cov = summary["coverage"]
     who = ("free deterministic agents and the model watch officer" if summary.get("model")
            else "free deterministic agents")
@@ -525,7 +574,9 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
                      f"the domains {', '.join(x['contact_domains'])}.")
     lines += [f"- Conditions drawn per situation: {', '.join(f'{k} {v}' for k, v in sorted(cov['light'].items()))} "
               f"(situations by light).", f"- Agents: {', '.join(cov['agents'])}; tasks ordered: "
-              f"{', '.join(cov['tasks_ordered']) or 'none'}.", f"- {cov['situations']} situations, {cov['episodes']} episodes.", ""]
+              f"{', '.join(cov['tasks_ordered']) or 'none'}.", f"- {cov['situations']} situations, {cov['episodes']} episodes."]
+    lines += settings_markdown(settings if settings is not None else cov.get("settings") or {})
+    lines += [""]
     lines += ["## Per family and world", "",
               f"The oracle is the ceiling (`{ORACLE}`); the foreknowledge ceiling (`{FORESIGHT}`) is reported, never judged.",
               "",
@@ -612,16 +663,40 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def by_values(scored: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """The scored rows grouped by their settings' values (each world's circle aside), in name order."""
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for s in scored:
+        out[row_settings(s).values_sha256()].append(s)
+    return dict(out)
+
+
 def write(d: Path, workers: int = 8) -> tuple[Path, Path]:
     scored = score_batch(d, workers)
-    summary = summarize(scored)
-    arm = model_arm(d, scored)
-    if arm is not None:  # a batch with the model only: a free batch's files are as they were
-        summary["model"] = arm
+    groups = by_values(scored)
+    md = d / "dev_v3.md"
+    if len(groups) <= 1:
+        summary = summarize(scored)
+        arm = model_arm(d, scored)
+        if arm is not None:  # a batch with the model only: a free batch's files are as they were
+            summary["model"] = arm
+        text = markdown(summary, d, settings_coverage(scored))
+    else:
+        # settings that differ are never pooled: each set summarized alone
+        summary = {"by_settings": {}}
+        parts = [f"# Scoring v3 dev check, by settings", "",
+                 f"Batch `{d.name}` mixes {len(groups)} sets of settings: each is reported alone below, never pooled.", ""]
+        for k, rows in sorted(groups.items()):
+            sm = summarize(rows)
+            arm = model_arm(d, rows, {s["name"] for s in rows})
+            if arm is not None:
+                sm["model"] = arm
+            summary["by_settings"][k] = sm
+            parts += [f"## Settings {k[:12]}", "", markdown(sm, d, settings_coverage(rows))]
+        text = "\n".join(parts)
     j = d / "dev_v3.json"
     j.write_text(json.dumps({"summary": summary, "episodes": scored}, indent=1, sort_keys=True, default=str))
-    md = d / "dev_v3.md"
-    md.write_text(markdown(summary, d))
+    md.write_text(text)
     return j, md
 
 

@@ -15,6 +15,7 @@ from eval.headless.v2 import labels as V2L
 from eval.headless.v3 import faults as FA
 from eval.headless.v3 import labels as L
 from eval.headless.v3.causes import cause_of
+from eval.headless.v3.settings import v0
 from eval.headless.labels import Truth
 
 SPOOFED = {"mmsi": "366900001", "name": "F/V PACIFIC DAWN", "ship_type": "fishing", "spoofed": True}
@@ -152,7 +153,7 @@ def test_an_aircraft_s_low_reserve_is_v2_s_value_for_value(land_at: float | None
     s.vehicle(4, battery(40.0, 0.1, rtl_at=100.0, land_at=land_at))
     rec = v3_record(s)
     pic = L.picture(rec)
-    ours = FA.fault_needs(rec, pic, V2L.Params())
+    ours = FA.fault_needs(rec, pic, V2L.Params(), v0("golden-gate-v3"))
     v2 = V2L.fault_needs(rec, pic, V2L.Params())
     keys = ("uid", "t_open", "t_reserve", "t_met", "t_landed", "t_closed", "status")
     assert [{k: f[k] for k in keys} for f in ours] == [{k: f[k] for k in keys} for f in v2]

@@ -38,7 +38,8 @@ operator in the last `load_window_s` (`GET /api/intents`); at an item's first re
 diligent with probability `diligence * 2 ** -(load / fatigue_load)` (drawn once per item).
 Not diligent, it says yes to what the engine asks (confirms the declaration, the flag, the
 claim). Diligent, it reads the track's identity (`GET /api/tracks`; EO/IR evidence is an
-identification at `EVIDENCE_CONF` or more that EO/IR supports) and the claim's own evidence:
+identification at the run's bar or more that EO/IR supports: the `[watch]` bar of `GET /api/policy`,
+read once, v0's 0.6 before decision rules 33) and the claim's own evidence:
 
 | item | diligent: acts when | waits for evidence, then (after `max_wait_s` from its first read) |
 |---|---|---|
@@ -78,10 +79,10 @@ ADOPT_WITHIN_S = 15.0
 #: rules 19: a live blocker still blocking this much later (by its estimates) is a new item
 RETRY_S = 30.0
 #: the evidence reviewer: what it calls a civil kind (a camera's identification of one contradicts
-#: a hostile declaration), and the confidence an EO/IR identification must show to count
+#: a hostile declaration); the confidence an EO/IR identification must show to count is the run's
+#: bar (`Reviewer.bar`)
 CIVIL_KINDS = ("ferry", "cargo_ship", "tanker", "sailboat", "fishing_vessel", "patrol_boat", "light_aircraft",
                "helicopter", "vehicle", "truck", "person")
-EVIDENCE_CONF = 0.6
 NO_REQUEST = "done (no request)"
 #: the kind an AIS ship type names (crates/murmur-bridge tracks/model.rs `ais_kind`)
 AIS_KIND = {"passenger": "ferry", "cargo": "cargo_ship", "tanker": "tanker", "fishing": "fishing_vessel",
@@ -244,30 +245,30 @@ def claim_act(p: ReviewPolicy, claim: dict[str, Any]) -> dict[str, Any] | None:
 
 # ---- the evidence reviewer's judgment (pure, for tests) ------------------------------------------
 
-def eo_kind(track: dict[str, Any] | None) -> str | None:
+def eo_kind(track: dict[str, Any] | None, bar: float) -> str | None:
     """The kind EO/IR evidence shows for a track (`GET /api/tracks`): its identity's kind when EO/IR
-    supports it at `EVIDENCE_CONF` or more without a conflict; else None."""
+    supports it at the run's `bar` or more without a conflict; else None."""
     idn = (track or {}).get("identity") or {}
     if idn.get("conflict") or "eo_ir" not in (idn.get("supported_by") or []):
         return None
-    if float(idn.get("confidence") or 0.0) < EVIDENCE_CONF or not idn.get("kind"):
+    if float(idn.get("confidence") or 0.0) < bar or not idn.get("kind"):
         return None
     return str(idn["kind"])
 
 
 def judge(act: dict[str, Any], tracks: dict[str, dict[str, Any]], claim: dict[str, Any] | None,
-          waited_s: float, max_wait_s: float) -> tuple[str, str]:
+          waited_s: float, max_wait_s: float, bar: float) -> tuple[str, str]:
     """What a diligent evidence reviewer does with an item now: (action, why). The action is a
     request's (`confirm`, `revoke`, `declare:<track>`, `dismiss`), a decision without one
     (`decline`, `leave`), or `wait` (look again at the next look)."""
     late = waited_s >= max_wait_s
     if act["kind"] == "declaration":
-        k = eo_kind(tracks.get(str(act["track"])))
+        k = eo_kind(tracks.get(str(act["track"])), bar)
         if k is not None:
             return ("revoke", f"EO/IR shows a {k}") if k in CIVIL_KINDS else ("confirm", f"EO/IR shows a {k}")
         return ("confirm", "no EO/IR evidence after the wait: the act's evidence stands") if late else ("wait", "")
     if act["kind"] == "flag":
-        kinds = {t: eo_kind(tracks.get(t)) for t in act.get("tracks") or []}
+        kinds = {t: eo_kind(tracks.get(t), bar) for t in act.get("tracks") or []}
         if act.get("flag_kind") == "proximity":
             # keeping company is weak evidence: read, it is dismissed whatever a look shows
             seen = ", ".join(f"{t} a {k}" for t, k in kinds.items() if k) or "no EO/IR identification"
@@ -283,7 +284,7 @@ def judge(act: dict[str, Any], tracks: dict[str, dict[str, Any]], claim: dict[st
         tr = tracks.get(str(act.get("by_track"))) or {}
         idn = tr.get("identity") or {}
         want = AIS_KIND.get(str((idn.get("ais") or {}).get("ship_type") or ""))
-        k = eo_kind(tr)
+        k = eo_kind(tr, bar)
         if c.get("blockers") or idn.get("conflict"):
             why = "; ".join(str(b) for b in c.get("blockers") or []) or str(idn.get("conflict"))
             return "decline", f"what our sensors see contradicts the claim: {why}"[:240]
@@ -442,9 +443,21 @@ class Reviewer:
         self._diligent: dict[str, dict[str, Any]] = {}
         self._defer: dict[str, float] = {}
         self._review: dict[str, Any] = {}
+        self._bar: float | None = None
 
     def describe(self) -> dict[str, Any]:
         return self.policy.as_dict()
+
+    def bar(self) -> float:
+        """The run's bar (the `[watch]` of `GET /api/policy`, read once): an EO/IR identification
+        counts as evidence at it or more."""
+        if self._bar is None:
+            status, body = self.sim.api("GET", "/api/policy")
+            bar = ((body or {}).get("watch") or {}).get("bar") if status == 200 else None
+            if not isinstance(bar, (int, float)):
+                raise ValueError(f"GET /api/policy gave no watch bar ({status}): the evidence reviewer needs the run's")
+            self._bar = float(bar)
+        return self._bar
 
     def _idle(self) -> bool:
         p = self.policy
@@ -595,7 +608,7 @@ class Reviewer:
         else:
             status, body = self.sim.api("GET", "/api/tracks")
             tracks = {str(t.get("id")): t for t in ((body or {}).get("tracks") or [])} if status == 200 else {}
-            choice, why = judge(act, tracks, claim, now - first, p.max_wait_s)
+            choice, why = judge(act, tracks, claim, now - first, p.max_wait_s, self.bar())
         if choice == "wait":
             self.done.discard(key)
             self._defer[key] = now + self._interval()

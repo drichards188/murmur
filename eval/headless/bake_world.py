@@ -227,8 +227,16 @@ def bake(w: World, url: str, what: set[str], out: Path | None, batch: int, comma
                 values += [i16(ce * 100.0), i16(cn * 100.0)]
         header = {**h, "scale": 0.01, "nodata": NODATA, "t0": t0, "dt": c.step_s, "nt": nt}
         sha = write_grid(p, header, values)
-        # the wind at the mission's centre over the same window, hourly: the world's conditions
-        lon, lat = w.mission.center
+        # the wind at the mission's centre over the same window, hourly: the world's conditions (a
+        # v3 world has no [mission]: its v0 circle's, sim/policy-v0-watch.toml)
+        if w.mission is not None:
+            lon, lat = w.mission.center
+        else:
+            from .v3.settings import v0
+
+            area = v0(w.name).area
+            assert area is not None
+            lon, lat = area.center
         winds = []
         for k in range(int((t1 - t0) // 3600) + 1):
             s = post(f"{url}/v1/sample", {"t": t0 + 3600.0 * k, "points": [[lat, lon, None]]})["samples"][0]

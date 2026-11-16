@@ -96,7 +96,7 @@ from eval.world import load_world
 from .. import REPO
 from ..situations import EpisodeSpec, at_unix, fleet_plan, from_situation
 from . import families as F
-from .mission import mission_sha256, mission_text
+from .mission import mission_sha256
 
 #: an element's earliest start, s (the AI starts at 45 s; the contacts at 3)
 MIN_START_S = 20.0
@@ -207,7 +207,7 @@ def travel_s(c: dict[str, Any], center: tuple[float, float], radius_m: float) ->
 
 
 def entry_s(d: DraftX, c: dict[str, Any]) -> float:
-    return float(c["start_s"]) + travel_s(c, d.center, d.w.mission.radius_m)
+    return float(c["start_s"]) + travel_s(c, d.center, d.radius)
 
 
 def element(d: DraftX, what: str, cid: str | None = None, entry: float | None = None, decoy: bool = False,
@@ -230,7 +230,7 @@ def element(d: DraftX, what: str, cid: str | None = None, entry: float | None = 
         if what == "boat":
             recut(d, c, st, d.rng.uniform(*F.F1_LEAD_S))
     if entry is not None:
-        r = d.w.mission.radius_m
+        r = d.radius
         if entry - travel_s(c, d.center, r) < MIN_START_S and entry > MIN_START_S:
             # too far out to come in by then even from the earliest start: it appears nearer
             recut(d, c, st, entry - MIN_START_S)
@@ -251,7 +251,7 @@ def recut(d: DraftX, c: dict[str, Any], st: dict[str, Any], lead: float) -> None
     and choice 5); an element timed to come in earlier than its whole route allows, so it can."""
     route = [tuple(p) for p in c["route"]]
     speed = float(c["speed_mps"])
-    k = F.first_within(route, d.center, d.w.mission.radius_m) or 0.0
+    k = F.first_within(route, d.center, d.radius) or 0.0
     lo, hi = 0.0, k
     for _ in range(40):
         mid = 0.5 * (lo + hi)
@@ -259,7 +259,7 @@ def recut(d: DraftX, c: dict[str, Any], st: dict[str, Any], lead: float) -> None
             lo = mid
         else:
             hi = mid
-    part = F.start_before(route, d.center, d.w.mission.radius_m, lo)
+    part = F.start_before(route, d.center, d.radius, lo)
     if part is not None:
         c["route"] = [[round(p[0], 6), round(p[1], 6)] for p in part]
         st["appears_before_circle_m"] = round(lo)
@@ -294,7 +294,7 @@ def one_need(d: DraftX, shares: tuple[tuple[str, float], ...], entry: float | No
 def in_circle_point(d: DraftX, c: dict[str, Any], lo: float = 0.3, hi: float = 0.9) -> tuple[float, float]:
     """A point of a contact's way inside the mission circle, a drawn share along that part."""
     route = [tuple(p) for p in c["route"]]
-    r = d.w.mission.radius_m
+    r = d.radius
     k0 = F.first_within(route, d.center, r) or 0.0
     total = F.length(route)
     inside = [s for s in range(int(k0), int(total) + 1, 20) if F.dist_m(F.point_at(route, float(s)), d.center) <= r]
@@ -566,7 +566,7 @@ def _f12(d: DraftX) -> None:
         d.stated["gnss"] = {"kind": "jam", "circle": circle, "from_s": round(t0, 1)}
     else:
         route = [tuple(p) for p in c["route"]]
-        at = F.point_at(route, F.first_within(route, d.center, d.w.mission.radius_m) or 0.0)
+        at = F.point_at(route, F.first_within(route, d.center, d.radius) or 0.0)
         who = best_placed(d, at, c["domain"])
         t0 = max(30.0, t_in - d.rng.uniform(30.0, 200.0))
         walk = round(d.rng.uniform(1.0, 3.0), 2)
@@ -583,7 +583,7 @@ def _f13(d: DraftX) -> None:
     c = one_need(d, (("boat", 0.4), ("air", 0.3), ("vehicle", 0.15), ("uuv", 0.15)))
     if c["domain"] == "subsurface":
         d.duration_s = 1200.0
-        r = d.w.mission.radius_m
+        r = d.radius
         entry = d.rng.uniform(*UUV_ENTRY_S)
         if entry - travel_s(c, d.center, r) < MIN_START_S:
             recut(d, c, d.elements[-1], entry - MIN_START_S)  # as `element` does for a timed one
@@ -591,12 +591,15 @@ def _f13(d: DraftX) -> None:
         d.elements[-1]["start_s"] = c["start_s"]
         d.elements[-1]["entry_s"] = round(entry_s(d, c), 1)
     t_in = entry_s(d, c)
-    grace = {"surface": 60.0, "air": 30.0, "ground": 60.0, "subsurface": 300.0}[c["domain"]]
+    # the need's deadline and its first look's sensor: the run's settings' (its domain's grace, and
+    # the first of its sensors)
+    assert d.settings is not None
+    grace = d.settings.rule(c["domain"]).grace_s
     route = [tuple(p) for p in c["route"]]
-    at = F.point_at(route, F.first_within(route, d.center, d.w.mission.radius_m) or 0.0)
+    at = F.point_at(route, F.first_within(route, d.center, d.radius) or 0.0)
     cat = by_callsign(d.world)
     # a breakdown: the agent's first look in the need's domain (v2's stuck vehicle)
-    sensor = "sonar" if c["domain"] == "subsurface" else "eo_ir"
+    sensor = d.settings.rule(c["domain"]).sensors[0]
     fallback = best_placed(d, at, c["domain"])
     d.script.append({"kind": "stop", "after_first_look": [5, 60], "delay_s": round(d.rng.uniform(5.0, 60.0), 1),
                      "deadline_s": round(t_in + grace, 1), "fallback_uid": int(cat[fallback]["uid"]),
@@ -672,14 +675,16 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     label, gen = GENERATORS[family]
     rng = random.Random(f"v3:{family}:{world}:{int(seed)}")
     e = from_situation(F.WATCH[world])
+    st, rules, brief, extra = F.briefing(e, world)
     w = load_world(world)
     base = w.draw_conditions(random.Random(f"conditions:{world}:{int(seed)}"))
     stated: dict[str, Any] = {
         "family": family, "world": world, "seed": int(seed), "scoring": "v3", "area": label,
         "mission_sha256": mission_sha256(world), "domain": FAMILY_DOMAIN[family],
         "rule": "eval/headless/v3/mission.py: unknown, suspect or hostile within 3 km, identified in time per domain",
+        **extra,
     }
-    d = DraftX(family=family, world=world, seed=int(seed), rng=rng, stated=stated)
+    d = DraftX(family=family, world=world, seed=int(seed), rng=rng, stated=stated, settings=st, rules=rules)
     d.cond = {"local_time": base.get("local_time")}
     if family in WITH_BASE:
         gen(d, base)
@@ -718,7 +723,7 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     e.duration_s = d.duration_s
     e.truth = stated
     e.config_name = "watch"
-    e.brief = mission_text(world)
+    e.brief = brief
     e.opaque = True
     e.script = list(e.script) + [dict(x) for x in d.script]
     e.events = list(e.events) + [dict(x) for x in d.events]

@@ -20,6 +20,15 @@ from eval.headless.v3 import families as F
 from eval.headless.v3 import families_ops as FO
 from eval.headless.v3.labels import episode_labels
 from eval.headless.v3.mission import mission_text
+from eval.headless.v3.settings import v0
+
+
+def circle(world: str) -> tuple[tuple[float, float], float]:
+    """A v3 world's v0 circle (sim/policy-v0-watch.toml): its centre and radius (the worlds have
+    no [mission] since stage S6)."""
+    a = v0(world).area
+    assert a is not None
+    return a.center, a.radius_m
 from eval.world import load_world
 
 SEEDS = range(5000, 5012)
@@ -54,7 +63,7 @@ def test_every_family_draws_its_element_in_its_medium_and_into_the_circle(name: 
         c = cs[0]
         route = [tuple(p) for p in c["route"]]
         assert c["affiliation"] in ("unknown", "suspect") and c["domain"] == F.FAMILY_DOMAIN[fam]
-        assert F.first_within(route, w.mission.center, w.mission.radius_m) is not None, "it comes into the circle"
+        assert F.first_within(route, *circle(world)) is not None, "it comes into the circle"
         if c["domain"] == "surface":
             assert F.wet(world, route, 3.0)
         elif c["domain"] == "subsurface":
@@ -64,7 +73,7 @@ def test_every_family_draws_its_element_in_its_medium_and_into_the_circle(name: 
         else:
             assert float(c["alt_m"]) >= F.top_surface(world, route, 100.0) + 50.0
         if fam == "f1-fast-boat":
-            k = F.first_within(route, w.mission.center, w.mission.radius_m)
+            k = F.first_within(route, *circle(world))
             assert F.time_to(k, float(c["speed_mps"])) + 60.0 < 180.0, "no buoy can identify it by its deadline"
         if fam == "f4-uuv":
             assert e.truth["element"]["from"] == "bay"
@@ -122,7 +131,7 @@ def test_f6_s_vehicle_appears_outside_the_circle_and_comes_in(tmp_path: Path):
     for name in ("v3-f6-shore-vehicle-gg", "v3-f6-shore-vehicle-sd"):
         _, world = F.parse(name)
         w = load_world(world)
-        centre, r = w.mission.center, w.mission.radius_m
+        centre, r = circle(world)
         for road, pts in F.PLACES[world].roads:
             k = F.first_within(list(pts), centre, r)
             assert k is not None and k >= F.lead_m(hi, 12.0), f"{road}: long enough outside for the longest lead"
@@ -195,7 +204,7 @@ def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary:
     # long enough for the element to come into the circle, and a minute more
     end = 200.0
     for c in added(path):
-        k = F.first_within([tuple(p) for p in c["route"]], load_world(world).mission.center, 3000.0) or 0.0
+        k = F.first_within([tuple(p) for p in c["route"]], circle(world)[0], 3000.0) or 0.0
         end = float(c["start_s"]) + F.time_to(k, float(c["speed_mps"])) + 60.0
     e.duration_s = min(e.duration_s, max(end, 200.0))
     # the ceiling (SCORING-V3.md 13.1: `oracle-v3-shown` since 2026-10-26)

@@ -46,7 +46,7 @@ PROVIDER = "claude"
 MIN_VERSION = (2, 1, 294)
 KEY_ENV = "MURMUR_AGENT_KEY"
 # How long a turn may run on after the interrupt before the process is restarted.
-INTERRUPT_GRACE_S = 20.0
+INTERRUPT_WAIT_S = 20.0
 
 
 @dataclass
@@ -357,10 +357,10 @@ class ClaudeBackend:
                 if interrupted is None:
                     interrupted = "timeout"
                     await p.write(interrupt_request())
-                    grace_until = time.time() + INTERRUPT_GRACE_S
+                    grace_until = time.time() + INTERRUPT_WAIT_S
                     continue
                 code = await end_process(p.proc)
-                raise BackendCrashed(f"no result {INTERRUPT_GRACE_S:.0f} s after interrupting the turn",
+                raise BackendCrashed(f"no result {INTERRUPT_WAIT_S:.0f} s after interrupting the turn",
                                      code, p.stderr.text())
             if ev is None:
                 code = await p.proc.wait()

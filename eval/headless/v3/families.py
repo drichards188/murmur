@@ -9,8 +9,12 @@ base is the world's watch situation (sim/situations/golden-gate-v3-watch.toml, s
 its fleet in every domain on its opening orders, its watch policy, the world's background traffic in
 every domain (a contacts seed drawn per situation, so the traffic's motion varies) under the
 physical sensing model, the world's land/water grid, currents and pinned element sets, the AI at
-45 s, and the scoring v3 mission (mission.py) as the brief, verbatim and nothing else. The run id and
-the operator's notes name no situation (`EpisodeSpec.opaque`).
+45 s, and the scenario's brief, verbatim and nothing else (`briefing`): under decision rules below 33
+the v0 mission text (mission.py), from rules 33 the ROE card rendered from the settings the run
+decides under (eval/roe_card.py `render`, docs/SCENARIO-SETTINGS.md), its sha256 and the settings'
+stated in the truth (`card_sha256`, `settings_sha256`). The circle each family's routes are drawn
+about is those settings' (`Draft.center`, `Draft.radius`). The run id and the operator's notes name
+no situation (`EpisodeSpec.opaque`).
 
 **Conditions**: drawn from the world's ranges (`World.draw_conditions`) from
 `random.Random("conditions:<world>:<seed>")`, so one seed meets the same day or night, fog, wind and
@@ -70,6 +74,7 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import hashlib
 import json
 import math
 import random
@@ -83,7 +88,8 @@ from typing import Any, Callable
 from eval.world import World, load_world
 
 from ..situations import EpisodeSpec, from_situation
-from .mission import DOMAINS, mission_sha256, mission_text
+from .mission import mission_sha256
+from .settings import Settings, for_run
 
 PREFIX = "v3-"
 #: the worlds, by the short tag a family name carries
@@ -337,6 +343,9 @@ class Draft:
     # what a family changes in the spec once it is built (families_ops.py: the fleet, the brief,
     # the script, the duration, the episode's options): each called with (spec, workdir)
     post: list[Callable[[Any, Path], None]] = field(default_factory=list)
+    #: the settings the run decides under (`briefing`) and its decision rules
+    settings: Settings | None = None
+    rules: int = 0
 
     @property
     def w(self) -> World:
@@ -344,7 +353,14 @@ class Draft:
 
     @property
     def center(self) -> tuple[float, float]:
-        return self.w.mission.center
+        """The circle's centre: the scenario's settings' (`[watch.area]`, v0's before rules 33)."""
+        assert self.settings is not None and self.settings.area is not None
+        return self.settings.area.center
+
+    @property
+    def radius(self) -> float:
+        assert self.settings is not None and self.settings.area is not None
+        return self.settings.area.radius_m
 
     @property
     def place(self) -> Place:
@@ -440,7 +456,7 @@ def _f1_fast_boat(d: Draft) -> None:
     speed = d.rng.uniform(10.0, 18.0)
     from_sea = d.rng.random() < 0.6
     lead = d.rng.uniform(*F1_LEAD_S)
-    r = d.w.mission.radius_m
+    r = d.radius
 
     def draw() -> Any:
         route = lane_in(d, from_sea, 3.0)
@@ -493,7 +509,7 @@ def _f3_aircraft(d: Draft) -> None:
     route = [a, z]
     above = d.rng.uniform(150.0, 400.0)
     alt = top_surface(d.world, route, 100.0) + above
-    k = first_within(route, d.center, d.w.mission.radius_m) or 0.0
+    k = first_within(route, d.center, d.radius) or 0.0
     t_in = d.rng.uniform(250.0, 600.0)
     start = max(60.0, t_in - time_to(k, speed))
     # version 2: its transponder off, the kind's only emitter (module doc)
@@ -509,7 +525,7 @@ def _f4_uuv(d: Draft) -> None:
     """F4 (module doc)."""
     speed = d.rng.uniform(1.0, 2.5)
     from_sea = d.rng.random() < F4_SEA_SHARE
-    r = d.w.mission.radius_m
+    r = d.radius
     want_depth = d.rng.uniform(5.0, 15.0)
 
     def draw() -> Any:
@@ -577,7 +593,7 @@ def _f6_vehicle(d: Draft) -> None:
         route = [route[0], *[(q[0], q[1]) for q in route[1:-1]], offset(route[-1], d.rng.uniform(0, 360), d.rng.uniform(0, 30))]
         if not dry(d.world, route):
             return None
-        return start_before(route, d.center, d.w.mission.radius_m, before)
+        return start_before(route, d.center, d.radius, before)
 
     route = _retry("F6 road", draw)
     start = d.rng.uniform(150.0, 400.0)
@@ -716,6 +732,23 @@ def contacts_file(world: str, seed: int, added: list[dict[str, Any]], path: Path
     path.write_text("\n".join(out))
 
 
+def briefing(e: EpisodeSpec, world: str) -> tuple[Settings, int, str, dict[str, Any]]:
+    """The settings a run of `e` decides under (settings.py `for_run`: its policy file under the
+    run's decision rules), the rules, the brief (eval/roe_card.py `render`: the v0 mission text
+    under rules below 33, else the ROE card) and what the stated truth gains from rules 33 (the
+    card's sha256 and the settings', `card_sha256`, `settings_sha256`; nothing under older rules,
+    so their records are as before)."""
+    from eval.roe_card import CARD_SINCE, render
+
+    st, policy, rules = for_run(e.policy, world)
+    text = render(st, rules, world, policy)
+    extra: dict[str, Any] = {}
+    if rules >= CARD_SINCE:
+        extra = {"card_sha256": hashlib.sha256(text.encode()).hexdigest(), "settings_sha256": st.sha256(),
+                 "rules_version": rules}
+    return st, rules, text, extra
+
+
 def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     """One situation of `name` (`v3-<family>-<gg|sd>`) for `seed`: its spec and contacts file."""
     family, world = parse(name)
@@ -724,12 +757,14 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     label, gen = GENERATORS[family]
     rng = random.Random(f"v3:{family}:{world}:{int(seed)}")
     e = from_situation(WATCH[world])
+    st, rules, brief, extra = briefing(e, world)
     stated: dict[str, Any] = {
         "family": family, "world": world, "seed": int(seed), "scoring": "v3", "area": label,
         "mission_sha256": mission_sha256(world), "domain": FAMILY_DOMAIN[family],
         "rule": "eval/headless/v3/mission.py: unknown, suspect or hostile within 3 km, identified in time per domain",
+        **extra,
     }
-    d = Draft(family=family, world=world, seed=int(seed), rng=rng, stated=stated)
+    d = Draft(family=family, world=world, seed=int(seed), rng=rng, stated=stated, settings=st, rules=rules)
     if family == "f5-diver":
         d.night = rng.random() < 0.7
     gen(d)
@@ -753,7 +788,7 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     e.duration_s = DURATION_S.get(family, DEFAULT_DURATION_S)
     e.truth = stated
     e.config_name = "watch"
-    e.brief = mission_text(world)
+    e.brief = brief
     e.opaque = True
     for f in d.post:
         f(e, workdir)
@@ -761,11 +796,13 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
 
 
 def needs_of(e: EpisodeSpec) -> list[dict[str, Any]]:
-    """The added contacts a situation states, with the domain rule each is held to."""
+    """The added contacts a situation states, with the grace each is held to (the run's settings')."""
     out = []
+    st = for_run(e.policy, str((e.truth or {}).get("world") or e.map))[0]
     for c in (e.truth or {}).get("added") or []:
         dom = (e.truth.get("element") or {}).get("domain")
-        out.append({"contact": c, "domain": dom, "grace_s": DOMAINS[dom].grace_s if dom in DOMAINS else None})
+        c_ = st.domain(dom) if dom else None
+        out.append({"contact": c, "domain": dom, "grace_s": c_.grace_s if c_ is not None else None})
     return out
 
 

@@ -21,15 +21,17 @@ MCP tools an agent has. In every other family it does exactly what `OracleV3` do
   that the form names inside a keep-out 2.5 km off (`make_room`), and nominates the first that
   passes and spares every contact that is not hostile by truth (`unspared`), at most three times,
   never a track whose contact is not hostile by truth (restraint by truth). Its effect radius is the
-  largest of `RADII_M` (75 m, then 40 m) at which a plan the form offers spares them; where none
+  largest of `radii` (the policy's default, 75 m, then `SMALL_RADIUS_M`, 40 m) at which a plan the
+  form offers spares them; where none
   spares them at either radius it waits (`engage.wait`) and still makes room. Since F15 version 3 (bd
   murmur-yu6s) a plan spares a contact when the labels would call its strike safe
   (labels_ops.py `nomination_label`: harm is a contact not hostile by truth inside the effect
   radius of the plan's point, horizontally, when the effect is applied, and within the radius
-  above or below the target): the contact stays farther than the radius plus `AIM_SIGMA` (2) times
+  above or below the target): the contact stays farther than the radius plus the policy's
+  `keep_out_sigma` (2) times
   the track's 1-sigma now (the point is the track's estimate when the first signature freezes the
   plan) from the form's predicted effect point wherever it may be while the effect may come, from
-  the plan's effect time (for a munition, its impact) to `LATE_S` (60 s, the policy's `late_s`)
+  the plan's effect time (for a munition, its impact) to the policy's `late_s` (60 s)
   after it: along its true course, between where it would be had it begun to slow at once at its
   kind's deceleration (sim/contacts.toml `decel_mps2`, the truth side's motion model) and where its
   true speed would carry it (`unspared`; it may slow or stop, as a boat does at its route's end, but
@@ -61,7 +63,7 @@ from typing import Any
 
 from eval.agent import _mcp_args
 
-from ..scripted import first_passing, keep_out_blockers, standing_on
+from ..scripted import first_passing, keep_out_blockers, policy_defaults, standing_on
 from .families import wet
 from .oracle import Need, OracleV3, Path2, to_ll, to_xy
 
@@ -73,14 +75,11 @@ ENGAGE_TICK_S = 4.0
 COLLECT_MIN_LEAD_S = 600.0
 HOLD_BEFORE_S = 20.0
 RESUME_AFTER_S = 20.0
-#: F15 (version 3, bd murmur-yu6s): the effect radii asked, largest first (module doc)
-RADII_M = (75.0, 40.0)
-#: the aim's allowance, in the track's 1-sigma now: the plan's point is the track's estimate (carried
-#: to the effect time) when the first signature freezes it, after the form was read; counted as the
-#: engine counts a protected track's uncertainty (sim/policy.toml [rules.engage] keep_out_sigma)
-AIM_SIGMA = 2.0
-#: the effect may come this long after the plan's time and still be released (the policy's late_s)
-LATE_S = 60.0
+#: F15 (version 3, bd murmur-yu6s): the effect radii asked, largest first (module doc): the run's
+#: policy's default radius (`get_policy`, scripted.py `policy_defaults`: `[rules.engage]
+#: default_effect_radius_m`, the engine's 75 m under rules below 33), then this smaller one, the
+#: oracle's own
+SMALL_RADIUS_M = 40.0
 #: a contact more than the radius and this above or below the target is clear of the effect (the
 #: labels count collateral within the radius vertically as well)
 CLEAR_VERTICAL_M = 10.0
@@ -166,8 +165,8 @@ def decel_of(c: dict[str, Any]) -> float:
     return DEFAULT_DECEL.get(str(c.get("domain") or "surface"), 0.5)
 
 
-def unspared(o: dict[str, Any], radius: float, contacts: dict[str, dict[str, Any]], target: str,
-             aim_sigma: float = AIM_SIGMA, late_s: float = LATE_S) -> dict[str, Any] | None:
+def unspared(o: dict[str, Any], radius: float, contacts: dict[str, dict[str, Any]], target: str, *,
+             aim_sigma: float, late_s: float) -> dict[str, Any] | None:
     """What the plan of one nomination form option would not spare, by truth (module doc): the
     contact not hostile by truth (`contacts`: the truth's, by id, each with `lon`, `lat`, `alt_m`,
     `speed_mps`, `course_deg`, `affiliation`) that may come nearest the form's predicted effect
@@ -176,7 +175,11 @@ def unspared(o: dict[str, Any], radius: float, contacts: dict[str, dict[str, Any
     (at its kind's deceleration, the truth side's motion model: `decel_mps2`) and where its true
     speed would carry it by `late_s` after that time (it may slow or stop on the way, as a boat
     does at its route's end, but is not taken to turn or to speed up); None when every such
-    contact is spared, or when the option has no preview (it cannot pass)."""
+    contact is spared, or when the option has no preview (it cannot pass). `aim_sigma` and `late_s`:
+    the run's policy's `[rules.engage] keep_out_sigma` (the aim's allowance, in the track's 1-sigma
+    now: the plan's point is the track's estimate when the first signature freezes it, counted as
+    the engine counts a protected track's uncertainty) and `late_s` (the effect may come this long
+    after the plan's time and still be released)."""
     pv = o.get("preview") or {}
     pt = pv.get("effect_point")
     t0, te = unix(pv.get("t")), unix(pv.get("effect_t"))
@@ -240,8 +243,14 @@ class OracleOps(OracleV3):
             self.adopting = pol if pol.adopt != "leave" else None
         self.asked_t = -1e9
         self.asks: dict[str, int] = {}
-        # F15: which of `RADII_M` the next nomination form asks
+        # F15: which of `radii` the next nomination form asks
         self.radius_i = 0
+
+    def radii(self) -> tuple[float, ...]:
+        """The effect radii F15's nominations ask, largest first: the run's policy's default
+        (scripted.py `policy_defaults` of `get_policy`'s answer), then `SMALL_RADIUS_M`."""
+        default = float(policy_defaults(self.policy_answer)["effect_radius_m"])
+        return tuple(sorted({default, SMALL_RADIUS_M}, reverse=True))
 
     # ---- setup: F16's review looks -----------------------------------------------------------------
 
@@ -267,7 +276,7 @@ class OracleOps(OracleV3):
                     cc["route"] = [cc["at"], cc["at"]]
                     cc["speed_mps"] = 0.0
                 t_need = max(float(item.get("t_s") or 0.0) - REVIEW_LEAD_S, c0 + float(cc.get("start_s") or 0.0))
-                n = Need(cc, Path2(cc, self.origin, c0), t_need)
+                n = Need(cc, Path2(cc, self.origin, c0), t_need, self.settings)
                 n.deadline = t_need + REVIEW_DUE_S
                 self.needs[n.id] = n
                 self.write("need.review", contact=cid, item=item.get("item"), t_need=round(t_need, 1),
@@ -499,15 +508,19 @@ class OracleOps(OracleV3):
         # every contact not hostile by truth; the plans that would not are never nominated. The
         # form answers one call a second, so a smaller radius is asked at the next wake.
         armed = sorted(int(u) for u in (self.st.get("armed") or {}).values())
-        radius = RADII_M[self.radius_i]
+        radii = self.radii()
+        radius = radii[self.radius_i]
         args: dict[str, Any] = {"track_id": tid, "effect_radius_m": radius, "window_s": 600, "fallback": "return"}
         if armed:
             args["uids"] = armed
         opts = self.call("get_nomination_options", **args).get("options") or []
-        bad = {str(o.get("uid")): u for o in opts if (u := unspared(o, radius, cs, target)) is not None}
+        eng = (((self.policy_answer.get("policy") or {}).get("rules") or {}).get("engage") or {})
+        bad = {str(o.get("uid")): u for o in opts
+               if (u := unspared(o, radius, cs, target, aim_sigma=float(eng["keep_out_sigma"]),
+                                 late_s=float(eng["late_s"]))) is not None}
         ok = [o for o in opts if str(o.get("uid")) not in bad]
         if opts and not ok:
-            if self.radius_i + 1 < len(RADII_M):
+            if self.radius_i + 1 < len(radii):
                 self.radius_i += 1
                 self.next_engage = now + 1.0
                 return

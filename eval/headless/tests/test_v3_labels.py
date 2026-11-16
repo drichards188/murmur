@@ -18,7 +18,11 @@ from eval.headless.tests.test_v2_labels import BR, Synth, at, inbound, orbit, ri
 from eval.headless.v2.labels import Params
 from eval.headless.v3 import labels as L
 from eval.headless.v3 import metrics as M
-from eval.headless.v3.mission import DOMAINS, mission_text
+from eval.headless.v3.mission import mission_text
+from eval.headless.v3.settings import DOMAINS, v0
+
+#: the settings every record here is graded under (a synthetic record logs none: v0's)
+GG = v0("golden-gate-v3")
 
 UNRESOLVED = ("small_craft", 0.4, None, ["radar"])
 
@@ -63,8 +67,8 @@ def one(kind: str, domain: str, ident: tuple[Any, ...], t1: float, ais: bool = F
 def test_the_mission_text_names_every_domain_s_grace_and_sensor():
     text = mission_text("san-diego")
     assert "bay entrance off Ballast Point" in text and "3 km" in text
-    for d in DOMAINS.values():
-        assert f"{d.grace_s:.0f} seconds" in text
+    for d in DOMAINS:
+        assert f"{GG.rule(d).grace_s:.0f} seconds" in text
     assert "EO/IR" in text and "sonar" in text and "AIS" in text
     assert mission_text("golden-gate-v3") != text
 
@@ -100,7 +104,7 @@ def test_each_domain_has_its_sensor_level_and_grace(domain: str, kind: str, show
                                                     served: bool):
     s = one(kind, domain, (shown, 0.7, None, sensors), at_s)
     n = need(labels(s), "c")
-    assert n["domain"] == domain and n["grace_s"] == DOMAINS[domain].grace_s
+    assert n["domain"] == domain and n["grace_s"] == GG.rule(domain).grace_s
     assert n["served"] is served, n
 
 
@@ -229,7 +233,7 @@ def test_an_aircraft_with_no_velocity_is_taken_to_come_straight_in(east_m: float
     """The picture supports an order at a track in doubt that is inside the circle or coming into it
     within the horizon (300 s) along its shown velocity. An aircraft shown with no velocity (a radar's
     bearings, unranged) is taken to come straight in at the air threat speed, 25 m/s (the honest
-    ceiling's rule, mission.py `THREAT_MPS`); a boat with none is judged where it is (choice 40)."""
+    ceiling's rule, the settings' `no_velocity_mps`: v0's); a boat with none is judged where it is (choice 40)."""
     rec = still(v3_record(far_look(east_m)), domain, velocity)
     a = by_intent(L.episode_labels(rec, none_labels={"needs": []}))[10]
     assert a["label"] == want and a["supported"]["approach"] == approach, (a["label"], a["supported"])
@@ -399,7 +403,7 @@ def test_need_served_per_domain_and_time_to_serve_censored_at_each_grace():
     m = M.episode_metrics(rec, lab)
     assert m["by_domain"]["surface"]["served_share"] == 1.0 and m["by_domain"]["subsurface"]["served_share"] == 0.0
     tts = dict(zip([n["contact"] for n in lab["needs"] if n["eligible"]], m["time_to_serve"]))
-    assert tts["uuv"] == DOMAINS["subsurface"].grace_s and tts["boat"] < 60.0
+    assert tts["uuv"] == GG.rule("subsurface").grace_s and tts["boat"] < 60.0
     assert m["rmst"] is None  # two domains: per domain only
 
 

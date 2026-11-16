@@ -1,101 +1,46 @@
-"""Scoring v3's mission (eval/SCORING-V3.md section 1): what must be identified, by which sensor and
-by when, per domain, and the text every agent receives as its situation brief (as v2's mission is
-given: verbatim, identically, nothing else about the evaluation). Labels derive from it.
+"""Scoring v3's v0 mission text (eval/SCORING-V3.md section 1): the brief every agent received, verbatim,
+in every run before decision rules 33, its SHA-256 in each situation's stated truth. Since stage S6
+(docs/SCENARIO-SETTINGS.md) the values it states are no longer this module's: the scoring reads each
+record's own settings (settings.py `of_record`), a run under rules 33 or later is briefed with its
+scenario's ROE card (eval/roe_card.py `render`), and this module keeps only the v0 renderer, which
+`render` returns under older rules.
 
-**Per domain** (`DOMAINS`; each value a named constant, each a definitional choice the owner may
-change, SCORING-V3.md section 9):
+`mission_text(world)` renders the v0 text from the frozen v0 settings (sim/policy-v0-watch.toml:
+its `[watch]` and the world's `[area.<world>]`, read through settings.py `v0`), so its SHA-256 is
+the one the frozen file records for the world (`[mission_sha256.<world>] current`; eval/roe_card.py
+checks it). What the text says, per domain (SCORING-V3.md 2.1 says why each value):
 
-| domain | in time (`grace_s`) | supporting sensor | level |
+| domain | in time | supporting sensor | level |
 |---|---|---|---|
 | surface | 60 s | EO/IR, or AIS from a true broadcaster | identification (its kind) |
 | air | 30 s | EO/IR | identification (its kind) |
 | ground | 60 s | EO/IR | identification (its kind) |
 | subsurface | 300 s | sonar | recognition (its class: submerged, or a person for a diver) or better |
-
-"In time" is a fifth of the mission's 3 km radius at the domain's threat speed, floored at the
-domain's sensor's own shortest classification time: a fast boat at 10 to 20 m/s covers 600 m in 30
-to 60 s (v2's 60 s kept); a small drone at 15 to 30 m/s in 20 to 40 s and a light aircraft at 45 to
-60 m/s in 10 to 13 s (30 s, the drone's); a car at 8 to 15 m/s in 40 to 75 s (60 s); a UUV at 1 to
-2.5 m/s in 240 to 600 s and a diver at 0.3 to 0.7 m/s in 15 to 30 minutes, floored by a passive
-sonar's 180 s to identify and an active one's 60 s to recognise (300 s).
-
-Subsurface needs are met at the recognition level because in the physical model only a passive
-sonar identifies (after 180 s of contact) and active sonars never do (docs/SENSING.md), and in both
-worlds only the drifting buoys, which take no orders, carry a passive sonar: at the identification
-level no vehicle an agent can task could answer one.
 """
 
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
 
-from eval.world import load_world
-
-NEED_RADIUS_M = 3000.0
-RESOLVE_CONF = 0.6
-#: the speed an aircraft the picture shows no velocity for is taken to come straight in at (a small
-#: drone's 25 m/s, the top of F2's 12 to 25: the mission's threat for its 30 s grace); the honest
-#: ceiling's plan (planner.py `HonestCeiling.motion`) and the labels' support on the picture
-#: (labels.py `supported_on_picture`) both read it here
-THREAT_MPS = {"air": 25.0}
-#: a shown speed under this is no velocity (the tracker feeds a track without one as 0.0 m/s)
-STILL_MPS = 0.5
-
-
-@dataclass(frozen=True)
-class DomainRule:
-    grace_s: float
-    #: the sensor types whose support counts (the picture's `supported_by`)
-    sensors: tuple[str, ...]
-    #: AIS counts too when the contact truly broadcasts it
-    ais_counts: bool
-    #: "identify": the shown kind must be the true kind; "recognise": its true family will do
-    level: str
-
-
-SURFACE_GRACE_S = 60.0
-AIR_GRACE_S = 30.0
-GROUND_GRACE_S = 60.0
-SUBSURFACE_GRACE_S = 300.0
-#: SCORING-V3.md choice 3: subsurface at the recognition level (only passive sonar identifies, and
-#: only the untaskable buoys carry one); "identify" is the owner's literal rule
-SUBSURFACE_LEVEL = "recognise"
-
-DOMAINS: dict[str, DomainRule] = {
-    "surface": DomainRule(SURFACE_GRACE_S, ("eo_ir",), True, "identify"),
-    "air": DomainRule(AIR_GRACE_S, ("eo_ir",), False, "identify"),
-    "ground": DomainRule(GROUND_GRACE_S, ("eo_ir",), False, "identify"),
-    "subsurface": DomainRule(SUBSURFACE_GRACE_S, ("sonar",), False, SUBSURFACE_LEVEL),
-}
-
-#: what each world's protected point is called in the mission's text
-PLACES = {
-    "golden-gate-v3": "the Golden Gate Bridge",
-    "golden-gate-scale": "the Golden Gate Bridge",
-    "san-diego": "the bay entrance off Ballast Point",
-}
-
-
-def rule(domain: str | None) -> DomainRule:
-    """A domain's rule (an unknown domain is held to the surface's)."""
-    return DOMAINS.get(str(domain or "surface"), DOMAINS["surface"])
+from .settings import v0
 
 
 def mission_text(world: str) -> str:
-    """The mission every agent receives in a world, verbatim (its SHA-256 is recorded)."""
-    m = load_world(world).mission
-    place = PLACES.get(world, "the protected point")
-    km = m.radius_m / 1000.0
+    """The v0 mission every agent received in a v3 world before rules 33, verbatim."""
+    s = v0(world)
+    a = s.area
+    assert a is not None
+    km = a.radius_m / 1000.0
+    grace = {d: s.rule(d).grace_s for d in ("surface", "air", "ground", "subsurface")}
     # the circle's centre as a point (the owner's decision of 2026-11-15, bd murmur-isxg): the words
     # alone left an agent guessing where "the bay entrance" is by a kilometre or two
-    lon, lat = m.center
+    lon, lat = a.center
     return (
-        f"Identify every contact of unknown, suspect or hostile affiliation that comes within {km:g} km of {place} "
-        f"(the circle's centre is [{lon:.4f}, {lat:.4f}], longitude then latitude), in time: one on the surface within {SURFACE_GRACE_S:.0f} seconds of its coming within {km:g} km, one in the "
-        f"air within {AIR_GRACE_S:.0f} seconds, one on the ground within {GROUND_GRACE_S:.0f} seconds, and one under the "
-        f"water within {SUBSURFACE_GRACE_S:.0f} seconds. A contact counts as identified when the picture shows its "
-        f"kind at a confidence of {RESOLVE_CONF:g} or more without an identity conflict: from EO/IR, or its own true "
+        f"Identify every contact of unknown, suspect or hostile affiliation that comes within {km:g} km of {a.name} "
+        f"(the circle's centre is [{lon:.4f}, {lat:.4f}], longitude then latitude), in time: one on the surface within {grace['surface']:.0f} seconds of its coming within {km:g} km, one in the "
+        f"air within {grace['air']:.0f} seconds, one on the ground within {grace['ground']:.0f} seconds, and one under the "
+        f"water within {grace['subsurface']:.0f} seconds. A contact counts as identified when the picture shows its "
+        f"kind at a confidence of {s.bar:g} or more without an identity conflict: from EO/IR, or its own true "
         "AIS, for a contact on the surface; from EO/IR for one in the air or on the ground; from sonar for one under "
         "the water, where its class (submerged, or a person in the water) is enough. Keep every vehicle above its "
         "reserve."

@@ -84,10 +84,12 @@ class OneOrder:
 
 
 def test_a_v3_model_episode_through_the_runner_and_the_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from eval.world import load_world
+    from eval.headless.v3.settings import v0
 
     world = F.parse(FAMILY)[1]
-    script = OneOrder(load_world(world).mission.center)
+    area = v0(world).area  # the run's circle (rules 32: v0's)
+    assert area is not None
+    script = OneOrder(area.center)
     client = FakeAnthropic(script)
     monkeypatch.setenv("MURMUR_EVAL_MODEL", "1")
     monkeypatch.setattr(O, "make_client", lambda: client)  # in place of the Anthropic client

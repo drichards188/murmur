@@ -1,7 +1,9 @@
 """The scenario's ROE card (docs/SCENARIO-SETTINGS.md section 3, "The brief is the scenario's ROE
 card"): the text an agent is briefed with, rendered from the run's settings
-(eval/headless/v3/settings.py) and its policy. Nothing calls it yet (stage S6: v3 situations
-receive it verbatim, live situations append it to their brief).
+(eval/headless/v3/settings.py) and its policy. Since stage S6 the v3 families' brief is the card
+(eval/headless/v3/families.py `briefing`) and a situation's brief carries it after its own text
+(eval/situation.py `brief_text`), each from rules 33; a scenario whose policy sets no circle (a
+situation outside the v3 watches) is carded without one, its brief saying where to watch.
 
 - Under decision rules below 33, or with v0's settings, the card is the v0 mission text
   (eval/headless/v3/mission.py `mission_text`) exactly, and its sha256 must be the one the frozen
@@ -87,8 +89,6 @@ def render(settings: Settings, rules_version: int, world: str, policy: dict[str,
     """The card a run in `world` under `rules_version` is briefed with."""
     if rules_version < CARD_SINCE or settings.is_v0:
         return _v0_text(world)
-    if settings.area is None:
-        raise ValueError("the card needs the scenario's circle ([watch.area])")
     reserve = reserve_pct if reserve_pct is not None else _policy_value(policy, ("rules", "reserve_pct"))
     task_s = task_duration_s if task_duration_s is not None else _policy_value(policy, ("rules", "task_duration_s"))
     engage_bar = _policy_value(policy, ("rules", "engage", "min_identity_confidence"))
@@ -99,17 +99,22 @@ def render(settings: Settings, rules_version: int, world: str, policy: dict[str,
     engage_level = _policy_value(policy, ("rules", "engage", "min_identity_level")) or FLOOR_ENGAGE_LEVEL
     approvers, proposer_may = _signers(policy)
     a, s = settings.area, settings
-    km = a.radius_m / 1000.0
     bar = f"{s.bar:g}"
-
-    out = [f"The circle: {km:g} km around {a.name}, its centre at [{a.center[0]:.4f}, {a.center[1]:.4f}] "
-           "(longitude, latitude)."]
+    if a is not None:
+        km = a.radius_m / 1000.0
+        out = [f"The circle: {km:g} km around {a.name}, its centre at [{a.center[0]:.4f}, {a.center[1]:.4f}] "
+               "(longitude, latitude)."]
+        inside, into = "inside the circle", "inside"
+    else:
+        out = ["The circle: this scenario's policy sets none ([watch.area]); the brief above says where to watch, "
+               "and the circle below is that watched area."]
+        inside, into = "inside the watched area", "inside it"
     lines = []
     for d, c in s.domains:
         sensors = [SENSOR_WORDS.get(x, x) for x in c.sensors]
         lines.append(f"- {DOMAIN_WORDS.get(d, d)}, within {_seconds(c.grace_s)} of its coming inside: "
                      f"{LEVEL_WORDS.get(c.level, c.level)}, from {_or(sensors)}.")
-    out.append("Identify every contact of unknown, suspect or hostile affiliation that comes inside the circle, "
+    out.append(f"Identify every contact of unknown, suspect or hostile affiliation that comes {inside}, "
                "in time:\n" + "\n".join(lines))
     out.append(f"A contact counts as identified when the picture shows it at its domain's level at an identity "
                f"confidence of {bar} or more, supported by its domain's sensor, without an identity conflict. A size "
@@ -128,7 +133,7 @@ def render(settings: Settings, rules_version: int, world: str, policy: dict[str,
         f"is taken to come straight in {_or(nv)}, and is judged where it is in any other domain." if nv
         else "is judged where it is.")
     out.append(f"A contact in doubt (not identified, or shown other than neutral, assumed friend or friend) is "
-               f"approaching when it is inside the circle or its shown course brings it inside within "
+               f"approaching when it is {inside} or its shown course brings it {into} within "
                f"{_seconds(s.approach_horizon_s)}. " + still)
     out.append(f"Keep every vehicle above its reserve: {float(reserve):g} % of its endurance left after a task of "
                f"{_seconds(float(task_s))}.")

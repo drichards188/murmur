@@ -26,6 +26,7 @@ from eval.headless.v3 import families_ops as FO
 from eval.headless.v3 import labels as L
 from eval.headless.v3 import labels_ops as O
 from eval.headless.v3.mission import mission_text
+from eval.headless.v3.settings import v0
 from eval.world import load_world
 
 SEEDS = range(5400, 5412)
@@ -464,7 +465,8 @@ def test_the_oracle_spares_a_contact_by_the_labels_geometry():
                 "speed_mps": speed, "course_deg": course}
 
     def worst(r: float, c: dict[str, Any]) -> dict[str, Any] | None:
-        return unspared(opt, r, {"hostile-1": boat(0.0, 0.0, aff="hostile"), "c": c}, "hostile-1")
+        return unspared(opt, r, {"hostile-1": boat(0.0, 0.0, aff="hostile"), "c": c}, "hostile-1", aim_sigma=2.0,
+                        late_s=60.0)
 
     holding = boat(0.0, 60.0)  # an escort holding 60 m off the point
     w = worst(75.0, holding)
@@ -483,7 +485,7 @@ def test_the_oracle_spares_a_contact_by_the_labels_geometry():
     # a fishing boat 133 m south slowing to its station (0.1 m/s^2 from 3.7 m/s: 68 m on) may stop at
     # the point: version 3's first smoke carried it on at its speed and judged it 89 m off
     assert worst(75.0, boat(180.0, 133.0, speed=3.7, course=0.0))["distance_m"] == pytest.approx(0.0, abs=0.5)
-    assert unspared({"uid": 21, "preview": None}, 75.0, {"c": holding}, "hostile-1") is None
+    assert unspared({"uid": 21, "preview": None}, 75.0, {"c": holding}, "hostile-1", aim_sigma=2.0, late_s=60.0) is None
 
 
 # ---- the evidence reviewer (review.py) ---------------------------------------------------------------
@@ -495,7 +497,12 @@ def track(tid: str, kind: str | None, conf: float = 0.9, sb: tuple[str, ...] = (
 
 
 def test_the_evidence_reviewer_judges_on_what_the_picture_shows():
-    j = rv.judge
+    def j(*args: Any) -> tuple[str, str]:
+        return rv.judge(*args, bar=0.6)
+
+    # the bar is the run's: a 0.65 identification is evidence at 0.6, not at 0.77
+    assert rv.eo_kind(track("T-1", "small_fast_boat", conf=0.65), 0.6) == "small_fast_boat"
+    assert rv.eo_kind(track("T-1", "small_fast_boat", conf=0.65), 0.77) is None
     decl = {"kind": "declaration", "track": "T-1"}
     assert j(decl, {"T-1": track("T-1", "fishing_vessel")}, None, 5.0, 180.0)[0] == "revoke"
     assert j(decl, {"T-1": track("T-1", "small_fast_boat")}, None, 5.0, 180.0)[0] == "confirm"
@@ -528,6 +535,8 @@ def test_the_evidence_reviewer_reads_less_under_load_and_waits_for_evidence():
     def handler(method: str, path: str, body: Any, op: Any) -> tuple[int, Any]:
         if path == "/api/review":
             return 200, review
+        if path == "/api/policy":
+            return 200, {"watch": {"bar": 0.6}}
         if path == "/api/tracks":
             return 200, {"tracks": [track("T-1", state["kind"])] if state["kind"] else []}
         if path == "/api/intents":
@@ -600,7 +609,7 @@ def test_each_family_draws_its_elements_in_their_medium(name: str, tmp_path: Pat
             assert e.brief.startswith(mission_text(world)) and "Tasking." in e.brief
             (gap,) = e.truth["gap_needs"]
             (cov,) = e.truth["cover_needs"]
-            assert F.dist_m(tuple(gap["center"]), load_world(world).mission.center) > 55_000.0
+            assert F.dist_m(tuple(gap["center"]), v0(world).area.center) > 55_000.0
             assert FO.GAP_DUE_H[0] * 3600 <= gap["due_s"] <= FO.GAP_DUE_H[1] * 3600 and cov["min_level"] in (9, 10)
             assert F.dry(world, [tuple(p) for p in cov["route"]])
             kinds = [s["kind"] for s in e.script]

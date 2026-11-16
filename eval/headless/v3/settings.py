@@ -2,8 +2,8 @@
 the watch's values (the bar, each domain's level, sensors and grace, the approach horizon, the
 speeds), the scenario's circle, and for a run before decision rules 33 the scoring-only rules the
 design retires. Scoring reads each record's own values through `of_record`, never a constant.
-Only the v3 recorder reads this module yet (`record_settings`; stage S6 moves the labels, metrics
-and report to it).
+Since stage S6 the labels, the faults, the metrics, the report, the planners and the oracles read
+it (each record's own values, `of_record`; a running agent's, `of_answer`).
 
 - **v0** (`v0(world)`): every run before rules 33 was briefed and graded by one set of values,
   frozen in `sim/policy-v0-watch.toml` and pinned by its sha256 (`V0_SHA256`: reading an edited
@@ -21,6 +21,19 @@ and report to it).
   kept beside it (`audit`: batch.py's `keep_audit` writes `<name>.audit.jsonl`), else v0. No run
   has logged a `[watch]` yet outside the rules being built, so every existing record is graded
   under v0.
+- **A run's settings before it starts** (`for_run`): what a run of a scenario's policy file under
+  a rules version will decide under, for its brief (eval/roe_card.py) and its stated truth: v0's
+  under rules below 33 (what such a record is graded under), else the policy file's effective
+  `[watch]` (eval/policy_file.py `show`, the decision layer's own merge). A running agent reads
+  the same from MCP `get_policy`'s answer (`of_answer`: the logged policy's `[watch]`, else v0's).
+
+**Who reads what.** Scoring, the planners and the oracles read a domain's criteria through
+`Settings.rule` (its grace, its sensors other than AIS, whether a true AIS counts, its level), the
+bar, the horizon, the speeds and the circle from the settings, and the reserve through
+`Settings.reserve_now` (v0's battery-now 20 %, or a logged run's `reserve_pct`); the low-reserve
+fault need of a logged run (faults.py, version 2) reads `reserve_pct` and `task_duration_s` too.
+`sha256` names a settings set in a record's stated truth and a report's coverage line;
+`values_sha256` the same without the circle (each world has its own circle).
 """
 
 from __future__ import annotations
@@ -28,7 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -98,10 +111,55 @@ class Settings:
     source: str
     v0: V0 | None = None
     loosened: tuple[tuple[str, str], ...] = ()
+    #: a logged run's `[rules] reserve_pct` and `task_duration_s` (the engine's reserve: endurance
+    #: left after a task of that length) and its engagement's identity bar and level; None for v0
+    reserve_pct: float | None = None
+    task_duration_s: float | None = None
+    engage_bar: float | None = None
+    engage_level: str | None = None
 
     @property
     def is_v0(self) -> bool:
         return self.v0 is not None
+
+    def rule(self, domain: Any) -> Rule:
+        """A domain's criteria as the labels read them (`Rule`): its grace, its sensors other than
+        AIS, whether a contact's own true AIS counts, its level. A domain the settings do not name
+        (or none) is held to the surface's, as the mission held it."""
+        c = self.domain(str(domain or "surface")) or self.domain("surface")
+        if c is None:
+            raise ValueError("the settings name no surface domain")
+        return Rule(c.grace_s, tuple(x for x in c.sensors if x != "ais"), "ais" in c.sensors, c.level)
+
+    def reserve_now(self) -> float:
+        """The battery a vehicle is held to now (harm (a), the low-reserve need's unmet line, the
+        planners' reserve): v0's battery-now reserve, or a logged run's `reserve_pct`."""
+        if self.v0 is not None:
+            return self.v0.reserve_now_pct
+        if self.reserve_pct is None:
+            raise ValueError("these settings carry no reserve_pct (a logged run's [rules])")
+        return self.reserve_pct
+
+    def values(self, area: bool = True) -> dict[str, Any]:
+        """What the settings are, without where they came from (`source`): what `sha256` hashes.
+        Without `area`, nothing a world has of its own either: the circle, and v0's mission text
+        sha256s (its text names the world's place)."""
+        out = self.as_dict()
+        out.pop("source", None)
+        if not area:
+            out["watch"].pop("area", None)
+            for k in ("mission_sha256", "mission_sha256_before_isxg"):
+                out.get("v0", {}).pop(k, None)
+        return out
+
+    def sha256(self) -> str:
+        """The sha256 of the settings' values (canonical JSON): a record's stated
+        `settings_sha256`, a report's coverage line."""
+        return _sha(self.values())
+
+    def values_sha256(self) -> str:
+        """The sha256 of the values without what each world has of its own (`values`)."""
+        return _sha(self.values(area=False))
 
     def domain(self, name: str) -> Domain | None:
         """A domain's criteria, None for a domain the settings do not name."""
@@ -134,7 +192,61 @@ class Settings:
             out["v0"] = {"low_reserve_open_pct": self.v0.low_reserve_open_pct,
                          "reserve_now_pct": self.v0.reserve_now_pct, "mission_sha256": self.v0.mission_sha256,
                          "mission_sha256_before_isxg": self.v0.mission_sha256_before_isxg}
+        for k in ("reserve_pct", "task_duration_s", "engage_bar", "engage_level"):
+            if getattr(self, k) is not None:
+                out[k] = getattr(self, k)
         return out
+
+
+@dataclass(frozen=True)
+class Rule:
+    """A domain's criteria as the labels read them (`Settings.rule`)."""
+
+    grace_s: float
+    #: the sensor types whose support counts (the picture's `supported_by`), AIS apart
+    sensors: tuple[str, ...]
+    #: AIS counts too when the contact truly broadcasts its own
+    ais_counts: bool
+    #: "identify": the shown kind must be the true kind; "recognise": its true family will do
+    level: str
+
+
+def _sha(v: Any) -> str:
+    return hashlib.sha256(json.dumps(v, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def from_dict(d: dict[str, Any], world: str | None = None) -> Settings:
+    """`Settings.as_dict`'s inverse (a report's scored row keeps a logged run's settings so). v0's
+    are v0's for `world` (`v0`), whatever the dict says beside its source."""
+    if d.get("source") == "v0":
+        if world is None:
+            raise ValueError("v0's settings need their world")
+        return v0(world)
+    lo = d.get("loosened") or {}
+    s = watch_of(d["watch"], str(d.get("source") or "logged"), loosened=lo)
+    return _rules_part(s, d.get("reserve_pct"), d.get("task_duration_s"),
+                       {"min_identity_confidence": d.get("engage_bar"), "min_identity_level": d.get("engage_level")})
+
+
+def describe(s: Settings) -> str:
+    """One line of a report's coverage: where the settings came from and every value scoring reads."""
+    doms = "; ".join(f"{d} {c.level} by {'/'.join(c.sensors)} in {c.grace_s:g} s" for d, c in s.domains)
+    nv = ", ".join(f"{d} {v:g} m/s" for d, v in s.no_velocity_mps) or "none"
+    if s.v0 is not None:
+        src = "v0 (sim/policy-v0-watch.toml: no [watch] logged, a run before decision rules 33)"
+        reserve = (f"reserve {s.v0.reserve_now_pct:g} % of battery now, the low-reserve need opening at "
+                   f"{s.v0.low_reserve_open_pct:g} %")
+    else:
+        src = f"logged by the run ({s.source})"
+        reserve = (f"reserve {s.reserve_pct:g} % left after a {s.task_duration_s:g} s task"
+                   if s.reserve_pct is not None and s.task_duration_s is not None else "reserve not logged")
+    area = (f"{s.area.radius_m / 1000.0:g} km around {s.area.name} [{s.area.center[0]:.4f}, {s.area.center[1]:.4f}]"
+            if s.area is not None else "no circle")
+    out = (f"{src}, sha256 {s.sha256()[:12]}: {area}; bar {s.bar:g}; {doms}; horizon {s.approach_horizon_s:g} s; "
+           f"still under {s.still_mps:g} m/s, no velocity taken at {nv}; look {s.look_m:g} m; {reserve}")
+    if s.loosened:
+        out += "; loosened: " + "; ".join(f"{k} ({why})" for k, why in s.loosened)
+    return out + "."
 
 
 def _num(v: Any, what: str) -> float:
@@ -195,12 +307,25 @@ def watch_of(w: Any, source: str, area: Area | None = None, v0: V0 | None = None
     )
 
 
-def from_policy(policy: dict[str, Any]) -> Settings:
-    """A logged (merged) policy's `[watch]` and `loosened`."""
+def _rules_part(s: Settings, reserve: Any, task_s: Any, engage: Any) -> Settings:
+    """`s` with a logged run's reserve and engagement bar (None where the run logged none)."""
+    engage = engage if isinstance(engage, dict) else {}
+    bar, level = engage.get("min_identity_confidence"), engage.get("min_identity_level")
+    return replace(
+        s, reserve_pct=None if reserve is None else _num(reserve, "rules.reserve_pct"),
+        task_duration_s=None if task_s is None else _num(task_s, "rules.task_duration_s"),
+        engage_bar=None if bar is None else _num(bar, "rules.engage.min_identity_confidence"),
+        engage_level=None if level is None else str(level))
+
+
+def from_policy(policy: dict[str, Any], source: str = "logged") -> Settings:
+    """A logged (merged) policy's `[watch]`, `loosened`, reserve and engagement bar."""
     lo = policy.get("loosened") or {}
     if not isinstance(lo, dict):
         raise ValueError(f"loosened: a table of reasons by key, not {lo!r}")
-    return watch_of(policy["watch"], "logged", loosened=lo)
+    rules = policy.get("rules") or {}
+    return _rules_part(watch_of(policy["watch"], source, loosened=lo), rules.get("reserve_pct"),
+                       rules.get("task_duration_s"), rules.get("engage"))
 
 
 @lru_cache(maxsize=1)
@@ -217,6 +342,7 @@ def v0_worlds() -> tuple[str, ...]:
     return tuple(sorted(frozen()["area"]))
 
 
+@lru_cache(maxsize=None)
 def v0(world: str) -> Settings:
     """The values every run before rules 33 in `world` (a v3 world) was briefed and graded by."""
     f = frozen()
@@ -289,8 +415,40 @@ def of_record(rec: dict[str, Any], audit: Path | None = None) -> Settings:
         lo = kept.get("loosened") or {}
         if not isinstance(lo, dict):
             raise ValueError(f"settings.loosened: a table of reasons by key, not {lo!r}")
-        return watch_of(kept["watch"], "logged", loosened=lo)
+        return _rules_part(watch_of(kept["watch"], "logged", loosened=lo), kept.get("reserve_pct"),
+                           kept.get("task_duration_s"), kept.get("engage"))
     p = logged_policy(rec, audit)
     if p is not None and p.get("watch") is not None:
         return from_policy(p)
     return v0(world_of(rec))
+
+
+#: the decision rules from which a run decides under its policy's own `[watch]` (crates/murmur-decide
+#: rules.rs `SCENARIO_SETTINGS_SINCE`); under older rules it runs under what v0 holds
+WATCH_SINCE = 33
+
+
+def of_answer(answer: Any, world: str) -> Settings:
+    """The settings a running agent reads from MCP `get_policy`'s answer: its logged policy's
+    `[watch]` (rules 33 on; the answer's top-level `watch` is the same), else v0's for `world`, what
+    such a run is graded under (the answer's `watch` then holds the legacy values and the circle)."""
+    pol = answer.get("policy") if isinstance(answer, dict) else None
+    if isinstance(pol, dict) and pol.get("watch") is not None:
+        return from_policy(pol, "get_policy")
+    return v0(world)
+
+
+def for_run(policy: str | Path | None, world: str,
+            rules: int | None = None) -> tuple[Settings, dict[str, Any] | None, int]:
+    """What a run of `world` under the policy file `policy` and decision rules `rules` (the run's,
+    eval/policy_file.py `rules_in_force`, when None) decides under, before it starts: its settings,
+    its merged policy as `murmur-policy show` prints it, and the rules. Under rules below 33, v0's
+    settings and no policy (a v3 world's record of such a run is graded under v0). A policy file the
+    decision layer refuses raises eval/policy_file.py's `PolicyError`."""
+    from eval.policy_file import rules_in_force, show
+
+    r = rules_in_force() if rules is None else int(rules)
+    if r < WATCH_SINCE or policy is None:
+        return v0(world), None, r
+    shown = show(policy, r)
+    return from_policy(shown["policy"], "policy"), shown["policy"], r

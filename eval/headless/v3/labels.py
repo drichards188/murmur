@@ -3,12 +3,18 @@ under `v3`) and, for `useful` and `duplicate`, its paired `none` replicate. v2's
 imported where v3 keeps them unchanged (eval/headless/v2/labels.py: the actions from the audit log,
 their runs, fault needs, the reserve, the precedence); what changes is written here:
 
-- **Contact needs per domain** (2.1, 2.2): the world's mission circle (the record's world), the
-  domain's grace, sensor and level (mission.py `DOMAINS`). A need is **resolved at t** when the track
-  the tracker associates with the contact shows, in the picture sample at t, the contact's true kind
-  (or, where the domain's level is recognition, its true family) at a confidence of 0.6 or more,
-  without an identity conflict, and `supported_by` holds the domain's sensor (or AIS, for a surface
-  contact that truly broadcasts it).
+- **The settings** (docs/SCENARIO-SETTINGS.md, stage S6): every value below that was a constant is
+  the record's own (settings.py `of_record`: the settings its run logged, rules 33 on, else v0's for
+  its world, which hold the values every earlier run was graded by): the circle, each domain's
+  grace, sensors and level, the bar, the approach horizon, the no-velocity and still speeds, the
+  look distance and the reserve. The multiverse (`Params`) scales the record's own horizon and look
+  distance by its value over v2's default (`effective`), as it scales each domain's grace by its
+  `late_s`, so a record of v0's is labelled exactly as before.
+- **Contact needs per domain** (2.1, 2.2): the settings' circle, the domain's grace, sensor and
+  level. A need is **resolved at t** when the track the tracker associates with the contact shows,
+  in the picture sample at t, the contact's true kind (or, where the domain's level is recognition,
+  its true family) at the bar or more (v0's 0.6), without an identity conflict, and `supported_by`
+  holds the domain's sensor (or AIS, for a surface contact that truly broadcasts it).
 - **Sensing error** (2.1): every vehicle of the fleet carrying a sensor that could resolve the
   contact has its wrong-call draw set at the deciding level (the physical model's draw: per observer,
   sensor, contact and level, crates/murmur-bridge tracks/physical/mod.rs `label_at`, ported in
@@ -53,8 +59,6 @@ import math
 from dataclasses import replace
 from typing import Any
 
-from eval.world import load_world
-
 from ..labels import Truth, dist_m
 from ..v2 import labels as V2
 from ..v2.labels import Params, geometry, geometry_dist
@@ -63,7 +67,7 @@ from ..v2.record import Picture, carry
 from . import labels_ops as OPS
 from .faults import fault_needs as fault_needs_v3
 from .faults import open_faults
-from .mission import DOMAINS, RESOLVE_CONF, STILL_MPS, THREAT_MPS, rule
+from .settings import Settings, of_record
 
 #: scoring v3 (the labels' format); each instrument carries its own version (`INSTRUMENT_VERSIONS`)
 VERSION = "3"
@@ -128,6 +132,19 @@ def picture(rec: dict[str, Any]) -> Picture:
     return Picture(v3["picture"])
 
 
+def effective(p: Params, s: Settings) -> Params:
+    """The multiverse's choices on a record's own settings: its horizon and look distance scaled by
+    the multiverse's value over v2's default (a record of v0's, whose values are v2's defaults, gets
+    `p` exactly); the late share and the low-reserve line as given (faults.py scales the latter)."""
+    d = Params()
+
+    def scaled(x: float, value: float, default: float) -> float:
+        return x if value == default else x * value / default
+
+    return replace(p, justify_horizon_s=scaled(p.justify_horizon_s, s.approach_horizon_s, d.justify_horizon_s),
+                   aim_fallback_m=scaled(p.aim_fallback_m, s.look_m, d.aim_fallback_m))
+
+
 def as_v2(rec: dict[str, Any]) -> dict[str, Any]:
     """The record as v2's functions read it (their audit digest is under `v2`)."""
     return {**rec, "v2": rec.get("v3") or {}}
@@ -168,16 +185,16 @@ def can_hold(sensor: str, domain: str) -> bool:
     return False
 
 
-def sensing_errors(pic: Picture, truth: Truth) -> dict[str, dict[str, Any]]:
+def sensing_errors(pic: Picture, truth: Truth, settings: Settings) -> dict[str, dict[str, Any]]:
     """Per contact: every observer and sensor of the fleet that could resolve it under the domain's
-    rule, and whether its draw is wrong at the deciding level (identification; for a recognition
-    rule, a passive sonar's identification counts too, so either level resolves it)."""
+    rule (the settings'), and whether its draw is wrong at the deciding level (identification; for a
+    recognition rule, a passive sonar's identification counts too, so either level resolves it)."""
     s = pic.sensing
     seed, rate = s.get("seed"), float(s.get("misclassification_rate") or 0.0)
     out = {}
     for cid, m in sorted(truth.meta.items()):
         domain = str(m.get("domain") or "surface")
-        r = rule(domain)
+        r = settings.rule(domain)
         holders = []
         for v in pic.fleet:
             for si, x in enumerate(v.get("sensors") or []):
@@ -198,13 +215,13 @@ def sensing_errors(pic: Picture, truth: Truth) -> dict[str, dict[str, Any]]:
 
 # ---- 2.1, 2.2: contact needs ----------------------------------------------------------------------
 
-def shown_ok(kind_shown: str | None, meta: dict[str, Any]) -> bool:
+def shown_ok(kind_shown: str | None, meta: dict[str, Any], s: Settings) -> bool:
     """The shown kind is the contact's true kind, or its true family where the domain's level is
     recognition."""
     true = str(meta.get("kind") or "")
     if kind_shown == true:
         return True
-    return rule(meta.get("domain")).level == "recognise" and kind_shown is not None and kind_shown == FAMILY.get(true)
+    return s.rule(meta.get("domain")).level == "recognise" and kind_shown is not None and kind_shown == FAMILY.get(true)
 
 
 def ais_spoofed(meta: dict[str, Any]) -> bool:
@@ -232,61 +249,70 @@ def ais_true(meta: dict[str, Any]) -> bool:
 AIS_CONFLICT = "AIS says "
 
 
-def supported(idn: dict[str, Any], meta: dict[str, Any]) -> bool:
-    r = rule(meta.get("domain"))
+def supported(idn: dict[str, Any], meta: dict[str, Any], s: Settings) -> bool:
+    r = s.rule(meta.get("domain"))
     sb = set(idn.get("supported_by") or [])
     return bool(sb & set(r.sensors)) or (r.ais_counts and "ais" in sb and ais_true(meta))
 
 
-def resolved_at(pic: Picture, k: int | None, cid: str, meta: dict[str, Any]) -> bool:
-    """2.2 (v3): the associated track shows the true kind (or family, by the domain's level) at
-    0.6 or more, without a conflict, supported by the domain's sensor."""
+def resolved_at(pic: Picture, k: int | None, cid: str, meta: dict[str, Any], s: Settings) -> bool:
+    """2.2 (v3): the associated track shows the true kind (or family, by the domain's level) at the
+    bar or more, without a conflict, supported by the domain's sensor."""
     tid = pic.track_of(cid, k)
     if tid is None:
         return False
     idn = pic.identity(tid, k)
-    if not idn or not shown_ok(idn["kind"], meta):
+    if not idn or not shown_ok(idn["kind"], meta, s):
         return False
     # a spoofed AIS against the true identification is the spoof exposed, not a doubt (choice 30)
     if idn["conflict"] and not (ais_spoofed(meta) and str(idn["conflict"]).startswith(AIS_CONFLICT)):
         return False
-    if idn["confidence"] is None or float(idn["confidence"]) < RESOLVE_CONF:
+    if idn["confidence"] is None or float(idn["confidence"]) < s.bar:
         return False
-    return supported(idn, meta)
+    return supported(idn, meta, s)
 
 
-def contact_needs(rec: dict[str, Any], pic: Picture, truth: Truth, p: Params) -> list[dict[str, Any]]:
+def circle(s: Settings) -> tuple[tuple[float, float], float]:
+    """The settings' circle: its centre ([lon, lat]) and radius."""
+    if s.area is None:
+        raise ValueError("these settings name no circle ([watch.area])")
+    return s.area.center, s.area.radius_m
+
+
+def contact_needs(rec: dict[str, Any], pic: Picture, truth: Truth, p: Params,
+                  s: Settings | None = None) -> list[dict[str, Any]]:
+    s = s if s is not None else of_record(rec)
     end = _end_s(rec)
-    m_ = load_world(world_of(rec)).mission
-    errs = sensing_errors(pic, truth)
+    center, radius = circle(s)
+    errs = sensing_errors(pic, truth, s)
     out = []
     for cid, m in sorted(truth.meta.items()):
         aff = str(m.get("affiliation") or "").lower()
         if aff not in NEED_AFFILIATIONS:
             continue
-        t_need = truth.first_within(cid, m_.center, m_.radius_m)
+        t_need = truth.first_within(cid, center, radius)
         if t_need is None:
             continue
         domain = str(m.get("domain") or "surface")
-        grace = rule(domain).grace_s
+        grace = s.rule(domain).grace_s
         D = t_need + grace
         evaluable = D <= end - END_MARGIN_S
         se = errs[cid]
         k_need = pic.index(t_need)
-        pre = resolved_at(pic, k_need, cid, m)
+        pre = resolved_at(pic, k_need, cid, m, s)
         t_served = t_need if pre else None
         t_identified = None
         if pre:
             assert k_need is not None
             k = k_need
-            while k > 0 and resolved_at(pic, k - 1, cid, m):
+            while k > 0 and resolved_at(pic, k - 1, cid, m, s):
                 k -= 1
             t_identified = pic.time(k)
         else:
             k0 = pic.index_after(t_need)
             if k0 is not None:
                 for k in range(k0, len(pic.times)):
-                    if resolved_at(pic, k, cid, m):
+                    if resolved_at(pic, k, cid, m, s):
                         t_served = t_identified = pic.time(k)
                         break
         served = t_served is not None and t_served <= D + 1e-9
@@ -308,10 +334,10 @@ def contact_needs(rec: dict[str, Any], pic: Picture, truth: Truth, p: Params) ->
 
 # ---- 2.3, 2.5: aim, contribution, the moving actions' labels ---------------------------------------
 
-def need_sensors(n: dict[str, Any]) -> tuple[str, ...]:
+def need_sensors(n: dict[str, Any], s: Settings) -> tuple[str, ...]:
     """The sensors whose hits count as a contribution to a need: its domain's (AIS too for a surface
     contact that truly broadcasts it)."""
-    r = rule(n.get("domain"))
+    r = s.rule(n.get("domain"))
     return tuple(r.sensors) + (("ais",) if r.ais_counts and n.get("ais") else ())
 
 
@@ -384,13 +410,13 @@ def aim_of(a: dict[str, Any], pic: Picture, truth: Truth, needs: dict[str, dict[
     return out
 
 
-def contributed(a: dict[str, Any], pic: Picture, needs: dict[str, dict[str, Any]]) -> list[str]:
+def contributed(a: dict[str, Any], pic: Picture, needs: dict[str, dict[str, Any]], s: Settings) -> list[str]:
     """2.3 (v3): v2's, with each need's own domain sensors."""
     out = []
     for c, n in needs.items():
         if not n["served"] or n.get(V2.CONTRIBUTION_UNTIL) is None:
             continue
-        sensors = need_sensors(n)
+        sensors = need_sensors(n, s)
         for uid, run in a["runs"].items():
             if not run.get("flew"):
                 continue
@@ -402,29 +428,32 @@ def contributed(a: dict[str, Any], pic: Picture, needs: dict[str, dict[str, Any]
     return sorted(out, key=lambda c: (needs[c]["t_need"], c))
 
 
-def in_doubt(tr: dict[str, Any]) -> bool:
+def in_doubt(tr: dict[str, Any], s: Settings) -> bool:
     """A track the picture shows in doubt (2.5): shown unknown, suspect or hostile, in identity
-    conflict, or under 0.6 identity confidence (or with none)."""
+    conflict, or under the bar's identity confidence (or with none)."""
     idn = tr.get("identity") or {}
     return (tr.get("affiliation") in NEED_AFFILIATIONS or bool(idn.get("conflict"))
-            or idn.get("confidence") is None or float(idn["confidence"]) < RESOLVE_CONF)
+            or idn.get("confidence") is None or float(idn["confidence"]) < s.bar)
 
 
 def approaches(kin: dict[str, Any] | None, domain: str | None, t_a: float, p: Params, center: tuple[float, float],
-               radius_m: float) -> tuple[bool, str | None]:
-    """Whether a track's shown motion brings it within the circle within the horizon, and how that
-    was judged: v2's rule (its shown position carried along its shown velocity from its last fix to
-    `t_a`, then for up to the horizon in 5 s steps; a track with no velocity at its position only),
-    except that an aircraft shown with no velocity (none, or under `STILL_MPS`: the tracker feeds one
-    without as 0.0 m/s) is taken to come straight in at its domain's threat speed (`THREAT_MPS`, the
-    honest ceiling's rule, planner.py `HonestCeiling.motion`): it approaches when that run from its
-    shown position reaches the circle within the horizon (choice 40)."""
+               radius_m: float, s: Settings) -> tuple[bool, str | None]:
+    """Whether a track's shown motion brings it within the circle within the horizon (`p`'s, the
+    record's own scaled by the multiverse: `effective`), and how that was judged: v2's rule (its
+    shown position carried along its shown velocity from its last fix to `t_a`, then for up to the
+    horizon in 5 s steps; a track with no velocity at its position only), except that a contact of a
+    domain the settings give a no-velocity speed (`no_velocity_mps`: v0's air at 25 m/s) shown with
+    no velocity (none, or under the settings' `still_mps`: the tracker feeds one without as 0.0 m/s)
+    is taken to come straight in at that speed (the honest ceiling's rule, planner.py
+    `HonestCeiling.motion`): it approaches when that run from its shown position reaches the circle
+    within the horizon (choice 40)."""
     if not kin or kin["position"][0] is None:
         return False, None
     v = kin["velocity"]
     p0 = carry(kin["position"], v, t_a - float(kin["last_seen_s"] or t_a))
-    if domain in THREAT_MPS and (v is None or math.hypot(*v) < STILL_MPS):
-        return dist_m(p0, center) - radius_m <= THREAT_MPS[str(domain)] * p.justify_horizon_s + 1e-9, "threat_speed"
+    speed = s.no_velocity(str(domain)) if domain is not None else None
+    if speed is not None and (v is None or math.hypot(*v) < s.still_mps):
+        return dist_m(p0, center) - radius_m <= speed * p.justify_horizon_s + 1e-9, "threat_speed"
     steps = int(p.justify_horizon_s // V2.JUSTIFY_STEP_S) if v else 0
     for j in range(steps + 1):
         if dist_m(carry(p0, v, j * V2.JUSTIFY_STEP_S), center) <= radius_m:
@@ -433,7 +462,7 @@ def approaches(kin: dict[str, Any] | None, domain: str | None, t_a: float, p: Pa
 
 
 def supported_on_picture(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth, p: Params,
-                         center: tuple[float, float], radius_m: float) -> dict[str, Any]:
+                         center: tuple[float, float], radius_m: float, s: Settings) -> dict[str, Any]:
     """Whether the picture at the order's creation supported it (2.5 item 6; v2's justification on
     the picture, about the world's own centre): the track nearest the aim (an identify's, the track it
     names, when the picture showed it then: choice 37) shown in doubt (`in_doubt`) and inside the
@@ -465,15 +494,15 @@ def supported_on_picture(a: dict[str, Any], aim: dict[str, Any], pic: Picture, t
             return out
         tid = min(tracks, key=lambda x: geometry_dist(pic.predicted(x, t_a) or (0.0, 0.0), g))
     tr = pic.track(tid, k) or {}
-    doubt = in_doubt(tr)
-    near, how = approaches(pic.kinematics(tid, k), tr.get("domain"), t_a, p, center, radius_m)
+    doubt = in_doubt(tr, s)
+    near, how = approaches(pic.kinematics(tid, k), tr.get("domain"), t_a, p, center, radius_m, s)
     out.update(supported=doubt and near, track=tid, shown={"affiliation": tr.get("affiliation"),
                                                            "identity": tr.get("identity") or {}},
                doubt=doubt, approaches=near, approach=how)
     return out
 
 
-def cleared_doubt(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth) -> dict[str, Any]:
+def cleared_doubt(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth, s: Settings) -> dict[str, Any]:
     """Whether the order did something useful (2.5 item 6, choice 40): it cleared a doubt the picture
     had, as the brief asks, whether or not its contact was a need. For a contact it was aimed at (an
     identify's or a `track` order's, the contact its track names; by hits, each contact whose hits
@@ -501,13 +530,13 @@ def cleared_doubt(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: T
     for c in cands:
         m = truth.meta.get(c)
         tid = pic.track_of(c, k_a)
-        if m is None or tid is None or not in_doubt(pic.track(tid, k_a) or {}) or resolved_at(pic, k_a, c, m):
+        if m is None or tid is None or not in_doubt(pic.track(tid, k_a) or {}, s) or resolved_at(pic, k_a, c, m, s):
             continue
-        k_res = next((k for k in range(k_a + 1, (k_end or k_a) + 1) if resolved_at(pic, k, c, m)), None)
+        k_res = next((k for k in range(k_a + 1, (k_end or k_a) + 1) if resolved_at(pic, k, c, m, s)), None)
         if k_res is None:
             continue
         t_res = pic.time(k_res)
-        r = rule(m.get("domain"))
+        r = s.rule(m.get("domain"))
         sensors = tuple(r.sensors) + (("ais",) if r.ais_counts and ais_true(m) else ())
         for uid, run in runs:
             if run["own_start"] <= t_res <= run["end"] and pic.contact_hits_rose(c, uid, sensors, run["own_start"], t_res):
@@ -526,10 +555,11 @@ def pointed_at(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Trut
 
 
 def harmful(a: dict[str, Any], aim: dict[str, Any], pic: Picture, needs: dict[str, dict[str, Any]], truth: Truth,
-            p: Params) -> list[dict[str, Any]]:
+            p: Params, s: Settings) -> list[dict[str, Any]]:
     """v2's harm (a) and (b), with each need's own domain sensors for (b), and (a) for an identify
-    too, at its track's shown position (choice 39); (c), an engagement of a neutral or friend, is the
-    nominations' (`nomination_labels`)."""
+    too, at its track's shown position (choice 39), a vehicle under the settings' reserve
+    (`reserve_now`: v0's 20 % now, a logged run's `reserve_pct`); (c), an engagement of a neutral or
+    friend, is the nominations' (`nomination_labels`)."""
     out = []
     if not a["runs"]:
         return out
@@ -538,14 +568,14 @@ def harmful(a: dict[str, Any], aim: dict[str, Any], pic: Picture, needs: dict[st
     for uid, run in a["runs"].items():
         t_d = run["start"]
         v = pic.vehicle(uid, pic.index(t_d))
-        if a["kind"] in SENDING_KINDS and v and v.get("battery_pct") is not None and v["battery_pct"] < V2.RESERVE_PCT \
+        if a["kind"] in SENDING_KINDS and v and v.get("battery_pct") is not None and v["battery_pct"] < s.reserve_now() \
                 and g is not None and v.get("home") and v["home"][0] is not None \
                 and V2.geometry_dist_home((v["home"][0], v["home"][1]), g) > V2.HOME_M:
             out.append({"kind": "a", "uid": uid, "battery_pct": v["battery_pct"]})
         for c, n in needs.items():
             if not n["eligible"] or n["served"] or not (n["t_need"] <= t_d <= n["deadline"]):
                 continue
-            if pic.contact_hits_rose(c, uid, need_sensors(n), t_d - V2.RISE_WINDOW_S, t_d):
+            if pic.contact_hits_rose(c, uid, need_sensors(n, s), t_d - V2.RISE_WINDOW_S, t_d):
                 if spared is None:
                     spared = pointed_at(a, aim, pic, truth, p)
                 if c not in spared:
@@ -562,13 +592,13 @@ SPACE_KINDS = ("collect", "cover")
 
 def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: list[dict[str, Any]],
                   fneeds: list[dict[str, Any]], none_served: dict[str, bool] | None, p: Params,
-                  none_cover: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+                  none_cover: dict[str, Any] | None = None, s: Settings | None = None) -> list[dict[str, Any]]:
     """Every action of the agent under test: the moving kinds by v2's precedence and rules (v3's
     domain sensors, centre and `track` aim, and an identify's own aim and run), nominations by
     `nomination_label`, collect and cover by 2.10 (labels_ops.py `space_label`; `none_cover`: the
-    paired `none` replicate's coverage of the stated gap needs)."""
-    w = load_world(world_of(rec))
-    center, radius = w.mission.center, w.mission.radius_m
+    paired `none` replicate's coverage of the stated gap needs). `p` as `effective` gives it."""
+    s = s if s is not None else of_record(rec)
+    center, radius = circle(s)
     needs = {n["contact"]: n for n in needs_list}
     acts = V2.agent_actions(as_v2(rec), pic, continuing=CONTINUING_KINDS)
     for a in acts:
@@ -625,10 +655,10 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
         aim = aim_of(a, pic, truth, needs, p)
         lab["aim"] = aim
         lab["aimed_need"] = V2.aimed_need(aim, needs)
-        lab["contributed"] = contributed(a, pic, needs) if a["runs"] else []
-        lab["supported"] = supported_on_picture(a, aim, pic, truth, p, center, radius)
+        lab["contributed"] = contributed(a, pic, needs, s) if a["runs"] else []
+        lab["supported"] = supported_on_picture(a, aim, pic, truth, p, center, radius, s)
         lab["faults_open"] = open_faults(a, pic, rec, fneeds)
-        harm = harmful(a, aim, pic, needs, truth, p)
+        harm = harmful(a, aim, pic, needs, truth, p, s)
         lab["harm"] = harm
         lab["also_fault"] = bool(lab["faults_open"])
         if harm:
@@ -661,7 +691,7 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
                 c = lab["aimed_need"]
                 n = needs.get(c) if c else None
                 was_served = bool(n and ((n["t_served"] is not None and n["t_served"] <= (a["created"] or 0.0))
-                                         or resolved_at(pic, pic.index(a["created"]), c, truth.meta.get(c) or {})))
+                                         or resolved_at(pic, pic.index(a["created"]), c, truth.meta.get(c) or {}, s)))
                 was_credited = bool(c and c in credited and credited[c][1] is not None
                                     and credited[c][1] <= (a["created"] or 0.0))
                 if was_served or was_credited:
@@ -672,7 +702,7 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
                     # cleared a doubt the picture had, or (a hold or an rtl of F14's stated run's
                     # vehicle ahead of its predicted outage) the stated tasking supported it (choice
                     # 41); not justified when none
-                    lab["cleared"] = cleared_doubt(a, aim, pic, truth)
+                    lab["cleared"] = cleared_doubt(a, aim, pic, truth, s)
                     lab["tasked"] = OPS.tasked_hold(a, rec)
                     by = [w for w, ok in (("picture", lab["supported"]["supported"]),
                                           ("cleared", lab["cleared"]["cleared"]),
@@ -729,12 +759,15 @@ def none_served_of(none_labels: dict[str, Any] | None) -> dict[str, bool] | None
 
 def episode_labels(rec: dict[str, Any], none: dict[str, Any] | None = None, params: Params | None = None,
                    none_labels: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Every label of a v3 episode; `none` (or `none_labels`) its paired `none` replicate's."""
-    p = params or Params()
+    """Every label of a v3 episode; `none` (or `none_labels`) its paired `none` replicate's. Every
+    value is the record's own settings' (`of_record`), the multiverse's `params` scaling them
+    (`effective`)."""
+    s = of_record(rec)
+    p = effective(params or Params(), s)
     pic = picture(rec)
     truth = mark_spoofed(rec, Truth(rec))
-    needs = contact_needs(rec, pic, truth, p)
-    fneeds = fault_needs_v3(rec, pic, p)
+    needs = contact_needs(rec, pic, truth, p, s)
+    fneeds = fault_needs_v3(rec, pic, p, s)
     if none_labels is None and none is not None:
         none_labels = episode_labels(none, params=p) if none is not rec else None
     ns = none_served_of(none_labels)
@@ -744,7 +777,7 @@ def episode_labels(rec: dict[str, Any], none: dict[str, Any] | None = None, para
     # F14's gap needs: when ours covered each area, this episode's and its `none` replicate's
     gap_cover = OPS.gap_covered(rec, pic) if OPS.stated(rec).get("gap_needs") else None
     none_cover = gap_cover if is_none else (none_labels or {}).get("gap_cover")
-    actions = label_actions(rec, pic, truth, needs, fneeds, ns, p, none_cover=none_cover)
+    actions = label_actions(rec, pic, truth, needs, fneeds, ns, p, none_cover=none_cover, s=s)
     review = review_labels(rec, pic, truth)
     out = {
         "version": VERSION, "world": world_of(rec), "params": p.as_dict(), "needs": needs, "fault_needs": fneeds,
@@ -766,5 +799,5 @@ def with_params(p: Params, **kw: Any) -> Params:
     return replace(p, **kw)
 
 
-__all__ = ["VERSION", "DOMAINS", "episode_labels", "contact_needs", "label_actions", "nomination_label",
+__all__ = ["VERSION", "episode_labels", "contact_needs", "label_actions", "nomination_label",
            "review_labels", "resolved_at", "sensing_errors", "wrong_call", "picture", "Params"]

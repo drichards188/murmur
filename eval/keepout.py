@@ -167,7 +167,7 @@ CENTRE_BOX = ((-122.520, -122.497), (37.806, 37.819))
 T0_MS = 1_781_000_000_000
 M_PER_DEG = 111_320.0
 #: how far into the future and past the motions are laid out (s)
-HORIZON_S = 900.0
+SIM_HORIZON_S = 900.0
 
 #: the rules versions the out-of-view variants compare: one before lost contacts (a dropped
 #: track no longer counts) and the lost contacts' (`LOST_CONTACT_SINCE`). 14, not 15 (the
@@ -504,15 +504,15 @@ def motion(behaviour: str, p: tuple[float, float], rng: random.Random) -> tuple[
             # zigzag about a course
             base, half = _course(rng), math.radians(rng.uniform(30.0, 60.0))
             speed, leg = rng.uniform(3.0, 10.0), rng.uniform(30.0, 90.0)
-            t, k = -HORIZON_S - rng.uniform(0.0, 2.0 * leg), 0
-            while t < HORIZON_S:
+            t, k = -SIM_HORIZON_S - rng.uniform(0.0, 2.0 * leg), 0
+            while t < SIM_HORIZON_S:
                 legs.append((t, *_vec(speed, base + (half if k % 2 == 0 else -half))))
                 t, k = t + leg, k + 1
         else:
             # sprints and stops, turning up to 90 degrees each sprint
             course = _course(rng)
-            t = -HORIZON_S - rng.uniform(0.0, 150.0)
-            while t < HORIZON_S:
+            t = -SIM_HORIZON_S - rng.uniform(0.0, 150.0)
+            while t < SIM_HORIZON_S:
                 speed = rng.uniform(5.0, 12.0)
                 legs.append((t, *_vec(speed, course)))
                 t += rng.uniform(30.0, 90.0)

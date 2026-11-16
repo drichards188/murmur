@@ -56,12 +56,10 @@ point_bonita = [-122.5300, 37.8150]        # the approaches, north side
 mile_rock = [-122.5100, 37.7930]           # the approaches, south side
 far_orbit = [-122.8000, 37.7000]           # HAWK 1's orbit, offshore
 
-# The labels' rule, as the v1 world's: unknown, suspect or hostile within 3 km of the bridge
-# needs a look within 60 s.
-[mission]
-center = "bridge"
-radius_m = 3000.0
-grace_s = 60.0
+# No [mission] (docs/SCENARIO-SETTINGS.md, stage S6): the circle a contact must be identified in is
+# a scenario's policy's [watch.area] (sim/situations/policies/golden-gate-scale-watch.toml), and
+# every run before decision rules 33 was graded by the frozen v0 circle (sim/policy-v0-watch.toml,
+# [area.golden-gate-scale]: 3 km around "bridge").
 
 # The Golden Gate world's ranges (sim/worlds/golden-gate.toml says where each comes from).
 [conditions]

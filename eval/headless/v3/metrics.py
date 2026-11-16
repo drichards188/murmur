@@ -1,7 +1,8 @@
 """Scoring v3's metrics (eval/SCORING-V3.md section 3): v2's, per episode, from v3's labels
 (eval/headless/v2/metrics.py `episode_metrics`, imported unchanged), with what changes in v3:
 
-- time to serve and its RMST per domain, each censored at its own grace (v2's at 60 s);
+- time to serve and its RMST per domain, each censored at its own grace (v2's at 60 s): the
+  domains and graces of the record's own settings (settings.py `of_record`);
 - **need served per domain** (3.1b): served over eligible needs of each domain, beside the pooled
   share;
 - nominations and review decisions per situation-hour by their labels (3.11, 3.12);
@@ -28,7 +29,7 @@ from typing import Any
 from ..v2 import metrics as V2M
 from ..v2 import stats as S
 from .labels import NO_NEED_LABELS, NOMINATION_LABELS
-from .mission import DOMAINS
+from .settings import DOMAINS, of_record
 
 HOUR_S = 3600.0
 #: v2's figures of its `useless` label, which v3's labels never give (replaced below)
@@ -73,16 +74,18 @@ def episode_metrics(rec: dict[str, Any], labels: dict[str, Any]) -> dict[str, An
     tts = [n["time_to_serve"] if n["served"] else n["grace_s"] for n in eligible]
     out["time_to_serve"] = tts
     by: dict[str, dict[str, Any]] = {}
+    st = of_record(rec)
     for dom in DOMAINS:
         ns = [n for n in eligible if n["domain"] == dom]
         if not ns:
             continue
+        grace = st.rule(dom).grace_s
         t = [n["time_to_serve"] if n["served"] else n["grace_s"] for n in ns]
-        km = S.rmst(t, [bool(n["served"]) for n in ns], tau=DOMAINS[dom].grace_s)
+        km = S.rmst(t, [bool(n["served"]) for n in ns], tau=grace)
         by[dom] = {"eligible": len(ns), "served": sum(1 for n in ns if n["served"]),
                    "served_share": round(sum(1 for n in ns if n["served"]) / len(ns), 6),
                    "pre_served": sum(1 for n in ns if n["pre_served"]), "rmst": km["rmst"],
-                   "time_to_serve_served": [n["time_to_serve"] for n in ns if n["served"]], "grace_s": DOMAINS[dom].grace_s}
+                   "time_to_serve_served": [n["time_to_serve"] for n in ns if n["served"]], "grace_s": grace}
     out["by_domain"] = by
     out["rmst"] = None if len(by) != 1 else next(iter(by.values()))["rmst"]
     noms: dict[str, int] = defaultdict(int)

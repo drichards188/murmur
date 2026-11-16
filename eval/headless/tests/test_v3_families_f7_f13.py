@@ -23,12 +23,20 @@ from eval.headless.situations import Calibration, at_unix, run_id
 from eval.headless.v3 import families as F
 from eval.headless.v3 import families_f7_f13 as X
 from eval.headless.v3.labels import episode_labels
-from eval.headless.v3.mission import DOMAINS, mission_text
+from eval.headless.v3.mission import mission_text
+from eval.headless.v3.settings import DOMAINS, v0
 from eval.world import load_world
 
 SEEDS = range(5300, 5316)
 NAMES = [n for n in F.all_names() if F.parse(n)[0] in X.GENERATORS]
-GRACE = {k: v.grace_s for k, v in DOMAINS.items()}
+GRACE = {k: v0("golden-gate-v3").rule(k).grace_s for k in DOMAINS}
+
+
+def circle(world: str) -> tuple[tuple[float, float], float]:
+    """A v3 world's v0 circle (sim/policy-v0-watch.toml): its centre and radius."""
+    a = v0(world).area
+    assert a is not None
+    return a.center, a.radius_m
 
 
 def contacts(path: Path) -> dict[str, dict[str, Any]]:
@@ -78,7 +86,7 @@ def test_every_family_draws_its_elements_in_their_media_and_its_needs_in_time(na
         for n in needs:
             c = cs[n["contact"]]
             assert c["affiliation"] in ("unknown", "suspect")
-            k = F.first_within([tuple(p) for p in c["route"]], w.mission.center, w.mission.radius_m)
+            k = F.first_within([tuple(p) for p in c["route"]], *circle(w.name))
             assert k is not None, "every need comes within the circle"
             entry = float(c["start_s"]) + F.time_to(k, float(c["speed_mps"]))
             assert entry == pytest.approx(n["entry_s"], abs=0.2)
@@ -128,8 +136,8 @@ def test_f9_draws_night_twilight_and_fog_and_records_them(world: str, tmp_path: 
         if light == "day":
             assert c["visibility_by_family"] and c["visibility_km"] <= X.F9_FOG_KM_TOP
         if light == "twilight":
-            el = X.sun_elevation_deg(at_unix(e.at) + e.truth["elements"][0]["entry_s"], w.mission.center[1],
-                                     w.mission.center[0])
+            el = X.sun_elevation_deg(at_unix(e.at) + e.truth["elements"][0]["entry_s"], circle(w.name)[0][1],
+                                     circle(w.name)[0][0])
             assert X.F9_TWILIGHT_SUN_DEG[0] - 0.5 <= el <= X.F9_TWILIGHT_SUN_DEG[1] + 0.5
         if light == "night":
             h = int(c["local_time"][:2])
@@ -138,7 +146,7 @@ def test_f9_draws_night_twilight_and_fog_and_records_them(world: str, tmp_path: 
 
 
 def test_the_sun_is_up_at_noon_and_down_at_midnight_in_june():
-    lon, lat = load_world("golden-gate-v3").mission.center
+    lon, lat = circle("golden-gate-v3")[0]
     assert X.sun_elevation_deg(at_unix("2026-06-14T20:00:00Z"), lat, lon) > 60.0  # 13:00 PDT
     assert X.sun_elevation_deg(at_unix("2026-06-14T08:00:00Z"), lat, lon) < -15.0  # 01:00 PDT
 
@@ -174,7 +182,7 @@ def test_f11_and_f12_script_their_trouble_over_the_need(world: str, tmp_path: Pa
         if g["kind"] == "jam":
             c = g["circle"]
             centre = (c["lon"], c["lat"])
-            assert F.dist_m(centre, load_world(e.map).mission.center) <= 3000.0 + 1.0
+            assert F.dist_m(centre, circle(e.map)[0]) <= 3000.0 + 1.0
         else:
             assert st[0]["params"]["vehicles"] == {"callsign": g["callsign"]}
 

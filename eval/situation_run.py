@@ -42,6 +42,7 @@ import argparse
 import asyncio
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -98,6 +99,7 @@ from .situation import (
     pointer_problems,
     port_problems,
     resolve_modes,
+    situation_card,
     situation_env,
     stack_ports,
     status_doc,
@@ -595,8 +597,12 @@ class Runner:
         env: dict[str, str],
         preflight: dict[str, Any],
         out_dir: Path | None = None,
+        card: dict[str, Any] | None = None,
     ):
         self.sit = sit
+        # the decision rules and, from rules 33, the ROE card's and the settings' sha256
+        # (`policy_guard`); None when the runner was built without the guard (tests)
+        self.card = card
         self.modes = modes
         self.env = situation_env(env, sit)
         self.preflight = preflight
@@ -1082,7 +1088,7 @@ class Runner:
         # its own empty directory: the brief, and the notes it writes; nothing else
         self.ai_dir = ai_workdir(self.run_id, [REPO, self.out])
         brief = self.ai_dir / "brief.md"
-        brief.write_text(brief_text(self.sit))
+        brief.write_text(brief_text(self.sit, (self.card or {}).get("rules")))
         # the playbook engine's config (the situation's [playbook] table, nothing else of the
         # file): for AI=playbook, and for the shadow beside a model
         playbook = self.ai_dir / "playbook.json"
@@ -1285,6 +1291,8 @@ class Runner:
             rules_asked=(self.env.get("MURMUR_RULES") or "").strip() or None,
             fleet=[{"uid": v["uid"], "callsign": v["callsign"], "platform": v["platform"]} for v in vehicles],
             evidence_note=self.modes.get("evidence_note"),
+            # from rules 33: the ROE card the AI's brief carries and the settings it states
+            **{k: v for k, v in (self.card or {}).items() if k in ("card_sha256", "settings_sha256")},
         )
         removed = self.fresh_station()
         say("fresh station: " + ("removed " + "; ".join(removed) if removed else "no restore or resume pointer for this port") + "; MURMUR_RESUME=0")
@@ -1527,6 +1535,30 @@ def preflight(sit: Situation, modes: dict[str, Any], env: dict[str, str]) -> dic
     return pf
 
 
+def policy_guard(sit: Situation, env: dict[str, str]) -> dict[str, Any]:
+    """The situation's policy file as the run's bridge will read it, before the stack starts
+    (docs/SCENARIO-SETTINGS.md, stage S6): `murmur-policy show` under the run's decision rules
+    (`MURMUR_RULES` of its environment, else the build's default), so a file the decision layer
+    refuses (the floor, a copy, an unknown key, a setting older rules do not read) stops the
+    situation as a contacts file the guard refuses does (`SituationError`). From rules 33 also the
+    ROE card the AI's brief carries (`situation_card`) and its and the settings' sha256, which
+    situation.jsonl's `start` records; none under older rules."""
+    from eval.policy_file import PolicyError, default_rules, show
+
+    asked = (env.get("MURMUR_RULES") or "").strip()
+    rules = int(asked) if asked else default_rules()
+    policy = sit.policy or REPO / "sim" / "policy.toml"
+    try:
+        show(policy, rules)
+        card, st, rules = situation_card(sit, rules)
+    except PolicyError as e:
+        raise SituationError(f"{sit.name}: its policy {rel(policy)} is refused under rules {rules}: {e}") from None
+    out: dict[str, Any] = {"rules": rules}
+    if card is not None and st is not None:
+        out.update(card_sha256=hashlib.sha256(card.encode()).hexdigest(), settings_sha256=st.sha256())
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m eval.situation_run", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("name", help="a situation in sim/situations (name or path)")
@@ -1542,11 +1574,12 @@ def main(argv: list[str] | None = None) -> int:
             raise SituationError(f"{sit.name} is a stub (todo = true): only its title and brief are written yet")
         modes = resolve_modes(sit, args.operator, args.ai, args.cosigner, None if args.reveal is None else args.reveal == "1")
         env = situation_env(dict(os.environ), sit)
+        card = policy_guard(sit, env)
         pf = preflight(sit, modes, env)
     except SituationError as e:
         print(f"situation: {e}", file=sys.stderr)
         return 2
-    runner = Runner(sit, modes, env, pf)
+    runner = Runner(sit, modes, env, pf, card=card)
     p = runner.ports
     cosigner = modes["cosigner"] + (f" ({', '.join(SCRIPTED_SIGNERS)})" if modes["cosigner"] in LIVE_SIGNERS_MODE and modes["operator"] == "live" else "")
     say(f"{sit.title}: operator {modes['operator']}, AI {modes['ai_label']}, cosigner {cosigner}, reveal {'on' if modes['reveal'] else 'off'}; run {runner.run_id}")

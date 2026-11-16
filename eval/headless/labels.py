@@ -96,8 +96,18 @@ class Truth:
 
 def mission_of(rec: dict[str, Any]) -> Mission:
     """The mission geometry of a record's world (`world.name`; a record without one is the
-    Golden Gate's, as every record before world v3)."""
-    return load_world((rec.get("world") or {}).get("name") or DEFAULT_WORLD).mission
+    Golden Gate's, as every record before world v3). A v3 world has no `[mission]` since stage S6
+    (docs/SCENARIO-SETTINGS.md): its circle is the frozen v0 one (sim/policy-v0-watch.toml, the
+    same point and 3 km its `[mission]` held), with v1's own grace (`LOOK_GRACE_S`, which every v3
+    world's `[mission]` repeated)."""
+    w = load_world((rec.get("world") or {}).get("name") or DEFAULT_WORLD)
+    if w.mission is not None:
+        return w.mission
+    from .v3.settings import v0
+
+    area = v0(w.name).area
+    assert area is not None
+    return Mission(center=area.center, center_name=None, radius_m=area.radius_m, grace_s=LOOK_GRACE_S)
 
 
 def contact_labels(rec: dict[str, Any], truth: Truth | None = None) -> dict[str, dict[str, Any]]:

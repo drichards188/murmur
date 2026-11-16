@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +19,11 @@ from eval.headless.v3 import perturb as PT
 from eval.headless.v3 import planner as P
 from eval.headless.v3 import room as R
 from eval.headless.v3 import ruler as RU
+from eval.headless.v3.settings import Area, v0
+
+#: the settings the stubs plan under (a run before rules 33: v0's), and their bar
+ST = v0("golden-gate-v3")
+BAR = ST.bar
 
 
 # ---- the look model ----------------------------------------------------------------------------------
@@ -32,7 +38,7 @@ def acquire(r60: float) -> np.ndarray:
 def quality(r60: float, cue_m: float, gimballed: bool = True, search_m: float | None = None) -> P.Quality:
     """An EO/IR table: identification 0.6 at `r60`; the wide field's detection 0.6 at `search_m`
     (by default where it identifies)."""
-    return P.Quality("eo_ir", acquire(r60), cue_m, gimballed, search=acquire(search_m or r60))
+    return P.Quality("eo_ir", acquire(r60), cue_m, gimballed, bar=BAR, search=acquire(search_m or r60))
 
 
 def test_a_quality_table_reads_its_reach_and_interpolates():
@@ -57,14 +63,14 @@ def test_a_camera_that_locks_far_from_its_0_6_range_tends_to_identify_early_and_
     far = P.eo_look(1, quality(2000.0, 8000.0, search_m=6000.0), ts, r, dc, 1e9, ex, 2.0)
     assert near.high > 0.6 and near.low < 0.1, near.as_dict()
     assert far.low > near.low and far.high < near.high, far.as_dict()
-    assert 0.0 < far.low_c < P.P60
+    assert 0.0 < far.low_c < BAR
 
 
 def test_a_cue_that_finds_nothing_keeps_the_camera_off_for_a_minute():
     ts = np.arange(0.0, 200.0, 2.0)
     r = np.full(len(ts), 1000.0)
     ex = np.ones(len(ts), dtype=bool)
-    q = P.Quality("eo_ir", np.full(len(P.DISTANCES), 0.9), 4000.0, True, search=np.full(len(P.DISTANCES), 0.3))
+    q = P.Quality("eo_ir", np.full(len(P.DISTANCES), 0.9), 4000.0, True, bar=BAR, search=np.full(len(P.DISTANCES), 0.3))
     lk = P.eo_look(1, q, ts, r, np.zeros(len(ts)), 1e9, ex, 2.0)
     # three 8 s cues in 200 s at 0.3^2 / 3.4 a second: about half the chance a steady stare gives
     stare = 1.0 - math.exp(-200.0 * 0.09 / 3.4)
@@ -77,7 +83,7 @@ def test_a_camera_that_looks_all_round_keeps_its_surest_look():
     assert lk.high > 0.7 and lk.low == 0.0
     ts, r, dc, ex = closing(5000.0, 2500.0, 10.0)
     lk = P.eo_look(1, quality(1500.0, 8000.0, gimballed=False), ts, r, dc, 1e9, ex, 2.0)
-    assert lk.high == 0.0 and 0.0 < lk.low_c < P.P60
+    assert lk.high == 0.0 and 0.0 < lk.low_c < BAR
 
 
 def test_a_camera_cues_only_inside_its_task_area():
@@ -89,7 +95,7 @@ def test_a_camera_cues_only_inside_its_task_area():
 def sonar(active_m: float, passive_m: float = 0.0) -> P.Quality:
     act = (P.DISTANCES <= active_m).astype(float)
     pas = (P.DISTANCES <= passive_m).astype(float)
-    return P.Quality("sonar", np.maximum(act, pas), active_m, False, active=act, passive=pas)
+    return P.Quality("sonar", np.maximum(act, pas), active_m, False, bar=BAR, active=act, passive=pas)
 
 
 def test_sonar_looks_need_their_minute_of_signal_and_two_actives_combine():
@@ -99,8 +105,8 @@ def test_sonar_looks_need_their_minute_of_signal_and_two_actives_combine():
     assert short.conf == 0.0, "under 60 s of signal: no recognition"
     one = P.sonar_look(1, sonar(300.0), r, ex, 2.0)
     assert 0.3 < one.conf < 0.6
-    assert P.p_resolved([one]) < 0.5
-    assert P.p_resolved([one, P.sonar_look(2, sonar(300.0), r, ex, 2.0)]) > 0.5
+    assert P.p_resolved([one], BAR) < 0.5
+    assert P.p_resolved([one, P.sonar_look(2, sonar(300.0), r, ex, 2.0)], BAR) > 0.5
     listening = P.sonar_look(3, sonar(300.0, passive_m=300.0), np.full(120, 50.0), np.ones(120, dtype=bool), 2.0)
     assert listening.conf > one.conf, "a sonar that also listens reaches the passive mode's 0.8"
 
@@ -108,11 +114,11 @@ def test_sonar_looks_need_their_minute_of_signal_and_two_actives_combine():
 def test_two_lower_identifications_combine_to_0_6():
     hi = P.Look(1, "eo", high=0.8)
     lo = P.Look(2, "eo", low=0.9, low_c=0.45)
-    assert P.p_resolved([hi]) == pytest.approx(0.8)
-    assert P.p_resolved([lo]) == 0.0
-    assert P.p_resolved([lo, P.Look(3, "eo", low=0.9, low_c=0.45)]) == pytest.approx(0.81)
-    assert P.p_resolved([lo, P.Look(3, "eo", low=0.9, low_c=0.2)]) == 0.0
-    assert P.p_resolved([hi, hi]) == pytest.approx(0.96)
+    assert P.p_resolved([hi], BAR) == pytest.approx(0.8)
+    assert P.p_resolved([lo], BAR) == 0.0
+    assert P.p_resolved([lo, P.Look(3, "eo", low=0.9, low_c=0.45)], BAR) == pytest.approx(0.81)
+    assert P.p_resolved([lo, P.Look(3, "eo", low=0.9, low_c=0.2)], BAR) == 0.0
+    assert P.p_resolved([hi, hi], BAR) == pytest.approx(0.96)
 
 
 # ---- the ceiling's plan on stubs ----------------------------------------------------------------------
@@ -122,7 +128,8 @@ class Stub(P.Ceiling):
     check passing unless a test says otherwise."""
 
     def __init__(self, units: list[P.UnitV3], needs: list[P.NeedV3], tables: dict[tuple[str, str], P.Quality]):
-        self.world_name, self.origin, self.radius, self.at0 = "golden-gate-v3", (-122.4783, 37.8199), 3000.0, 0.0
+        # the circle is the settings' (v0's: 3 km round the bridge)
+        self.world_name, self._st, self.at0 = "golden-gate-v3", ST, 0.0
         self.units = {u.uid: u for u in units}
         self.needs = {n.id: n for n in needs}
         self.tables = tables
@@ -139,7 +146,7 @@ class Stub(P.Ceiling):
         return self.now
 
     def quality_of(self, u, n, cond=None, key=""):
-        if P.domain_sensor(n.domain) not in u.sensors:
+        if P.domain_sensor(n.domain, ST) not in u.sensors:
             return None
         if not self.KNOW_SENSORS:
             return super().quality_of(u, n, cond, key)
@@ -177,14 +184,14 @@ def unit(uid: int, platform: str, xy: tuple[float, float], cruise: float = 20.0,
 def boat_need(t_need: float = 300.0) -> P.NeedV3:
     path = Straight("boat-1")
     path.update((-6000.0, 0.0), (15.0, 0.0), 0.0)
-    return P.NeedV3("boat-1", "small_fast_boat", "surface", path, t_need, 0.0, 15.0)
+    return P.NeedV3("boat-1", "small_fast_boat", "surface", path, t_need, 0.0, 15.0, st=ST)
 
 
 def test_the_plan_sends_the_vehicles_that_can_identify_soonest_and_no_more_than_it_needs():
     n = boat_need()
     near, far, blind = unit(1, "puma", (-3000.0, 1000.0)), unit(2, "puma", (8000.0, 8000.0)), unit(3, "x10", (-3000.0, 0.0))
     st = Stub([near, far, blind], [n], {("puma", "boat-1"): quality(2000.0, 1800.0),
-                                        ("x10", "boat-1"): P.Quality("eo_ir", np.zeros(len(P.DISTANCES)), 1500.0, True)})
+                                        ("x10", "boat-1"): P.Quality("eo_ir", np.zeros(len(P.DISTANCES)), 1500.0, True, bar=BAR)})
     plan = st.plan(10.0)
     uids = [o["uid"] for o in plan]
     assert uids[0] == 1, "the nearer capable vehicle first"
@@ -232,7 +239,7 @@ def test_the_sensorblind_rung_believes_the_catalog_range_on_every_kind():
     n = boat_need()
     n.shown_t = 0.0
     u = unit(1, "x10", (-3000.0, 0.0), range_m=1500.0)
-    st = SB([u], [n], {("x10", "boat-1"): P.Quality("eo_ir", np.zeros(len(P.DISTANCES)), 1500.0, True)})
+    st = SB([u], [n], {("x10", "boat-1"): P.Quality("eo_ir", np.zeros(len(P.DISTANCES)), 1500.0, True, bar=BAR)})
     q = st.quality_of(u, n)
     assert q.nominal and q.reach(0.6) == pytest.approx(P.DISTANCES[P.DISTANCES <= 1500.0][-1])
     assert [o["uid"] for o in st.plan(10.0)] == [1], "it sends what the model says cannot identify"
@@ -240,7 +247,7 @@ def test_the_sensorblind_rung_believes_the_catalog_range_on_every_kind():
 
 def test_feasibility_names_why_no_plan_could_serve_a_need():
     n = boat_need()
-    zero = P.Quality("eo_ir", np.zeros(len(P.DISTANCES)), 1500.0, True)
+    zero = P.Quality("eo_ir", np.zeros(len(P.DISTANCES)), 1500.0, True, bar=BAR)
 
     class F(Stub):
         def window(self, n, now):
@@ -264,7 +271,7 @@ def test_feasibility_names_why_no_plan_could_serve_a_need():
 def test_one_active_sonar_in_time_is_not_enough_and_the_plan_sends_two():
     path = Straight("uuv-1")
     path.update((-800.0, 0.0), (1.0, 0.0), 0.0)
-    n = P.NeedV3("uuv-1", "uuv", "subsurface", path, 100.0, -10.0, 1.0)
+    n = P.NeedV3("uuv-1", "uuv", "subsurface", path, 100.0, -10.0, 1.0, st=ST)
     near = unit(1, "remus", (-700.0, 100.0), cruise=2.0, sensors=("sonar",), domain="subsurface")
     far = unit(2, "remus", (40000.0, 0.0), cruise=2.0, sensors=("sonar",), domain="subsurface")
     tables = {("remus", "uuv-1"): sonar(250.0)}
@@ -395,7 +402,7 @@ def test_the_honest_ceiling_resolves_a_need_only_at_the_mission_s_level():
     ide = rec + [{"uid": 3, "sensor": "eo_ir", "level": "identify", "label": "small_drone", "confidence": 0.8}]
     st.picture(12.0, [shown_track("small_drone", 0.8, ide)])
     assert st.needs["T-1"].resolved_t == 12.0
-    assert P.at_level("submerged", "subsurface") and not P.at_level("subsurface", "subsurface")
+    assert P.at_level("submerged", "subsurface", ST) and not P.at_level("subsurface", "subsurface", ST)
 
 
 def test_an_esm_family_alone_is_planned_as_the_domain_s_smallest_threat():
@@ -410,7 +417,7 @@ def test_the_honest_ceiling_takes_a_vehicle_off_a_later_need_for_an_earlier_one(
     early = boat_need(300.0)
     path = Straight("late-1")
     path.update((-5000.0, 2000.0), (5.0, 0.0), 0.0)
-    late = P.NeedV3("late-1", "small_fast_boat", "surface", path, 700.0, 0.0, 5.0)
+    late = P.NeedV3("late-1", "small_fast_boat", "surface", path, 700.0, 0.0, 5.0, st=ST)
     u = unit(1, "puma", (-3000.0, 1000.0))
     u.order = {"intent": 9, "need": late.id, "t": 0.0, "centre": [-4000.0, 2000.0], "req": {}, "text": ""}
     late.assigned = [1]
@@ -485,7 +492,7 @@ def test_the_honest_ceiling_with_the_predictor_asks_it_for_the_orbit_it_would_or
     of the vehicle's position and 25 m of the centre; other links, and a failed call, as the honest
     ceiling (yes)."""
     hl = P.HonestLinked.__new__(P.HonestLinked)
-    hl.origin = (-122.47, 37.82)
+    hl._st = replace(ST, area=Area("the test's circle", (-122.47, 37.82), 3000.0))
     asked: list[dict[str, Any]] = []
     errors: list[str] = []
 

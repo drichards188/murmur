@@ -158,6 +158,7 @@ from eval.situation import playbook_json
 from eval.world import DEFAULT_WORLD, load_world
 
 from .episode import PLAYBOOK_AGENT, POLL_S, PlaybookAgent
+from .v2 import labels as V2L
 from .sim import HeadlessSession
 from .situations import GATE, fleet_plan
 
@@ -179,9 +180,11 @@ PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "pla
 HONEST_PERTURBATIONS = ("oracle-honest+spam", "oracle-honest+behind", "oracle-honest+skip-first",
                         "oracle-honest+reserve-blind", "oracle-honest+ferries", "oracle-honest+pull-off")
 NAMES = ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS
-#: SCORING-V2.md 2.1: who needs a look, where, by when (the Golden Gate world's mission radius)
+#: SCORING-V2.md 2.1: who needs a look, where, by when. Where and the values the v2 agents plan to
+#: (the need's radius, the reserve, the horizon) are v2's labels' own (eval/headless/v2/labels.py,
+#: frozen: `NEED_RADIUS_M` the Golden Gate world's mission radius, `RESERVE_PCT`,
+#: `JUSTIFY_HORIZON_S`), read there, never copied (docs/SCENARIO-SETTINGS.md, stage S6)
 NEED_AFFILIATIONS = ("unknown", "suspect", "hostile")
-NEED_RADIUS_M = load_world(DEFAULT_WORLD).mission.radius_m
 DEADLINE_S = 60.0
 #: murmur-contacts motion.rs: a contact speeds up from its spawn at this rate
 CONTACT_ACCEL_MPS2 = 0.5
@@ -305,7 +308,7 @@ def need_routes(ep: Any, end_s: float) -> list[tuple[Route, float]]:
         if str(c.get("affiliation") or "").lower() not in NEED_AFFILIATIONS or not c.get("route"):
             continue
         r = Route(c, c0)
-        t_need = r.first_within(NEED_RADIUS_M, r.t0, end_s)
+        t_need = r.first_within(V2L.NEED_RADIUS_M, r.t0, end_s)
         if t_need is not None:
             out.append((r, t_need))
     return sorted(out, key=lambda x: (x[1], x[0].id))
@@ -673,7 +676,8 @@ class Oracle(SessionAgent):
     TRANSIT_MAX_M = 15.0
     TRANSIT_SOME_M = 8.0
     TRANSIT_SOME_N = 6
-    RESERVE_PCT = 20.0
+    #: v2's reserve (v2/labels.py `RESERVE_PCT`)
+    reserve_pct = V2L.RESERVE_PCT
     #: the stand-in Puma's landing at home (murmur-a5v; docs/HEADLESS.md section 8): its RTL hands
     #: over to ArduPlane's AUTOLAND on the RTL circle, which loiters down to AUTOLAND_WP_ALT 55 m
     #: beside the final approach's start AUTOLAND_WP_DIST 400 m out, lands at home and disarms
@@ -768,7 +772,7 @@ class Oracle(SessionAgent):
             if c and c.get("exists"):
                 at = _xy((float(c["lon"]), float(c["lat"])))
                 n.route.reanchor(now, at)
-                if n.opened_t is None and math.hypot(*at) <= NEED_RADIUS_M:
+                if n.opened_t is None and math.hypot(*at) <= V2L.NEED_RADIUS_M:
                     n.opened_t = now
         assoc = {str(a["contact_id"]): str(a["track_id"]) for a in truth.get("association") or []}
         tracks = {str(t["id"]): t for t in self.call("get_tracks").get("tracks") or []}
@@ -999,7 +1003,7 @@ class Oracle(SessionAgent):
         # its battery (truly low: the policy's assumed task would take it under the reserve) is for
         # good; anything else, such as its facts stale just after its link came back
         # (`readiness`), is tried again shortly
-        low = self.RESERVE_AWARE and refusals == {"reserves"} and p.to_reserve_s(self.RESERVE_PCT) < self.LOW_BATTERY_S
+        low = self.RESERVE_AWARE and refusals == {"reserves"} and p.to_reserve_s(self.reserve_pct) < self.LOW_BATTERY_S
         p.refused_until = float("inf") if low else now + self.REFUSED_S
         self.write("no.order", uid=p.uid, need=n.id, refused=sorted(refusals),
                    until=None if math.isinf(p.refused_until) else round(p.refused_until, 1))
@@ -1018,7 +1022,7 @@ class Oracle(SessionAgent):
         b = p.battery_now()
         if b is None:
             return float("inf")
-        left = b - self.home_s(p) * p.cruise_drain() - (self.RESERVE_PCT + self.RTL_MARGIN_PCT)
+        left = b - self.home_s(p) * p.cruise_drain() - (self.reserve_pct + self.RTL_MARGIN_PCT)
         return max(0.0, left / p.drain())
 
     def place(self, p: Puma, n: Need, cxy: tuple[float, float], now: float) -> tuple[float, float]:
@@ -1130,11 +1134,12 @@ class OracleHonest(OracleLinkBlind):
     the link map, so it reads nothing an agent under test could not."""
 
     name = "oracle-honest"
-    #: the reserve (20 %) and one more: the session shows the battery in whole percent
-    RESERVE_PCT = 21.0
+    #: the session shows the battery in whole percent: v2's reserve and one more
+    SHOWN_BATTERY_PCT = 1.0
+    reserve_pct = V2L.RESERVE_PCT + SHOWN_BATTERY_PCT
     #: a track whose shown motion brings it within 3 km this soon is a need to plan for (the
     #: scorer's horizon for a justified look, v2/labels.py JUSTIFY_HORIZON_S)
-    HORIZON_S = 300.0
+    horizon_s = V2L.JUSTIFY_HORIZON_S
     #: the plan weighs the earliest so many open needs (the picture can show several in doubt)
     MAX_PLANNED = 6
     #: a track whose shown kind has no signature (radar's size class): the smallest surface one's
@@ -1206,7 +1211,7 @@ class OracleHonest(OracleLinkBlind):
         `shown_before`, for the perturbations): a track in doubt (shown unknown, suspect or
         hostile, in identity conflict, or under 0.6 identity confidence: the scorer's justified
         look) whose shown motion
-        brings it within 3 km within `HORIZON_S`, or that is inside now; due 60 s after it was first
+        brings it within 3 km within `horizon_s`, or that is inside now; due 60 s after it was first
         read inside, or after its predicted crossing until then. Resolved when its identity shows
         0.6 or more from EO/IR or sonar without a conflict (the mission's standard; whether the kind
         is the true one, the picture cannot say). A need whose track stops approaching before it
@@ -1227,7 +1232,7 @@ class OracleHonest(OracleLinkBlind):
             classified = bool(set(idn.get("supported_by") or []) & set(CLASSIFYING)) and not idn.get("conflict")
             settled = classified and conf >= 0.6
             kind = str(idn.get("kind") or "")
-            inside = math.hypot(*xy) <= NEED_RADIUS_M
+            inside = math.hypot(*xy) <= V2L.NEED_RADIUS_M
             n = self.needs.get(tid)
             if n is None:
                 doubt = str(tr.get("affiliation") or "") in NEED_AFFILIATIONS or bool(idn.get("conflict")) or conf < 0.6
@@ -1235,7 +1240,7 @@ class OracleHonest(OracleLinkBlind):
                     continue
                 route = Straight(tid)
                 route.update(xy, v, now)
-                t_need = now if inside else route.first_within(NEED_RADIUS_M, now, now + self.HORIZON_S)
+                t_need = now if inside else route.first_within(V2L.NEED_RADIUS_M, now, now + self.horizon_s)
                 if t_need is None:
                     continue
                 n = Need(route, t_need, {"kind": kind or None,
@@ -1254,7 +1259,7 @@ class OracleHonest(OracleLinkBlind):
                     else:
                         # its shown motion turned away for now: the last estimate stands (a new
                         # track's velocity estimate swings), and the need lapses at its deadline
-                        t = n.route.first_within(NEED_RADIUS_M, now, now + self.HORIZON_S)
+                        t = n.route.first_within(V2L.NEED_RADIUS_M, now, now + self.horizon_s)
                         if t is not None:
                             n.t_need, n.deadline = t, t + DEADLINE_S
                 if kind in SIGNATURE:
@@ -1267,7 +1272,7 @@ class OracleHonest(OracleLinkBlind):
     def describe(self) -> dict[str, Any]:
         out = super().describe()
         out.update(truth="none: built from a session alone (no episode, simulator, contacts file or link map)",
-                   horizon_s=self.HORIZON_S)
+                   horizon_s=self.horizon_s)
         return out
 
 

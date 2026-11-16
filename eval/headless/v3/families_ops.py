@@ -120,7 +120,6 @@ import numpy as np
 from eval.world import load_world
 
 from ..situations import Calibration, EpisodeSpec, fleet_plan, from_situation
-from .mission import mission_text
 
 SCALE = "golden-gate-scale"
 DURATION_S = 1200.0
@@ -482,9 +481,16 @@ def _f14_space(d: Any) -> None:
         d.stated["cover_needs"] = [cover]
         t_due = at_plus(e.at, due)
         t_run = at_plus(e.at, t1)
+        # the brief families.py `generate` set (the v0 mission text, or from rules 33 the ROE card),
+        # then the tasking; from rules 33 its point is given as the card gives points, [lon, lat]
+        # and labelled (before, as latitude, longitude unlabelled: kept, so older briefs keep their sha)
+        from eval.roe_card import CARD_SINCE
+
         lat, lon = center[1], center[0]
-        e.brief = mission_text(d.world) + "\n\n" + (
-            f"Tasking. First: imagery of {name} (a {radius / 1000.0:g} km circle around {lat:.4f}, {lon:.4f}) is "
+        where = (f"[{lon:.4f}, {lat:.4f}] (longitude, latitude)" if d.rules >= CARD_SINCE
+                 else f"{lat:.4f}, {lon:.4f}")
+        e.brief = e.brief + "\n\n" + (
+            f"Tasking. First: imagery of {name} (a {radius / 1000.0:g} km circle around {where}) is "
             f"needed by {iso(t_due)}: a vessel of interest is reported making for it. Second: {callsign} starts a "
             f"scheduled GNSS-guided supply run along {road} at {iso(t_run)} for {GNSS_RUN_S / 60.0:g} minutes; its "
             f"survey-grade fix needs at least {int(level)} GPS satellites in view throughout. Confirm GNSS coverage over "
@@ -853,7 +859,9 @@ def _f17_scale(d: Any) -> None:
         fam = pick(rng, F17_MIX)
         while fam == "f2-drone" and not day:
             fam = pick(rng, F17_MIX)
-        sub = F.Draft(family=fam, world="golden-gate-v3", seed=d.seed, rng=rng, stated={})
+        # on the Golden Gate's places, about the scale world's own circle (its run's settings)
+        sub = F.Draft(family=fam, world="golden-gate-v3", seed=d.seed, rng=rng, stated={}, settings=d.settings,
+                      rules=d.rules)
         _, gen = F.GENERATORS[fam]
         gen(sub)
         c = sub.added[-1]

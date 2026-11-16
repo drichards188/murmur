@@ -74,6 +74,16 @@ removed):
   too looks at nothing the picture does not show;
 - `oracle-v3-honest-linked` (`HonestLinked`): the honest ceiling with the C2's link predictor
   (`get_link_coverage`) where the link map would be: a diagnostic, not a rung (bd murmur-hei).
+
+**The settings** (stage S6, docs/SCENARIO-SETTINGS.md): every planner reads the run's own (MCP
+`get_policy` at its first need for them, settings.py `of_answer`: the logged policy's `[watch]` from
+decision rules 33, else v0's for its world, what the run is graded under): the circle, each domain's
+grace and level, the bar (the evidence the plan counts on, v0's 0.6), the reserve (v0's battery-now
+20 %, or the run's `reserve_pct`) and, for the honest ceiling, the approach horizon, the still and
+no-velocity speeds and the sensors whose support settles a need (each domain's, the settings';
+before S6 EO/IR or sonar in every domain, never AIS). The planner's own margins on them are its
+design: `RESERVE_MARGIN_PCT` and the honest ceiling's `SHOWN_BATTERY_PCT` (the session shows the
+battery in whole percent).
 """
 
 from __future__ import annotations
@@ -95,11 +105,9 @@ from ..situations import at_unix, fleet_plan
 from .families import grids
 from .labels import FAMILY
 from .linkmap import link_map
-from .mission import RESOLVE_CONF, STILL_MPS, THREAT_MPS, rule
 from .oracle import NEED_AFFILIATIONS, RECOVERING, Path2, to_ll, to_xy
+from .settings import Settings, of_answer
 
-#: the evidence the picture needs (the mission's 0.6)
-P60 = RESOLVE_CONF
 #: horizontal distances the model's chance is sampled at, m (log-spaced, 10 m to about 60 km)
 DISTANCES = np.array([10.0 * 1.3 ** k for k in range(34)])
 #: a sonar classification's confidence: (cap, time constant s) per mode, from 60 s of signal on
@@ -115,6 +123,15 @@ P_EXEC = 0.8
 CLEAR_DAY = {"visibility_m": 20000.0, "sun_elevation_deg": 45.0}
 #: the reference conditions the honest ceiling assumes: the C2 shows no weather
 HONEST_CONDITIONS = {"visibility_m": 20000.0, "sea_state": 2.0, "wind_mps": 5.0}
+#: a sonar look set's combined confidence is judged against the bar with this band about it, linear
+#: (the plan's signal seconds are estimates): 0.45 to 0.75 about v0's 0.6
+SONAR_BAND = 0.3
+#: the sensor types the planner models a look with (a camera's identification, a sonar's
+#: recognition): a domain's look sensor is the first of the settings' sensors among them
+LOOK_SENSORS = ("eo_ir", "sonar")
+#: the sensing model's classifying sensors (a family on a track is a recognition only from one of
+#: them, not an ESM receiver's detection): a fact of the model, not the mission's criteria
+CLASSIFIER_SENSORS = ("eo_ir", "sonar")
 AIR_DEFAULT_ALT_M = 150.0
 M = 111_320.0
 
@@ -128,10 +145,12 @@ class Quality:
     and `passive`), its camera's cue reach (catalog `range_m`) and whether it is gimballed (a camera
     that slews, zooms and cues) or looks all round (or along its heading)."""
 
-    def __init__(self, sensor: str, p: np.ndarray, cue_m: float, gimballed: bool,
+    def __init__(self, sensor: str, p: np.ndarray, cue_m: float, gimballed: bool, *, bar: float,
                  active: np.ndarray | None = None, passive: np.ndarray | None = None, nominal: bool = False,
                  search: np.ndarray | None = None):
         self.sensor = sensor
+        #: the run's bar (its settings'): the evidence the plan counts on
+        self.bar = bar
         self.p = p
         self.search = search if search is not None else p
         self.cue_m = cue_m
@@ -144,10 +163,11 @@ class Quality:
         arr = getattr(self, which)
         return np.interp(np.asarray(d, dtype=float), DISTANCES, arr, left=float(arr[0]), right=0.0)
 
-    def reach(self, level: float = P60, which: str = "p") -> float:
-        """The farthest sampled distance at which the chance is at least `level` (0: nowhere)."""
+    def reach(self, level: float | None = None, which: str = "p") -> float:
+        """The farthest sampled distance at which the chance is at least `level` (the bar when None;
+        0: nowhere)."""
         arr = getattr(self, which)
-        ok = np.nonzero(arr >= level)[0]
+        ok = np.nonzero(arr >= (self.bar if level is None else level))[0]
         return float(DISTANCES[ok[-1]]) if len(ok) else 0.0
 
     def best(self, which: str = "p") -> float:
@@ -157,16 +177,17 @@ class Quality:
         if self.sensor == "sonar":
             return {"sensor": "sonar", "active_08_m": round(self.reach(0.8, "active")), "passive_08_m":
                     round(self.reach(0.8, "passive")), "nominal": self.nominal}
-        return {"sensor": self.sensor, "r60_m": round(self.reach()), "search_50_m": round(self.reach(0.5, "search")),
+        return {"sensor": self.sensor, f"r{round(100 * self.bar)}_m": round(self.reach()),
+                "search_50_m": round(self.reach(0.5, "search")),
                 "best": round(self.best(), 3), "cue_m": self.cue_m, "gimballed": self.gimballed, "nominal": self.nominal}
 
 
-def nominal_quality(sensor: str, range_m: float, gimballed: bool) -> Quality:
+def nominal_quality(sensor: str, range_m: float, gimballed: bool, bar: float) -> Quality:
     """The sensor-blind rung's belief: the catalog's `range_m` reaches every kind in any light."""
     inside = (DISTANCES <= range_m).astype(float)
     if sensor == "sonar":
-        return Quality("sonar", inside, range_m, False, active=inside, passive=np.zeros_like(inside), nominal=True)
-    return Quality(sensor, inside, range_m, gimballed, nominal=True, search=inside)
+        return Quality("sonar", inside, range_m, False, bar=bar, active=inside, passive=np.zeros_like(inside), nominal=True)
+    return Quality(sensor, inside, range_m, gimballed, bar=bar, nominal=True, search=inside)
 
 
 # ---- one look's value along a planned encounter -----------------------------------------------------------
@@ -255,13 +276,13 @@ def eo_look(uid: int, q: Quality, ts: np.ndarray, r: np.ndarray, dist_centre: np
     else:
         # the surest from each step to the deadline
         conf = np.maximum.accumulate(p[::-1])[::-1]
-    hi_mask = conf >= P60
+    hi_mask = conf >= q.bar
     high = float(np.sum(pid[hi_mask]))
     low = float(np.sum(pid[~hi_mask]))
     low_c = float(np.sum(pid[~hi_mask] * conf[~hi_mask]) / low) if low > 1e-9 else 0.0
     k = np.nonzero(pid > 1e-6)[0]
     t_first = float(ts[k[0]]) if len(k) else float(ts[first])
-    return Look(uid, "eo", high=P_EXEC * min(high, 1.0), low=P_EXEC * min(low, 1.0), low_c=min(low_c, P60 - 1e-3),
+    return Look(uid, "eo", high=P_EXEC * min(high, 1.0), low=P_EXEC * min(low, 1.0), low_c=min(low_c, q.bar - 1e-3),
                 t_first=t_first)
 
 
@@ -277,10 +298,10 @@ def sonar_look(uid: int, q: Quality, r: np.ndarray, exists: np.ndarray, dt: floa
     return Look(uid, "sonar", conf=P_EXEC * out if not q.nominal else out)
 
 
-def p_resolved(looks: list[Look]) -> float:
+def p_resolved(looks: list[Look], bar: float) -> float:
     """The chance a set of looks resolves the need: EO/IR, any confident identification or lower
-    ones that combine to 0.6; sonar, the looks' confidences combined, judged against 0.6 with a
-    margin (0.45 to 0.75, linear: the plan's signal seconds are estimates)."""
+    ones that combine to the bar; sonar, the looks' confidences combined, judged against the bar
+    with a margin (`SONAR_BAND` about it, linear: the plan's signal seconds are estimates)."""
     eo = [x for x in looks if x.kind == "eo"]
     so = [x for x in looks if x.kind == "sonar"]
     p = 0.0
@@ -300,16 +321,16 @@ def p_resolved(looks: list[Look]) -> float:
                     cs.append(0.0)
             if pr <= 0.0:
                 continue
-            if max(cs) >= 1.0 or 1.0 - float(np.prod([1.0 - c for c in cs])) >= P60:
+            if max(cs) >= 1.0 or 1.0 - float(np.prod([1.0 - c for c in cs])) >= bar:
                 p += pr
     if so:
         comb = 1.0 - float(np.prod([1.0 - x.conf for x in so]))
-        ps = float(np.clip((comb - 0.45) / 0.3, 0.0, 1.0))
+        ps = float(np.clip((comb - round(bar - SONAR_BAND / 2.0, 9)) / SONAR_BAND, 0.0, 1.0))
         p = 1.0 - (1.0 - p) * (1.0 - ps)
     return min(p, 1.0)
 
 
-def utility(looks: list[Look]) -> float:
+def utility(looks: list[Look], bar: float) -> float:
     """What the plan maximises when it builds a set of looks: the chance the need is resolved, and a
     tenth of the evidence the looks bring short of it (EO/IR the chance of any identification
     weighted by its confidence; sonar the combined confidence), so a first look that only a second
@@ -321,18 +342,18 @@ def utility(looks: list[Look]) -> float:
         soft = max(soft, 1.0 - float(np.prod([1.0 - min(1.0, x.high + x.low * x.low_c) for x in eo])))
     if so:
         soft = max(soft, 1.0 - float(np.prod([1.0 - x.conf for x in so])))
-    return p_resolved(looks) + 0.1 * soft
+    return p_resolved(looks, bar) + 0.1 * soft
 
 
 # ---- needs and units ---------------------------------------------------------------------------------
 
 class NeedV3:
     def __init__(self, nid: str, kind: str, domain: str, path: Any, t_need: float, alt: float, speed: float,
-                 opened_t: float | None = None):
+                 opened_t: float | None = None, *, st: Settings):
         self.id, self.kind, self.domain, self.path = nid, kind, domain, path
         self.alt, self.speed = alt, speed
         self.t_need = t_need
-        self.rule = rule(domain)
+        self.rule = st.rule(domain)
         self.deadline = t_need + self.rule.grace_s
         self.resolved_t: float | None = None
         self.opened_t = opened_t
@@ -375,8 +396,11 @@ class UnitV3:
         return float((self.sensors.get(sensor) or {}).get("range_m") or 0.0)
 
 
-def domain_sensor(domain: str) -> str:
-    return "sonar" if domain == "subsurface" else "eo_ir"
+def domain_sensor(domain: str, st: Settings) -> str | None:
+    """The sensor the planner looks at a contact of `domain` with: the first of the settings'
+    sensors for it that it models (`LOOK_SENSORS`: v0's EO/IR above the water, sonar under it);
+    None when the settings name none of them."""
+    return next((x for x in st.rule(domain).sensors if x in LOOK_SENSORS), None)
 
 
 def qkey(u: UnitV3, n: NeedV3, key: str = "") -> tuple[str, str]:
@@ -427,8 +451,10 @@ class Ceiling(SessionAgent):
     TRANSIT_SOME_N = 6
     ORBIT_DEFAULT = {"plane": 200.0, "vtol": 200.0, "copter": 60.0, "blimp": 150.0, "boat": 120.0, "sailboat": 150.0,
                      "sub": 80.0, "ugv": 40.0}
-    RESERVE_PCT = 20.0
+    #: the plan's margin over the settings' reserve (`reserve_pct`)
     RESERVE_MARGIN_PCT = 3.0
+    #: what the battery it reads may be short of the true one: none (it reads the true battery)
+    SHOWN_BATTERY_PCT = 0.0
     #: a centre on water must be this deep for a boat, a sub's depth and this for a sub
     BOAT_DEPTH_M = 3.0
     SUB_MARGIN_M = 2.0
@@ -448,8 +474,7 @@ class Ceiling(SessionAgent):
         self.end = float(ep.e.duration_s)
         self.world = load_world(ep.e.map)
         self.world_name = self.world.name
-        self.origin = self.world.mission.center
-        self.radius = self.world.mission.radius_m
+        self._st: Settings | None = None
         self.at0 = at_unix(ep.e.at)
         self.needs: dict[str, NeedV3] = {}
         self.units: dict[int, UnitV3] = {}
@@ -462,6 +487,32 @@ class Ceiling(SessionAgent):
                            "note": "reads truth (the contacts' routes and states, our vehicles' true state, the tracker's "
                                    "association) and asks the sensing model's predictions under the drawn conditions: a "
                                    "scoring anchor, never an agent under test"}
+
+    # ---- the run's settings ---------------------------------------------------------------------------
+
+    @property
+    def st(self) -> Settings:
+        """The run's settings, read once from MCP `get_policy` (settings.py `of_answer`)."""
+        if self._st is None:
+            self._st = of_answer(self.call("get_policy"), self.world_name)
+            self.write("settings", settings_source=self._st.source, sha256=self._st.sha256())
+        return self._st
+
+    @property
+    def origin(self) -> tuple[float, float]:
+        """The circle's centre (the settings'): the plan's local plane is about it."""
+        assert self.st.area is not None, "the run's settings name no circle"
+        return self.st.area.center
+
+    @property
+    def radius(self) -> float:
+        assert self.st.area is not None, "the run's settings name no circle"
+        return self.st.area.radius_m
+
+    @property
+    def reserve_pct(self) -> float:
+        """The settings' reserve and what the battery read may be short of (`SHOWN_BATTERY_PCT`)."""
+        return self.st.reserve_now() + self.SHOWN_BATTERY_PCT
 
     # ---- the sensing model (privileged: the drawn conditions) --------------------------------------------
 
@@ -506,8 +557,8 @@ class Ceiling(SessionAgent):
     def quality_of(self, u: UnitV3, n: NeedV3, cond: dict[str, Any] | None = None, key: str = "") -> Quality | None:
         """The unit's domain sensor against the need's contact (module doc, step 1), cached per
         platform and need (and `key`, a variant of the conditions)."""
-        sensor = domain_sensor(n.domain)
-        if sensor not in u.sensors:
+        sensor = domain_sensor(n.domain, self.st)
+        if sensor is None or sensor not in u.sensors:
             return None
         if n.domain == "subsurface" and u.domain == "air":
             return None
@@ -516,7 +567,7 @@ class Ceiling(SessionAgent):
             return self.quality[k]
         gimballed = u.gimballed() if sensor == "eo_ir" else False
         if not self.KNOW_SENSORS:
-            q = nominal_quality(sensor, u.range_m(sensor), gimballed)
+            q = nominal_quality(sensor, u.range_m(sensor), gimballed, self.st.bar)
             self.quality[k] = q
             return q
         cond = self.conditions_for(n) if cond is None else cond
@@ -544,7 +595,7 @@ class Ceiling(SessionAgent):
             zeros = zeros + 1 if max(p[i], srch[i]) <= 0.0 and i > 3 and max(p[: i].max(), srch[: i].max()) > 0.0 else 0
             if zeros >= 3:
                 break
-        q = Quality(sensor, p, u.range_m(sensor), gimballed, active=act, passive=pas, search=srch)
+        q = Quality(sensor, p, u.range_m(sensor), gimballed, bar=self.st.bar, active=act, passive=pas, search=srch)
         self.quality[k] = q
         return q
 
@@ -559,7 +610,7 @@ class Ceiling(SessionAgent):
         c_ll = to_ll(self.origin, *centre)
         t_ll = to_ll(self.origin, float(pos[0]), float(pos[1]))
         for q in self.sense(u.platform, (c_ll[0], c_ll[1]), u.alt, n, (t_ll[0], t_ll[1]), self.conditions_for(n), t,
-                            sensor=domain_sensor(n.domain), terrain=True):
+                            sensor=domain_sensor(n.domain, self.st), terrain=True):
             return bool(q.get("line_of_sight"))
         return False
 
@@ -596,7 +647,7 @@ class Ceiling(SessionAgent):
             if t_need is None:
                 continue
             dom = str(c.get("domain") or "surface")
-            n = NeedV3(p.id, str(c.get("kind")), dom, p, t_need, float(c.get("alt_m") or 0.0), p.speed)
+            n = NeedV3(p.id, str(c.get("kind")), dom, p, t_need, float(c.get("alt_m") or 0.0), p.speed, st=self.st)
             n.hold = (float(p.xy[-1][0]), float(p.xy[-1][1]))
             self.needs[n.id] = n
             self.write("need", contact=n.id, domain=n.domain, t_need=round(t_need, 1), deadline=round(n.deadline, 1))
@@ -653,7 +704,7 @@ class Ceiling(SessionAgent):
             kind = idn.get("kind")
             ok = kind == n.kind or (n.rule.level == "recognise" and kind == FAMILY.get(n.kind))
             sb = set(idn.get("supported_by") or [])
-            if tr and ok and not idn.get("conflict") and float(idn.get("confidence") or 0.0) >= P60 \
+            if tr and ok and not idn.get("conflict") and float(idn.get("confidence") or 0.0) >= self.st.bar \
                     and sb & set(n.rule.sensors):
                 n.resolved_t = now
                 self.write("need.resolved", contact=n.id, t=round(now, 1))
@@ -724,7 +775,7 @@ class Ceiling(SessionAgent):
         back = math.hypot(home[0] - centre[0], home[1] - centre[1]) / max(u.cruise, 0.5)
         need_s = out + max(0.0, until - now - out) + back + 120.0
         spend = 100.0 * need_s / max(u.endurance_s, 1.0)
-        return u.battery - spend >= self.RESERVE_PCT + self.RESERVE_MARGIN_PCT
+        return u.battery - spend >= self.reserve_pct + self.RESERVE_MARGIN_PCT
 
     def link_holds(self, u: UnitV3, centre: tuple[float, float]) -> bool:
         """For a line-of-sight or mesh datalink, the whole orbit and the straight transit keep the
@@ -807,7 +858,7 @@ class Ceiling(SessionAgent):
         ranked = []
         for c in self.centres(n, ts, pos, exists):
             lk = self.look_value(u, n, q, c, now, u.xy, ts, pos, exists)
-            v = utility([lk])
+            v = utility([lk], self.st.bar)
             if v <= 1e-4:
                 continue
             ranked.append((-round(v, 4), lk.t_first if lk.t_first is not None else 1e9, c, lk))
@@ -847,10 +898,10 @@ class Ceiling(SessionAgent):
                 continue
             have = [self.current_look(self.units[uid], n, now, win) for uid in n.assigned
                     if self.units[uid].order is not None]
-            p = p_resolved(have)
+            p = p_resolved(have, self.st.bar)
             if p >= self.P_TARGET or len(have) >= self.MAX_LOOKS:
                 continue
-            uv = utility(have)
+            uv = utility(have, self.st.bar)
             opts = []
             fresh = {o["uid"] for o in out}
             for u in self.units.values():
@@ -861,7 +912,8 @@ class Ceiling(SessionAgent):
                     opts.append(o)
             chosen: list[dict[str, Any]] = []
             while opts and len(have) + len(chosen) < self.MAX_LOOKS and p < self.P_TARGET:
-                gains = [(round(utility(have + [c["look"] for c in chosen] + [o["look"]]) - uv, 4), -o["t"], -o["uid"], i)
+                gains = [(round(utility(have + [c["look"] for c in chosen] + [o["look"]], self.st.bar) - uv, 4),
+                          -o["t"], -o["uid"], i)
                          for i, o in enumerate(opts)]
                 g, _, _, i = max(gains)
                 if g < self.MIN_GAIN:
@@ -869,7 +921,7 @@ class Ceiling(SessionAgent):
                 o = opts.pop(i)
                 chosen.append(o)
                 uv += g
-                p = p_resolved(have + [c["look"] for c in chosen])
+                p = p_resolved(have + [c["look"] for c in chosen], self.st.bar)
             for o in chosen:
                 taken.add(o["uid"])
                 o["p_after"] = round(p, 3)
@@ -959,7 +1011,7 @@ class Ceiling(SessionAgent):
                 continue
             home = u.home_xy or u.xy
             back = math.hypot(home[0] - u.xy[0], home[1] - u.xy[1]) / max(u.cruise, 0.5) + 120.0
-            if u.battery - 100.0 * back / max(u.endurance_s, 1.0) > self.RESERVE_PCT + 1.0:
+            if u.battery - 100.0 * back / max(u.endurance_s, 1.0) > self.reserve_pct + 1.0:
                 continue
             out = self.propose(f"Send {u.callsign} home: its battery comes to the reserve.", {"task": "rtl", "uids": [u.uid]},
                                reserve=True)
@@ -1037,7 +1089,8 @@ class Ceiling(SessionAgent):
 
     def feasibility(self, n: NeedV3, now: float) -> dict[str, Any]:
         win = self.window(n, now)
-        units = [u for u in self.units.values() if u.xy is not None and not u.down and domain_sensor(n.domain) in u.sensors
+        units = [u for u in self.units.values() if u.xy is not None and not u.down
+                 and domain_sensor(n.domain, self.st) in u.sensors
                  and not (n.domain == "subsurface" and u.domain == "air")]
         rows: dict[str, Any] = {}
         capable: list[UnitV3] = []
@@ -1052,12 +1105,12 @@ class Ceiling(SessionAgent):
             rows[str(u.uid)] = row
             if q is None:
                 continue
-            reach = q.reach(P60) if q.sensor != "sonar" else max(q.reach(0.5, "active"), q.reach(0.5, "passive"))
+            reach = q.reach() if q.sensor != "sonar" else max(q.reach(0.5, "active"), q.reach(0.5, "passive"))
             if reach > 0.0:
                 capable.append(u)
             else:
                 cq = self.quality_of(u, n, cond={**self.cond, **CLEAR_DAY}, key="@clear")
-                if cq is not None and (cq.reach(P60) if cq.sensor != "sonar" else cq.reach(0.5, "active")) > 0.0:
+                if cq is not None and (cq.reach() if cq.sensor != "sonar" else cq.reach(0.5, "active")) > 0.0:
                     clear_capable.append(u)
                 continue
             if win is None:
@@ -1066,13 +1119,13 @@ class Ceiling(SessionAgent):
             best = None
             for c in self.centres(n, ts, pos, exists):
                 lk = self.look_value(u, n, q, c, now, u.xy, ts, pos, exists)
-                v = utility([lk])
+                v = utility([lk], self.st.bar)
                 if v > 1e-4 and (best is None or v > best[0]):
                     best = (v, c, lk)
             if best is None:
                 continue
             timely.append((u, best[2]))
-            row["best_alone"] = round(p_resolved([best[2]]), 3)
+            row["best_alone"] = round(p_resolved([best[2]], self.st.bar), 3)
             if self.sees_from(u, best[1], n, best[2].t_first if best[2].t_first is not None else float(ts[-1])):
                 seen.append((u, best[2]))
                 if self.link_holds(u, best[1]) and self.medium_ok(u, best[1]):
@@ -1109,9 +1162,9 @@ class Ceiling(SessionAgent):
         chosen: list[Look] = []
         left = list(looks)
         while left and len(chosen) < self.MAX_LOOKS:
-            i = max(range(len(left)), key=lambda k: utility(chosen + [left[k]]))
+            i = max(range(len(left)), key=lambda k: utility(chosen + [left[k]], self.st.bar))
             chosen.append(left.pop(i))
-        return p_resolved(chosen)
+        return p_resolved(chosen, self.st.bar)
 
     def light_at(self, n: NeedV3) -> str:
         """day, night, twilight or fog at the need's time (the drawn visibility under 2 km is fog;
@@ -1137,7 +1190,7 @@ class Ceiling(SessionAgent):
                 q = self.quality.get(qkey(u, n))
                 if q is None:
                     continue
-                r = max(q.reach(0.5, "active"), q.reach(0.5, "passive")) if q.sensor == "sonar" else q.reach(P60)
+                r = max(q.reach(0.5, "active"), q.reach(0.5, "passive")) if q.sensor == "sonar" else q.reach()
                 out[f"{u.platform}:{n.id}"] = max(out.get(f"{u.platform}:{n.id}", 0.0), round(r, 1))
         return out
 
@@ -1203,17 +1256,17 @@ KIND_DOMAIN = {"small_craft": "surface", "large_vessel": "surface", "aircraft": 
 #: the kinds a family names (a recognition's family) stands for, for the model
 FAMILY_KIND = {"small_craft": "small_fast_boat", "large_vessel": "cargo_ship", "aircraft": "light_aircraft",
                "small_uas": "small_drone", "ground_vehicle": "vehicle", "person": "diver", "submerged": "uuv"}
-CLASSIFYING = ("eo_ir", "sonar")
-def at_level(shown: str | None, domain: str) -> bool:
-    """Whether a shown identity is at the mission's level for the domain (mission.py): a kind (an
-    identification), or under the water a class (a recognition's family) or better. A detection's
+def at_level(shown: str | None, domain: str, st: Settings) -> bool:
+    """Whether a shown identity is at the domain's level (the settings'): a kind (an
+    identification), or where the level is recognition (v0's under the water) a class (a
+    recognition's family) or better. A detection's
     size class (`small_air`) or, above the water, a family (`small_uas`) is not, whatever its
     confidence: the picture's identity names them in the same field, at the detection's or the
     recognition's confidence (SCORING-V3.md 15: before this the honest ceiling took 256 of its 533
     resolutions on one, 18 of its 35 losses on F2, F3 and F6 among them)."""
     if shown in FAMILY:
         return True
-    return rule(domain).level == "recognise" and shown in set(FAMILY.values())
+    return st.rule(domain).level == "recognise" and shown in set(FAMILY.values())
 
 
 class HonestCeiling(CeilingLinkBlind):
@@ -1227,13 +1280,11 @@ class HonestCeiling(CeilingLinkBlind):
     #: its needs are the picture's tracks, so it looks at nothing the picture does not show; the
     #: ceiling's gate, which reads the tracker's association with truth, is not its
     SHOWN = False
-    #: a track whose shown motion brings it within the circle this soon is a need to plan for
-    HORIZON_S = 300.0
     MAX_PLANNED = 6
     #: an unresolved need is worked on this many graces past its own deadline (`until`)
     LAPSE_GRACES = 2.0
-    #: the reserve and one more: the session shows the battery in whole percent
-    RESERVE_PCT = 21.0
+    #: the session shows the battery in whole percent: the reserve and one more
+    SHOWN_BATTERY_PCT = 1.0
     #: a vehicle on a need due this much later is free for an earlier one (`free_for`)
     PREEMPT_S = 60.0
 
@@ -1251,8 +1302,7 @@ class HonestCeiling(CeilingLinkBlind):
         self.end = float(end_s)
         self.world = load_world(world)
         self.world_name = self.world.name
-        self.origin = self.world.mission.center
-        self.radius = self.world.mission.radius_m
+        self._st = None
         self.at0 = at_unix(at)
         self.needs: dict[str, NeedV3] = {}
         self.units: dict[int, UnitV3] = {}
@@ -1278,6 +1328,12 @@ class HonestCeiling(CeilingLinkBlind):
     def rpc_sense(self, req: dict[str, Any]) -> dict[str, Any]:
         self.sense_asks += 1
         return self._sense(req)
+
+    @property
+    def horizon_s(self) -> float:
+        """A track whose shown motion brings it within the circle this soon is a need to plan for:
+        the settings' approach horizon."""
+        return self.st.approach_horizon_s
 
     def setup(self) -> None:
         """Its vehicles from the catalog and the fleet as the session shows them."""
@@ -1341,7 +1397,7 @@ class HonestCeiling(CeilingLinkBlind):
             if lk.get("level") == "detect" and lk.get("sensor") in ("radar", "eo_ir", "sonar") \
                     and lk.get("label") in SIZE_KIND:
                 return SIZE_KIND[str(lk["label"])], dom
-        recognised = not looks or any(lk.get("level") == "recognise" and lk.get("sensor") in CLASSIFYING
+        recognised = not looks or any(lk.get("level") == "recognise" and lk.get("sensor") in CLASSIFIER_SENSORS
                                       and lk.get("label") == kind for lk in looks)
         if kind in FAMILY_KIND and recognised:
             return FAMILY_KIND[kind], dom
@@ -1350,27 +1406,31 @@ class HonestCeiling(CeilingLinkBlind):
         return DOMAIN_KIND.get(dom, "small_fast_boat"), dom
 
     def motion(self, xy: tuple[float, float], v: tuple[float, float], dom: str) -> tuple[float, float]:
-        """The velocity the plan carries a track at: its shown one; an aircraft the picture gives none
-        (a 2D radar's bearings seldom range one) is taken to come straight in at its domain's threat
-        speed (`THREAT_MPS`), as a watch officer would."""
-        if dom in THREAT_MPS and math.hypot(*v) < STILL_MPS:
+        """The velocity the plan carries a track at: its shown one; a contact of a domain the settings
+        give a no-velocity speed (v0's air: a 2D radar's bearings seldom range an aircraft) shown
+        without one (slower than the settings' `still_mps`) is taken to come straight in at that
+        speed, as a watch officer would."""
+        speed = self.st.no_velocity(dom)
+        if speed is not None and math.hypot(*v) < self.st.still_mps:
             d = math.hypot(*xy)
             if d > 1.0:
-                return (-THREAT_MPS[dom] * xy[0] / d, -THREAT_MPS[dom] * xy[1] / d)
+                return (-speed * xy[0] / d, -speed * xy[1] / d)
         return v
 
     def due_in(self, route: Any, now: float) -> float | None:
-        """When the track's carried motion brings it within the circle (within `HORIZON_S`)."""
-        return route.first_within(self.radius, now, now + self.HORIZON_S)
+        """When the track's carried motion brings it within the circle (within `horizon_s`)."""
+        return route.first_within(self.radius, now, now + self.horizon_s)
 
     def picture(self, now: float, tracks: list[dict[str, Any]]) -> None:
-        """Needs from the picture (v2's honest oracle's rule): a track in doubt (shown unknown,
-        suspect or hostile, in identity conflict, or under 0.6 confidence) whose shown motion
-        (carried at constant velocity) brings it within the circle within `HORIZON_S`, or that is
+        """Needs from the picture (v2's honest oracle's rule, on the settings): a track in doubt
+        (shown unknown, suspect or hostile, in identity conflict, or under the bar) whose shown motion
+        (carried at constant velocity) brings it within the circle within `horizon_s`, or that is
         inside; due its domain's grace after it is first shown inside, after its predicted crossing
-        until then; resolved when its identity shows 0.6 or more from EO/IR or sonar without a
-        conflict, at the mission's level (`at_level`: a kind, or under the water a class; which kind
-        is true, the picture cannot say)."""
+        until then; resolved when its identity shows the bar or more supported by one of its
+        domain's sensors (the settings': v0's EO/IR or AIS on the surface, EO/IR in the air and on
+        the ground, sonar under the water; before stage S6 EO/IR or sonar in every domain, never
+        AIS) without a conflict, at the domain's level (`at_level`: a kind, or where the level is
+        recognition a class; which kind is true, the picture cannot say)."""
         self.shown_before = self.shown
         self.shown = {str(t["id"]): t for t in tracks}
         for tr in sorted(tracks, key=lambda t: str(t["id"])):
@@ -1383,16 +1443,18 @@ class HonestCeiling(CeilingLinkBlind):
             v = (float(vel[0]), float(vel[1])) if isinstance(vel, list) and len(vel) == 2 and None not in vel else (0.0, 0.0)
             idn = tr.get("identity") or {}
             conf = float(idn.get("confidence") or 0.0)
-            classified = bool(set(idn.get("supported_by") or []) & set(CLASSIFYING)) and not idn.get("conflict")
             inside = math.hypot(*xy) <= self.radius
             kind, dom = self.kind_of(tr)
-            settled = classified and conf >= P60 and at_level(idn.get("kind"), dom)
+            crit = self.st.domain(dom)
+            sensors = set(crit.sensors) if crit is not None else set()
+            classified = bool(set(idn.get("supported_by") or []) & sensors) and not idn.get("conflict")
+            settled = classified and conf >= self.st.bar and at_level(idn.get("kind"), dom, self.st)
             alt = float(tr.get("alt_m") or 0.0)
             if dom == "air" and alt <= 0.0:
                 alt = AIR_DEFAULT_ALT_M
             n = self.needs.get(tid)
             if n is None:
-                doubt = str(tr.get("affiliation") or "") in NEED_AFFILIATIONS or bool(idn.get("conflict")) or conf < P60
+                doubt = str(tr.get("affiliation") or "") in NEED_AFFILIATIONS or bool(idn.get("conflict")) or conf < self.st.bar
                 if settled or not doubt:
                     continue
                 route = Straight(tid)
@@ -1400,7 +1462,8 @@ class HonestCeiling(CeilingLinkBlind):
                 t_need = now if inside else self.due_in(route, now)
                 if t_need is None:
                     continue
-                n = NeedV3(tid, kind, dom, route, t_need, alt, math.hypot(*route.v), opened_t=now if inside else None)
+                n = NeedV3(tid, kind, dom, route, t_need, alt, math.hypot(*route.v), opened_t=now if inside else None,
+                           st=self.st)
                 self.needs[tid] = n
                 self.write("need", track=tid, t_need=round(t_need, 1), deadline=round(n.deadline, 1), inside=inside,
                            shown=tr.get("affiliation"), contact_kind=kind, domain=dom, confidence=round(conf, 3))
@@ -1470,7 +1533,7 @@ class HonestCeiling(CeilingLinkBlind):
     def describe(self) -> dict[str, Any]:
         out = super().describe()
         out.update(truth="none: built from a session and the sensing model's functions alone (no episode, truth, "
-                         "contacts file, drawn conditions or link map)", horizon_s=self.HORIZON_S,
+                         "contacts file, drawn conditions or link map)", horizon_s=self.horizon_s,
                    sense_asks=self.sense_asks, assumed_conditions=self.cond)
         return out
 

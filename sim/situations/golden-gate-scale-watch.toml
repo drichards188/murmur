@@ -423,15 +423,10 @@ vehicles = { callsign = "FERRET 5" }
 route = [[-122.42996, 37.807], [-122.42996, 37.8052]]
 note = "Opening order: patrol the shore"
 
+# The watch area and the protected point are the policy's [watch.area] (agents/playbook/config.py
+# `under` takes it when this table names none; docs/SCENARIO-SETTINGS.md, stage S6)
 [playbook]
 sensor_platform = "puma"
-[[playbook.watch_area]]
-name = "the Golden Gate approaches"
-center = [-122.4783, 37.8199]
-radius_m = 3000
-[[playbook.protected]]
-name = "the Golden Gate Bridge"
-point = [-122.4783, 37.8199]
 
 [autoplay]
 preset = "default"
