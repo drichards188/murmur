@@ -102,8 +102,9 @@ const CUE_DEADBAND: f64 = 0.25;
 /// [E]: about the time to detect a clear contact (tau 3.4 s), as a search step's dwell.
 const BAR_STARE_S: f64 = 4.0;
 /// An identified contact is not cued again for this long, s; one looked at and not identified
-/// for [`RETRY_S`]; with nothing unidentified to cue, the stalest look older than
-/// [`STALE_LOOK_S`] is revisited [E].
+/// for [`RETRY_S`] (unless an identify order names it: rules 21, cued again at once, bd
+/// murmur-39tt); with nothing unidentified to cue, the stalest look older than [`STALE_LOOK_S`]
+/// is revisited [E].
 const REVISIT_S: f64 = 300.0;
 const RETRY_S: f64 = 60.0;
 const STALE_LOOK_S: f64 = 120.0;
@@ -812,6 +813,11 @@ fn conditions_at(weather: &murmur_weather::Store, sensing: &Sensing, lat: f64, l
 }
 
 impl Sense<'_> {
+    /// Rules 21: whether contact `c` is behind the track vehicle `uid`'s identify order names.
+    fn first(&self, uid: u64, c: &str) -> bool {
+        self.firsts.get(&uid).is_some_and(|f| f.contains(c))
+    }
+
     /// One vehicle's scanning and listening sensors (radar, AIS, sonar, ESM) this tick.
     fn scanning(&mut self, ctx: &Ctx, o: &Observer, targets: &[Target], out: &mut Vec<Detection>) {
         let h_s = sensor_height_m(o);
@@ -1339,8 +1345,14 @@ impl Sense<'_> {
     /// nearly every one), and a locked one follows its contact in closed loop (murmur-7vp:
     /// slewing and settling again at each track update and each second of a lock left the
     /// cameras blind 93 to 98 % of the time they were cued or locked). A slew, a zoom, a search
-    /// step and a new bar settle ([`SETTLE_S`]). A camera that cannot slew looks along the
-    /// heading; one that is all panoramic does not point.
+    /// step and a new bar settle ([`SETTLE_S`]). The contact an identify order names (rules 21)
+    /// is tried until it is identified or stops being a candidate (bd murmur-39tt): its cue does
+    /// not give up at [`CUE_MAX_S`], its lock has no [`LOCK_MAX_S`], and when a cue or lock on it
+    /// ends anyway it is cued again at once, without the search's [`SEARCH_MIN_S`] or
+    /// [`RETRY_S`] (a night camera's wide field took a minute on average to find a small boat
+    /// 6 km off, and an 8 s try a minute found it about one time in eight: SCORING-V3.md 17.24).
+    /// A camera that cannot slew looks along the heading; one that is all panoramic does not
+    /// point.
     #[allow(clippy::too_many_arguments)]
     fn steer(&mut self, cx: &Ctx, o: &Observer, h_s: f64, si: usize, reach_m: f64, eo: &EoSensor, targets: &[Target]) -> Boresight {
         let s = cx.st.s;
@@ -1393,7 +1405,11 @@ impl Sense<'_> {
                 // identification keeps getting likelier or did within LOCK_MAX_S
                 let identified = self.own.identified.get(&si).and_then(|m| m.get(&c)).is_some_and(|ti| *ti >= g.since);
                 let progress = self.own.looks.get(&si).and_then(|l| l.get(&c)).map_or(g.since, |l| l.id_best_s.max(g.since));
-                let choice = if identified || s - progress >= LOCK_MAX_S { None } else { self.pick_cue(si, o, reach_m, s, Some(&c)) };
+                // rules 21: a lock on the contact an identify order names has no LOCK_MAX_S; it is
+                // held while the contact stays a candidate (bd murmur-39tt)
+                let patient = self.first(o.uid, &c);
+                let choice =
+                    if identified || (!patient && s - progress >= LOCK_MAX_S) { None } else { self.pick_cue(si, o, reach_m, s, Some(&c)) };
                 match target(&c).filter(|_| choice.as_deref() == Some(c.as_str())) {
                     Some(t) => {
                         // the image tracker keeps it centred: the gimbal follows it in closed
@@ -1444,8 +1460,13 @@ impl Sense<'_> {
                 // with the last
                 let scan = g.pattern.len() > 1;
                 let bar_over = scan && s >= g.busy_until && s - g.bar_s >= BAR_STARE_S;
-                // one aim gives up CUE_MAX_S after the cue began (or after it replaced a search)
+                // one aim gives up CUE_MAX_S after the cue began (or after it replaced a search),
+                // unless its contact is the one an identify order names and still this camera's
+                // first candidate (rules 21): the camera keeps trying it (bd murmur-39tt)
                 let began = if g.bar > 0 { g.bar_s } else { g.since };
+                let timed_out = !scan
+                    && s - began >= CUE_MAX_S
+                    && !(self.first(o.uid, &c) && self.pick_cue(si, o, reach_m, s, None).as_deref() == Some(c.as_str()));
                 if acquired {
                     g.mode = Mode::Lock(c.clone());
                     g.since = s;
@@ -1453,9 +1474,7 @@ impl Sense<'_> {
                         let (az, el) = aim(t.c.lat, t.c.lon, t.top_msl);
                         point(&mut g, az, el, true);
                     }
-                } else if target(&c).is_none()
-                    || (!scan && s - began >= CUE_MAX_S)
-                    || (bar_over && g.bar + 1 >= g.pattern.len())
+                } else if target(&c).is_none() || timed_out || (bar_over && g.bar + 1 >= g.pattern.len())
                 {
                     self.own.looked.entry(si).or_default().insert(c, s);
                     g.mode = Mode::Search;
@@ -1482,7 +1501,16 @@ impl Sense<'_> {
             Mode::Search => {}
         }
         if g.mode == Mode::Search {
-            let pick = cue_to.or_else(|| (s - g.since >= SEARCH_MIN_S).then(|| self.pick_cue(si, o, reach_m, s, None)).flatten());
+            // any cue after SEARCH_MIN_S of search; the contact an identify order names (rules
+            // 21) at once, as when a cue or lock on it ended without identifying it (an elevation
+            // search's last bar, the contact out of sight; bd murmur-39tt)
+            let searched = s - g.since >= SEARCH_MIN_S;
+            let pick = cue_to.or_else(|| {
+                (searched || self.firsts.contains_key(&o.uid))
+                    .then(|| self.pick_cue(si, o, reach_m, s, None))
+                    .flatten()
+                    .filter(|c| searched || self.first(o.uid, c))
+            });
             if let Some(c) = pick {
                 g.pattern = self.cues[&c].aims(o, h_s, wide);
                 g.mode = Mode::Cue(c);
@@ -1510,7 +1538,8 @@ impl Sense<'_> {
     }
 
     /// The track camera `si` of `o` cues to (WORLD-V3-PLAN 2.4): within its reach and the task
-    /// area, fixed within [`CUE_FRESH_S`], not looked at in vain by it within [`RETRY_S`]; the
+    /// area, fixed within [`CUE_FRESH_S`], not looked at in vain by it within [`RETRY_S`] (the
+    /// contact an identify order names is exempt, bd murmur-39tt); the
     /// nearest it has not identified within [`REVISIT_S`], else the one it looked at longest ago
     /// (beyond [`STALE_LOOK_S`]). A locked camera asks it each second, `holding` its contact: it
     /// keeps the contact while it is a candidate, unless the contact is a revisit and a contact
@@ -1520,12 +1549,18 @@ impl Sense<'_> {
         let none = HashMap::new();
         let identified = self.own.identified.get(&si).unwrap_or(&none);
         let looked = self.own.looked.get(&si).unwrap_or(&none);
+        let firsts = self.firsts.get(&o.uid);
         // how far a cue is, as the payload manager reckons it: from where its vehicle believes it is
         let (olat, olon) = o.believed();
+        // a contact looked at in vain waits RETRY_S, unless an identify order names it (rules 21,
+        // bd murmur-39tt)
         let mut cands: Vec<(&String, f64, f64)> = self
             .cues
             .iter()
-            .filter(|(c, cue)| s - cue.s <= CUE_FRESH_S && looked.get(*c).is_none_or(|t| s - t >= RETRY_S))
+            .filter(|(c, cue)| {
+                s - cue.s <= CUE_FRESH_S
+                    && (firsts.is_some_and(|f| f.contains(c.as_str())) || looked.get(*c).is_none_or(|t| s - t >= RETRY_S))
+            })
             .filter_map(|(c, cue)| {
                 let d = haversine_m(olat, olon, cue.lat, cue.lon);
                 let in_area = o.area.as_ref().is_none_or(|a| area_distance_m(a, cue.lat, cue.lon) <= 0.5 * reach_m);
@@ -1537,7 +1572,7 @@ impl Sense<'_> {
         let unidentified_ = |c: &str| identified.get(c).is_none_or(|t| s - t > REVISIT_S);
         // rules 21: the track an identify order sends the vehicle to, first, whenever it is a
         // candidate this camera has not identified (ahead of a lock on another contact)
-        if let Some(first) = self.firsts.get(&o.uid)
+        if let Some(first) = firsts
             && let Some((c, _, _)) = cands
                 .iter()
                 .filter(|(c, _, _)| first.contains(c.as_str()) && unidentified_(c))

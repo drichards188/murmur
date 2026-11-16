@@ -873,6 +873,46 @@ fn one_cameras_failed_cue_keeps_no_other_camera_off_the_contact() {
     }
 }
 
+/// A camera keeps trying the contact its vehicle's identify order names (bd murmur-39tt,
+/// SCORING-V3.md 17.24: at night the MQ-9B's wide field took about a minute on average to find a
+/// small boat 6 km off, and the payload manager gave each try 8 s, a try a minute). A boat a radar
+/// holds beyond the camera's horizon: without an order the camera's cue on it gives up at 18 s and
+/// the boat waits out the 60 s before the camera cues it again, at 78 s; with an order naming it the
+/// camera cues it at once and never goes back to its search, on every seed.
+#[test]
+fn an_identify_orders_camera_keeps_trying_its_contact() {
+    let (lat, lon) = at(BASE.0, BASE.1, 0.0, 25_000.0);
+    let boat = contact("b", "small_fast_boat", Domain::Surface, lat, lon);
+    let cam = usv(1, BASE.0, BASE.1, vec![placeholder("eo_ir", 30_000.0)]);
+    let (rlat, rlon) = at(lat, lon, 2_000.0, 0.0);
+    let ship = usv(3, rlat, rlon, radar_only());
+    let sensing = day();
+    for seed in [3, 7, 11] {
+        for ordered in [false, true] {
+            let mut e = Engine::new(None);
+            if ordered {
+                e.set_firsts([(1, ["b".to_string()].into())].into());
+            }
+            let modes: Vec<&str> = (0..120)
+                .map(|s| {
+                    e.step(&step_at(seed, s, &sensing), &[cam.clone(), ship.clone()], std::slice::from_ref(&boat));
+                    e.gimbal_of(1, 0).map_or("none", |g| g.4)
+                })
+                .collect();
+            let first = modes.iter().position(|m| *m == "cue").expect("cued");
+            if ordered {
+                assert!(first < 10, "seed {seed}: the ordered camera's first cue at {first} s");
+                assert!(modes[first..].iter().all(|m| *m == "cue"), "seed {seed}: the ordered camera left its contact: {modes:?}");
+            } else {
+                assert_eq!(first, 10, "seed {seed}: the first cue");
+                let again = modes[18..].iter().position(|m| *m == "cue").map(|i| i + 18);
+                assert!(modes[18..78].iter().all(|m| *m == "search"), "seed {seed}: {modes:?}");
+                assert_eq!(again, Some(78), "seed {seed}: the cue again");
+            }
+        }
+    }
+}
+
 /// Sea Hunter's MS3 hull sonar is active and passive ([44]): it listens as well as pings, so it
 /// identifies a UUV it hears nearly every second after its passive mode's three minutes of
 /// signal, where its active mode alone only recognises (SCORING-V3.md choice 3).

@@ -406,8 +406,14 @@ identified and what it looked at in vain (a payload manager on its vehicle knows
 did, not another's). Rules 21 (bd murmur-bia, DECISIONS.md "W1 follow-up: an identify order"):
 while a vehicle flies an identify order (its task's `look` names a track), its cameras cue the
 contacts behind that track first, whenever one is a candidate this camera has not identified,
-ahead of the nearest-unidentified rule and of a lock on another contact; the rest of the
-manager is unchanged. A look in progress survives the slew and zoom. A camera that cannot slew
+ahead of the nearest-unidentified rule and of a lock on another contact, and keep trying it
+(bd murmur-39tt): a cue on it does not give up after its 8 s, a lock on it has no 10 s without
+progress, and when either ends anyway (an elevation search's last bar, the contact out of
+sight) the camera cues it again at once, without the 10 s of search or the 60 s a contact
+looked at in vain waits. Before, an identify's contact waited out those 60 s like any other:
+at night the MQ-9B's wide field takes about a minute on average to find a small boat 6 km off,
+and an 8 s try a minute found it about one time in eight (eval/SCORING-V3.md 17.24). The rest
+of the manager is unchanged. A look in progress survives the slew and zoom. A camera that cannot slew
 looks along its vehicle's heading; a panoramic one does not point. The constants are [E].
 
 A cue to an aircraft whose height no sensor measured (a 2D radar's plot, a camera's or ESM's
