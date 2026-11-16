@@ -2686,6 +2686,17 @@ it took the one camera already on the threat. All five losses are at the Golden 
 twilight; all three San Diego situations went its way (confounded with light; nine situations).
 Filed as bd murmur-335c (free steps first).
 
+**Amended the same day, after reading the wakes** (the result and the rule's no-go stand): four of
+the five losses are mostly the driver's, not the model's ranking. Each fast boat appeared just
+outside the circle as a `small_surface` detection; the model said it would watch it and look if it
+came in (F8 at the Gate 5004: "If it moves in ... I'd propose HUNTER 1 or ALBATROSS 1 for a look"),
+and was never woken as it came in: the approach wake (bd murmur-1h2r) lets a contact go for good once
+its shown identity reaches 0.6 confidence without a conflict, whatever the level and sensor, and a
+confident size class passed (bd murmur-p9lt). It was next told of each when its affiliation turned
+suspect, after the deadline. It read the tracks itself 5 to 10 times an episode, never at those
+moments. The fifth, the UUV (F13 at the Gate 5002), is judgment: told of it from 46 s, it watched it
+sit under the 0.6 line for ten minutes without sending a sonar.
+
 **What it does not say.** Nine situations on dev seeds picked after the free agents, one replicate,
 the cheaper officer (no consult), the labels as built; not how often, and not about people. Spend:
 US$10.27 of the owner's US$12 for this smoke (the US$45 of 2026-11-14 stands at US$39.61).
