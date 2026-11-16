@@ -96,7 +96,8 @@ Each label carries its instrument's name and version (`v3.*`, version 3; v2's wh
 
 A contact whose truth affiliation is unknown, suspect or hostile is a **contact need** when it first
 comes within the world's mission circle (`[mission]` of sim/worlds/<world>.toml: the protected point
-and 3 km). `t_need` is the first truth sample inside; the deadline `D = t_need + grace(domain)`.
+and 3 km; since stage S6 of docs/SCENARIO-SETTINGS.md the record's settings' circle, v0's for every
+run before decision rules 33: sim/policy-v0-watch.toml, the same points and 3 km). `t_need` is the first truth sample inside; the deadline `D = t_need + grace(domain)`.
 **Not evaluable**: D later than the episode's end minus 10 s. **Eligible**: evaluable and not a
 sensing error.
 
@@ -216,7 +217,8 @@ Orbit, patrol, hold and rtl (the movers' tasks), `track` (the antenna tracker's)
      identity conflict, or under 0.6 confidence) and inside the world's mission circle or carried
      into it along its shown velocity within the horizon (300 s, in 5 s steps). An aircraft shown
      with no velocity (none, or under 0.5 m/s: the tracker feeds one without as 0.0 m/s) is taken to
-     come straight in at the air threat speed, 25 m/s (mission.py `THREAT_MPS`, the honest
+     come straight in at the air threat speed, 25 m/s (the record's settings' `no_velocity_mps`, v0's;
+     mission.py `THREAT_MPS` before stage S6; the honest
      ceiling's own rule): it approaches when that run from its shown position reaches the circle
      within the horizon, so out to 10.5 km. A track of another domain with no velocity is judged at
      its position only, as before.
@@ -2955,3 +2957,101 @@ did not recur: HUNTER 1 went to the sailboat at 229 s, after the boat was identi
 **Next.** The owner's call. 17.25's "both" branch (a larger run on fresh pilot seeds) is not
 earned. Free first: murmur-mdm2's count. Spend: US$2.74 against the owner's "about US$3" of
 2026-11-16.
+
+### 17.27 Each record's own settings, and the honest ceiling held to the mission's sensors (2026-11-16, S6; free)
+
+**Coverage.** golden-gate-v3 and san-diego, each with its world's background traffic (the scale
+world not used); Golden Gate v3: 20 vehicles (air 8, ground 3, subsurface 2, surface 7), San Diego:
+24 (air 10, ground 3, subsurface 2, surface 9), 16 types; sensors AIS, EO/IR, ESM, radar and sonar
+under the physical sensing model; contacts: the traffic in the air, on the ground and on the
+surface, and F1-F6's elements (surface, air, subsurface, ground; F18 adds none); conditions drawn
+per situation (day 61, night 62, twilight 10, fog 7 of 140); dev seeds 5000-5009, families F1-F6
+and F18 on both worlds: 140 situations and 420 episodes a batch; agents `none`, `oracle-v3-honest`
+and `oracle-v3-shown`; the approve-all operator, the paused clock, one replicate; decision rules 32
+(the default), so every record is graded under v0's settings. Model results only: free,
+deterministic agents, no human data. **Shortcuts, named**: one replicate a situation; the honest
+ceiling is the agent measured, the shown ceiling and `none` its controls; the episodes depend on
+the SATCOM look cache's state (the last paragraph), so the two batches compared were run from one
+copy of it.
+
+**What changed.** Stage S6 of docs/SCENARIO-SETTINGS.md moved every copy of the watch's values in
+the scoring, the briefs, the ceilings and the oracles onto the settings the record's run logged
+(settings.py `of_record`: v0's for every run before rules 33) or, for a running agent, the ones MCP
+`get_policy` serves (`of_answer`). For a record of v0's that changes nothing (next paragraph). For
+the planners it changes one thing: the honest ceiling took a track as settled when its identity
+reached 0.6 with the support of EO/IR or sonar in any domain, never AIS (`CLASSIFYING`); it now
+takes each domain's own sensors from the settings, as the scoring does: EO/IR or AIS on the surface
+(AIS at face value: the picture cannot tell a spoof), EO/IR in the air and on the ground, sonar
+under the water. The bar (`P60`), the horizon (300 s) and the reserve (20 %, with the planners'
+named margins: the ceiling's 3 points, the honest ceiling's 1 more for the session's whole percent)
+read the same values from the settings, so they change nothing under v0.
+
+**Old results stay honest.** Every v3 result directory with a report was reported again (`run
+report` into a copy of it) by main's code and by S6's. All nine give a `dev_v3.json` byte-identical
+to main's: six (effective 11-15 and 11-16, the night rerun, the pilot, smoke 11-15 and smoke2) are
+also byte-identical to their originals; three (baseline 11-14, smoke 11-14, the cost check) differ
+from their originals on main already (written before the labels were renamed on 11-15, 17.12). The
+three ops reports (`report_ops.py`: the F14 basic batch, smoke 11-14, the cost check) are
+byte-identical to main's too. `dev_v3.md` gains one coverage line per world and settings set
+("Settings in golden-gate-v3 (210 episodes): v0 ..., sha256 f1769dedc6ce: ..."), nothing else.
+eval/headless/tests/test_v3_rescore.py holds a small synthetic batch's report to the one main wrote.
+
+**Needs served per family** (served over eligible; before: main, after: S6):
+
+| family | world | none before | none after | honest before | honest after | shown before | shown after |
+|---|---|---|---|---|---|---|---|
+| F1 fast boat | golden-gate-v3 | 7/10 | 7/10 | 7/10 | 7/10 | 9/10 | 9/10 |
+| F1 fast boat | san-diego | 6/10 | 6/10 | 6/10 | 6/10 | 6/10 | 6/10 |
+| F2 drone | golden-gate-v3 | 0/10 | 0/10 | 5/10 | 5/10 | 5/10 | 5/10 |
+| F2 drone | san-diego | 0/10 | 0/10 | 2/10 | 2/10 | 6/10 | 6/10 |
+| F3 low aircraft | golden-gate-v3 | 7/10 | 7/10 | 7/10 | 7/10 | 6/10 | 6/10 |
+| F3 low aircraft | san-diego | 7/10 | 7/10 | 10/10 | 10/10 | 9/10 | 9/10 |
+| F4 UUV | golden-gate-v3 | 7/10 | 7/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| F4 UUV | san-diego | 8/9 | 8/9 | 8/9 | 8/9 | 8/9 | 8/9 |
+| F5 diver | golden-gate-v3 | 0/10 | 0/10 | 0/10 | 0/10 | 1/10 | 1/10 |
+| F5 diver | san-diego | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| F6 shore vehicle | golden-gate-v3 | 2/10 | 2/10 | 2/10 | 2/10 | 5/10 | 5/10 |
+| F6 shore vehicle | san-diego | 5/10 | 5/10 | 7/10 | 7/10 | 7/10 | 7/10 |
+| F18 quiet | both | no needs | no needs | no needs | no needs | no needs | no needs |
+| all | both | 59/119 (50 %) | 59/119 (50 %) | 74/119 (62 %) | 74/119 (62 %) | 82/119 (69 %) | 82/119 (69 %) |
+
+No need moved, for any agent: every need's served and eligible flags are the same, episode for
+episode. `none` and the shown ceiling are the same in every episode; the honest ceiling's orders
+moved in 11 of 140.
+
+**The honest ceiling's orders** (per situation-hour, both worlds pooled): not justified 85.89 before,
+86.01 after; justified 152.66, 152.18; every order 259.76, 259.42; harmful 0.29, 0.29. By family the
+largest moves are F1's not justified (74.2 to 78.4: one San Diego situation) and F3's orders (297.2
+to 293.6); F6's are unchanged. The shown ceiling's: 5.67 (5.26), 16.21 and 0.0, unchanged.
+
+**Why.** The needs the honest ceiling makes from the picture are the same (1,083 at the Golden Gate,
+674 in San Diego, in both batches); what moved is when it calls one settled.
+- At the Golden Gate a fishing vessel with its own AIS (T-0031 or T-0032, shown neutral at 0.85 to
+  0.99, AIS among its support) is settled 8 to 140 s sooner in 14 situations, from the AIS
+  identification, where it waited for a camera or a sonar before; the vehicle sent to it is free
+  sooner.
+- In San Diego a fishing vessel identified only by a drifting buoy's passive sonar (0.62 to 0.95,
+  `["sonar", "esm"]`) is no longer settled, as the scoring never counted it on the surface; in 4
+  situations the honest ceiling now keeps looking at it, later or to the end (575 needs resolved in
+  San Diego against 577), and one of them (F1, seed 5004) adds 21 orders not justified.
+- Neither moves a need of the families': their contacts carry no AIS, and the surface needs (F1)
+  were the cameras' already (2.2).
+
+So the ruler for new runs moves by a fraction of a percent in the honest ceiling's orders and not at
+all in what it serves; the shown ceiling, whose criteria were the scoring's already, does not move.
+
+**A harness finding (reported, not changed).** A first pair of batches, each run on its own tree,
+moved the shown ceiling in one situation of 140 (F2 at the Golden Gate, seed 5003: at 190 s it sent
+the Sea Hunter, not the X10) and the honest ceiling in 33, though S6 changes nothing in the shown
+ceiling's decisions under v0. Bisected: the same code chooses the X10 or the Sea Hunter with one or
+the other tree's `logs/headless/space-cache/` (the emulator's SATCOM look cache,
+crates/murmur-headless `space_cache.rs`, which grows as episodes run). With the other cache the
+vehicles' true state differs in the eighth figure (the Sea Hunter's battery at 190 s, 99.9953179 %
+against 99.9953182 %), and that tipped the plan. docs/HEADLESS.md 5.1 says the look cache answers
+the same with or without a cached look; an episode's record does not show which it had. So an
+episode is not always reproducible without the cache it ran on (main's batch, run once from an empty
+cache and once from a full one, gave the same report byte for byte; S6's first run, from the cache
+this tree's smoke episodes had left, did not), and a batch run in parallel fills the cache in the
+order its workers reach it. The tables above come from the second pair, both batches started from
+one copy of the cache. Worth an issue: why a cached look moves the run, or batches started from a
+pinned cache.

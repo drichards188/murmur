@@ -307,3 +307,29 @@ of this work.
   under water): scenario 150 runs on the legacy reaches; a sonar-planned look is open. MCP
   `get_intents` and `explain_intent` carry `identify_progress` under rules 33 only; the tools'
   descriptions are unchanged (they enter the golden digests' tool lists), left for S4 or S7.
+
+- S6 as built: the scoring reads each record's settings (`settings.of_record`; a record of a run
+  before rules 33 v0's) in the labels, the faults, the metrics, the report, the causes and the
+  able types; the multiverse's `Params` scales the record's horizon and look distance by its value
+  over v2's default, so v0's records label exactly as before. The low-reserve need of a logged run
+  is version 2 (`v3.low_reserve`: open under `reserve_pct` plus one `task_duration_s` at the
+  catalog endurance, unmet at `reserve_pct`). Every planner and oracle reads the run's settings
+  from MCP `get_policy` (`settings.of_answer`): the circle, the graces, the bar, the reserve with
+  the planner's own margins (`RESERVE_MARGIN_PCT`, `SHOWN_BATTERY_PCT`), and the honest ceiling's
+  horizon, speeds and each domain's sensors (it counts AIS on the surface now, and a buoy's sonar
+  there no longer); the evidence reviewer reads the bar from `GET /api/policy`; the v2 agents read
+  v2's own frozen labels. mission.py keeps only the v0 renderer (from the frozen file); the v3
+  worlds' `[mission]` tables and the watch situations' playbook circles are gone. Under rules 33
+  the v3 brief is the card (F14's point labelled `[lon, lat]`), the stated truth gains
+  `card_sha256` and `settings_sha256`, and a situation's brief carries the card (a scenario whose
+  policy sets no circle is carded without one); the live runner refuses a policy the decision
+  layer refuses before the stack starts. Under rules 32 every family's brief, stated truth and
+  contacts file are byte-identical to before (all 35, seed 5003), and the rescored result
+  directories reproduce their `dev_v3.json` (SCORING-V3.md 17.27). The report's markdown states
+  the settings per world and sha256; its JSON states them only when some run logged them, and a
+  batch that mixes values is summarized per set. Guards: eval/tests/test_settings_guard.py (no
+  copy assigned outside the readers and the pinned frozen modules, no settings key in a file
+  outside the standing, frozen and whole policies and supplements, no situation repeating its
+  policy's circle, each inventory site reading the settings, and the perturbation check) and
+  eval/headless/tests/test_v3_rescore.py (a synthetic v0 batch's report against the one the code
+  before S6 wrote). The Rust guard and the end-to-end test are S7's.
