@@ -316,13 +316,45 @@ def test_a_neutral_or_identified_contact_does_not_wake():
     w = watch()
     p = Poller(lambda: None)
     follow(p, "T-1", "T-2", "T-3")
-    p.session = Session({"T-1": air("T-1", -4500, 0, affiliation="neutral"),
-                         "T-2": air("T-2", -4500, 0, confidence=0.9),
-                         "T-3": air("T-3", -4500, 0, confidence=0.9, conflict="AIS says cargo")})
+    identified = air("T-2", -4500, 0, confidence=0.9)
+    identified["identity"].update(level="identify", supported_by=["eo_ir"])
+    conflicted = air("T-3", -4500, 0, confidence=0.9, conflict="AIS says cargo")
+    conflicted["identity"].update(level="identify", supported_by=["eo_ir"])
+    p.session = Session({"T-1": air("T-1", -4500, 0, affiliation="neutral"), "T-2": identified, "T-3": conflicted})
     out = asyncio.run(p.approach(w, now=0.0))
     assert [c["track"] for c in out] == ["T-3"], "a conflict is in doubt whatever the confidence"
     follow(p, "T-4", affiliation="friendly")
     assert "T-4" not in p.following and "T-1" not in p.following and "T-2" not in p.following
+
+
+def test_a_confident_size_class_is_still_in_doubt():
+    """bd murmur-p9lt: a fast boat first seen as a radar detection, `small_surface` at 0.93, was let
+    go as identified and never announced as it came in. Only the brief's identification resolves
+    a contact: its kind at the domain's level from the domain's identifying sensor."""
+    from watch.picture import Poller, resolved
+
+    def boat(level: str, conf: float, support: list[str], kind: str = "small_surface", domain: str = "surface"):
+        e = entry("T-1", -4000, 0, ve=12.0, conflict=None)
+        e.update(domain=domain, affiliation="unknown")
+        e["identity"] = {"kind": kind, "level": level, "confidence": conf, "conflict": None, "supported_by": support}
+        return e
+
+    assert not resolved(boat("detect", 0.93, ["radar"])), "a size class"
+    assert not resolved(boat("identify", 0.63, ["sonar"], "small_fast_boat")), "sonar does not identify a boat"
+    assert resolved(boat("identify", 0.9, ["eo_ir"], "small_fast_boat"))
+    assert resolved(boat("identify", 0.8, ["ais"], "cargo_ship")), "its own AIS (a spoof shows as a conflict)"
+    assert not resolved(boat("recognise", 0.59, ["sonar"], "submerged", "subsurface"))
+    assert resolved(boat("recognise", 0.6, ["sonar"], "submerged", "subsurface")), "its class will do under water"
+    w = watch()
+    p = Poller(lambda: None)
+    follow(p, "T-1")
+    p.session = Session({"T-1": boat("detect", 0.93, ["radar"])})  # 1 km outside, 12 m/s straight in
+    (c,) = asyncio.run(p.approach(w, now=0.0))
+    assert c["kind"] == "track.approaching" and c["enters_s"] is not None
+    p.session.tracks["T-1"] = {**boat("detect", 1.0, ["radar", "eo_ir"]), "position": at(-2000, 0),
+                               "predicted": at(-2000, 0)}
+    (d,) = asyncio.run(p.approach(w, now=10.0))
+    assert d["kind"] == "track.in_watch", "still in doubt inside: announced"
 
 
 def test_a_ferry_far_off_and_moving_away_does_not_wake():

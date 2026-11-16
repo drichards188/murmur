@@ -47,8 +47,33 @@ MAX_TOLD = 5000
 #: eval/headless/v3/mission.py RESOLVE_CONF)
 RESOLVE_CONF = 0.6
 CLEAR = ("friendly", "neutral")
+#: what resolves a contact's identity, as the mission's brief counts it (eval/headless/v3/mission.py
+#: DOMAINS): its kind at the domain's level or above, from the domain's identifying sensor (its AIS
+#: too on the surface). A detection's size class (`small_surface` at 0.93) resolves nothing: the
+#: approach wake once let such a fast boat go before it came in (bd murmur-p9lt)
+LEVELS = ("detect", "recognise", "identify")
+RESOLVE_LEVEL = {"subsurface": "recognise"}
+RESOLVE_SENSORS = {"surface": ("eo_ir", "ais"), "air": ("eo_ir",), "ground": ("eo_ir",), "subsurface": ("sonar",)}
 # contacts the stakes gate kept routine that the driver keeps reading (`Poller.stakes`)
 MAX_GATED = 50
+
+
+def resolved(t: dict) -> bool:
+    """A `get_tracks` entry's identity resolves the contact: no conflict, RESOLVE_CONF or more, at
+    its domain's level (`identify`; `recognise` under the water) or above, and supported by its
+    domain's identifying sensor where the entry says what supports it (`supported_by`)."""
+    ident = t.get("identity") or {}
+    conf = ident.get("confidence")
+    if ident.get("conflict") or not isinstance(conf, (int, float)) or conf < RESOLVE_CONF:
+        return False
+    domain = t.get("domain")
+    level, need = ident.get("level"), RESOLVE_LEVEL.get(domain, "identify")
+    if level not in LEVELS or LEVELS.index(level) < LEVELS.index(need):
+        return False
+    support = ident.get("supported_by")
+    if isinstance(support, list):
+        return bool(set(support) & set(RESOLVE_SENSORS.get(domain, ())))
+    return True
 
 
 def max_transit_s(policy: dict) -> float:
@@ -244,8 +269,8 @@ class Poller:
         return out
 
     async def approach(self, watch: Any, now: float | None = None) -> list[dict]:
-        """bd murmur-1h2r: each contact in doubt (not known friendly or neutral, its identity below
-        the resolve line or in conflict), read by id every `approach_every_s`: one predicted to come
+        """bd murmur-1h2r: each contact in doubt (not known friendly or neutral, and not identified as
+        the brief counts it: `resolved`, bd murmur-p9lt), read by id every `approach_every_s`: one predicted to come
         inside a watch area within the horizon is a `track.approaching` change, once, and one
         inside a `track.in_watch`, once (then it is let go). A contact identified, declared
         friendly or neutral, or gone from the picture is let go. A read-only driver read, not
@@ -268,8 +293,7 @@ class Poller:
                 continue
             ident = t.get("identity") or {}
             conf = ident.get("confidence")
-            doubt = t.get("affiliation") not in CLEAR and (
-                bool(ident.get("conflict")) or not isinstance(conf, (int, float)) or conf < RESOLVE_CONF)
+            doubt = t.get("affiliation") not in CLEAR and not resolved(t)
             if not doubt:
                 self.following.pop(tid, None)
                 continue
