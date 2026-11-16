@@ -2758,3 +2758,50 @@ rest are dropped and listed.
 **The commands**, each into `eval/results/headless/v3-model-smoke2-2026-11-15`, as 17.20's (the
 same agents, `--model-config '{"escalation": false, "max_usd": 3}' --max-usd 12`), one batch per row
 of the table (row 4: `--families v3-f8-decoys-gg v3-f8-decoys-sd --seeds 5007`).
+
+### 17.23 The smoke again: the result (2026-11-15)
+
+**Coverage.** As 17.21's: both worlds, needs on the ground, on the surface and under it, none in the
+air; 8 of 17.22's 9 situations, each once (the UUV, row 8, dropped by the budget rule: US$9.76 spent
+plus 1.2 times US$1.76 plus US$0.75 passes US$12). Run 2026-11-16 01:58-02:24Z on 9a6d3fd (8980d21's
+fix in it), 32 episodes, no harness error; the model's 8 all scored: no budget stop, API error,
+refusal or leakage hit. The free agents gave 17.21's result in all 8. US$9.76 (US$1.22 an episode,
+at most US$1.65). Records in `eval/results/headless/v3-model-smoke2-2026-11-15`. **Model results
+only**; a smoke, not a finding to quote.
+
+| situation | group | 17.21 | now | what happened |
+|---|---|---|---|---|
+| F12 GNSS, Golden Gate 5000 | B | lost | lost | woken at 185 s, sent REAPER 1 at once; no identification by 288 s |
+| F8 decoys, Golden Gate 5004 | B | lost | **kept** | identified at 354 s, deadline 408 s |
+| F9 night and fog, Golden Gate 5005 | A | lost | **served** | woken at 245 s, sent HUNTER 1 at once; identified at 315 s, deadline 321 s |
+| F8 decoys, Golden Gate 5007 | A | lost | lost | woken at 412 s, sent REAPER 1 at once; never identified |
+| F8 decoys, San Diego 5007 | B | kept | kept | |
+| F12 GNSS, Golden Gate 5002 | B | kept | kept | |
+| F6 shore vehicle, San Diego 5003 | A | served | served | |
+| F8 decoys, San Diego 5008 | B | kept | **lost** | sent KESTREL 1 to the boat at 406 s; identified at 452 s, 14 s past the deadline |
+
+**By 17.22's reading: mixed.** Of the four the wake explained, 2 now go the model's way (3 were
+needed to call it the context, 1 or fewer the model); of 17.21's four wins, 3 still do. So neither
+the "no Opus" nor the "ask for Opus" branch holds; both are reported. 17.20's measures on these
+8: A 2 of 3, B 3 of 5; orders not justified on the picture 4.0 an hour against the playbook's 22.5,
+harmful 0.5 against 0.5 (one order each).
+
+**What changed and what did not.**
+- With the wake fixed the model was told of every fast boat as it came in and acted on each at once
+  (four of four), saying why it chose the vehicle and when the deadline was at risk. The context
+  fault of 17.21 is gone.
+- Both remaining wake losses are one pattern: at night, REAPER 1 (the MQ-9B at 3,000 m) sent to
+  identify a small fast boat because the identify options said it passed, with a camera reach of
+  10,964 m for a small surface contact (standoffs of 7,064 and 5,831 m), and no closer vehicle
+  passed in time. Its look never identified the boat (F12: by 295 s, "REAPER 1 has not yet produced"
+  an EO/IR look). Whether the options overstate what that camera does at night against a fast boat
+  (a context fault again) or the model should have sent something closer is a free check first (bd
+  murmur-39tt). In F12 the model then sent HUNTER 1, which was on the boat, to a slow look-alike, as
+  in 17.21 (harmful b), reasoning that REAPER 1 had the boat.
+- F8 in San Diego 5008, won in 17.21, was lost by 14 s with an order aimed at the boat: the same
+  model in the same situation varies from run to run (its sampling), so one replicate a situation
+  is noise at this size.
+
+**Next.** No paid run until murmur-39tt says whether the MQ-9B's night identification is the
+model's choice or the tools' figure. Spend: the two smokes US$10.27 and US$9.76 (US$20.03), against
+the owner's US$12 and "about US$10" approvals of 2026-11-15.
