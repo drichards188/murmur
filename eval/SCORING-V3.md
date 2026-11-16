@@ -2528,3 +2528,97 @@ clear of our drifters, and the oracle spares by the labels' geometry. The honest
 4 of 68 situations on its own nominations and 32 of 68 with the adopter's, none harmful, 8 of 19
 escort situations among them. F15 is still not scoreable: choice 26, the aircraft in the keep-outs
 (17.18), BLADE 1's link at the Gate and more seeds come first.
+
+### 17.20 A smoke where the agent's choice decides, registered before it ran (2026-11-15)
+
+Written and committed before any of its episodes; what follows is not changed after the first one.
+A smoke: it decides only whether a larger paid run on these families is worth asking for. Its
+numbers describe one model as an agent in simulated situations, never people, and are not findings
+to quote (Murmur is a working draft).
+
+**The question.** On today's world v3, does the model watch officer act where acting decides the
+outcome, and leave alone what doing nothing already serves?
+
+**The agent.** 17.9's: Claude Sonnet 5.5 (`claude-sonnet-5-5`) at medium effort takes every wake,
+no Opus consult (`"escalation": false`), US$3 an episode at most.
+
+**The build.** The commit that adds this section. Nothing that changes an episode (the officer, the
+bridge, its tools, the simulator, a world) lands between the first episode and the last; a change to
+the labels or the report may, since the records are rescored, not rerun.
+
+**The selection.** From the free batch of 2026-11-15 (`eval/results/headless/v3-effective-2026-11-15`,
+on 0e2f276: F2, F6, F8, F9, F12 and F13 in both worlds, dev seeds 5000-5009, `none`, `playbook`,
+`oracle-v3-honest` and `oracle-v3-shown`, 480 episodes, no harness error), every situation with no
+air need in which either (A) `none` fails a need and `oracle-v3-honest` serves every need (7), or (B)
+`none` serves every need and `oracle-v3-honest` fails one (5): there the honest ceiling moved a
+vehicle to look at one thing and lost a sighting that standing still kept. Air needs are left out
+(15 of the batch's 22 A situations, and 3 of its 8 B ones): a radar-only aircraft's picture may
+still change (bd murmur-3ohg's step 2; and our MQ-9B's radar detects aircraft, which the real Lynx's
+published modes do not: no air mode, a field of regard from 5 to 60 degrees below the horizon).
+**Chosen after looking at the free agents, on dev seeds**: the smoke says what the model does in
+these 12 situations, not how often it would.
+
+| group | family | world | seed | need | light | `playbook` |
+|---|---|---|---|---|---|---|
+| A | F6 shore vehicle | San Diego | 5003 | ground | day | not served |
+| A | F6 shore vehicle | San Diego | 5005 | ground | day | served |
+| A | F12 GNSS | San Diego | 5005 | ground | day | served |
+| A | F13 vehicle faults | Golden Gate | 5002 | subsurface | twilight | not served |
+| A | F13 vehicle faults | Golden Gate | 5005 | subsurface | night | not served |
+| A | F8 decoys | Golden Gate | 5007 | surface | night | not served |
+| A | F9 night and fog | Golden Gate | 5005 | surface | night | not served |
+| B | F12 GNSS | Golden Gate | 5000 | surface | night | served |
+| B | F12 GNSS | Golden Gate | 5002 | ground | twilight | served |
+| B | F8 decoys | Golden Gate | 5004 | surface | night | served |
+| B | F8 decoys | San Diego | 5007 | surface | day | served |
+| B | F8 decoys | San Diego | 5008 | surface | day | served |
+
+The model runs each once. `none`, `playbook` and `oracle-v3-honest` run again on the same build
+into the same directory (free), and the comparison is with those; a free result that differs from
+the selection batch's is reported. The paused clock, the approve-all operator.
+
+**The measures.**
+1. A: situations whose every need the model serves, of 7 (by the selection `none` 0, the honest
+   ceiling 7; the playbook 2).
+2. B: situations whose every need the model still serves, of 5 (by the selection `none` 5, the
+   honest ceiling 0; the playbook 5).
+3. Orders not justified on the picture at the time, per situation-hour, and harmful orders, the
+   model against the playbook, pooled over the 12; orders to several vehicles at once counted apart
+   (bd murmur-3kqi).
+4. A model episode the guard stopped, whose call failed or whose input hit the leakage scan counts
+   against the model in both groups (A not served, B lost), and is listed.
+
+**Go** (a larger paid run on these families is worth asking for, registered first, with this
+selection rule applied to free runs on fresh model-pilot seeds, 6610 on): all of (a) A: the model
+serves at least 3 of 7, more than the playbook's 2; (b) B: it keeps at least 4 of 5; (c) its orders
+not justified on the picture per hour, and its harmful orders, no more than the playbook's, pooled.
+**No-go**: otherwise. Either way the report gives the numbers, the cost, and the cause of each A
+situation not served and each B situation lost, judged on the picture the model had at the time.
+
+**Halves.** First seeds 5002, 5003, 5004 and 5007 (A: F13 at the Gate 5002, F6 5003, F8 at the
+Gate 5007; B: F12 at the Gate 5002, F8 at the Gate 5004, F8 in San Diego 5007), then 5005, 5000
+and 5008 (the other four A, two B). If the first half's spend, plus six more episodes at its mean
+and a US$1.50 margin, passes the cap, the second half drops, in this order, until it fits: F6 5005
+and F12 in San Diego 5005 (the two the playbook serves), then F13 at the Gate 5005; never a B
+situation.
+
+**Budget.** The owner approved US$12 for this smoke (2026-11-15), the batch's hard cap, kept in the
+directory's ledger (its spend is apart from the US$45 of 2026-11-14, US$39.61 of it spent). The
+pilot's mean, US$0.89 an episode, gives about US$11 expected. Every record is kept.
+
+**Known defects, kept** (the same in every arm): EEL 1 aground in about 3 Golden Gate situations of
+10 (bd murmur-galh); San Diego's airliners scripted past the catalog's top speed (bd murmur-odn3);
+the MQ-9B's radar detecting aircraft (above; no air need here, but its tracks are in every picture).
+
+**The commands**, each into `eval/results/headless/v3-model-smoke-2026-11-15` (the ledger's cap is
+shared by every batch into the directory; `--no-build` after the first):
+
+    MURMUR_EVAL_MODEL=1 .venv/bin/python -m eval.headless.v3.run batch \
+        --families v3-f13-vehicle-faults-gg v3-f12-gnss-gg --seeds 5002 \
+        --agent model none playbook oracle-v3-honest \
+        --model-config '{"escalation": false, "max_usd": 3}' --max-usd 12 --workers 8 \
+        --out eval/results/headless/v3-model-smoke-2026-11-15
+    (the same for v3-f8-decoys-gg and v3-f8-decoys-sd on 5007, v3-f6-shore-vehicle-sd on 5003 and
+    v3-f8-decoys-gg on 5004; then v3-f6-shore-vehicle-sd, v3-f13-vehicle-faults-gg, v3-f12-gnss-sd
+    and v3-f9-night-fog-gg on 5005, v3-f12-gnss-gg on 5000 and v3-f8-decoys-sd on 5008)
+    .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-model-smoke-2026-11-15
