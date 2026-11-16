@@ -2805,3 +2805,34 @@ harmful 0.5 against 0.5 (one order each).
 **Next.** No paid run until murmur-39tt says whether the MQ-9B's night identification is the
 model's choice or the tools' figure. Spend: the two smokes US$10.27 and US$9.76 (US$20.03), against
 the owner's US$12 and "about US$10" approvals of 2026-11-15.
+
+### 17.24 Why the MQ-9B's night looks failed (2026-11-15, bd murmur-39tt; free)
+
+From the records of 17.23 and the sensing model's own figures (a temporary ignored test, reverted:
+the armed MQ-9B's EO/IR at 3,000 m, night, 12 km visibility, a small fast boat). No change made.
+
+- **What the camera does once on the boat: as the options said.** The model's prediction gives an
+  identification chance of 0.99 at 4 km along the ground, 0.96 at 6 km and 0.89 at 8 km, an
+  identification range of 14.2 km: the options' 10,964 m reach and 5.8 to 7.1 km standoffs agree.
+- **What it takes to find it: about a minute a try, and a try lasts 8 s.** The wide field's mean
+  time to detect it (the prediction's `tau_s`) is 5 s at 1 km, 8 s at 2.5 km, 17 s at 4 km, 57 s at
+  6 km and 181 s at 8 km. The payload manager gives a cue 8 s in the wide field (`CUE_MAX_S`), then
+  marks it looked at in vain and does not cue it again for 60 s (`RETRY_S`), an identify's own
+  contact included (its priority applies only while it is a candidate). At the options' standoffs
+  a try finds the boat about one time in eight, one try every 68 s.
+- **The running model agrees.** One MQ-9B on the identify's priority, a radar cueing, the boat at 12
+  m/s: first detection at 80 to 85 s at 4 and 6 km (and at 2.5 km once the aircraft flew its orbit),
+  identification 3 to 4 s after; held within 2.5 km, 17 to 24 s. A 300 m navigation error changed
+  nothing.
+- **In the episodes** the camera never detected the boat (F12: 3 to 5 km for 110 s; F8: 7 km
+  closing to 2.5 km over 90 s); between tries it went to other contacts (a fishing boat it loitered
+  over, a cargo ship, a helicopter, a sailboat).
+
+**So the context again, not the model's choice.** The options told the model what the camera
+identifies once on the boat and nothing of the time to find it at night; at 70 % of that reach a
+60 s surface deadline is met only by luck, and the model had no way to know. It limits every agent's
+`identify`, not the model's alone. Ways to fix it, none taken (the owner's call): (a) size the
+identify's standoff by the time to acquire as well as the chance to identify (a decision-rules
+version); (b) the options state an expected time to identify for each vehicle; (c) the payload
+manager keeps trying an identify's own contact rather than waiting 60 s (a change to the sensing
+model, the fixed world: reported first, as here).
