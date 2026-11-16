@@ -17,7 +17,9 @@
 //! dispatch would stop an engagement in play needs `"acknowledge_supersede": true`; `abort`
 //! stops an approved or dispatched engagement before its effect, any operator), `GET
 //! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/identify/options`
-//! (rules 21: the vehicles that could be sent to identify a track, ranked), `POST /api/engage/options`
+//! (rules 21: the vehicles that could be sent to identify a track, ranked), `GET /api/policy` (the
+//! policy in force, as MCP `get_policy` serves it, with `rules_version` and the nomination's
+//! `engage_defaults`: read-only, no identity needed), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
 //! preview; nothing is created or logged; murmur-8xe: `replaces`, a pending nomination the
 //! console is replacing, judges as if it were gone, and the answer's `replaces` says whether it
@@ -97,6 +99,8 @@ pub fn router(app: App) -> Router {
         .route("/api/restores/unspend", post(unspend))
         .route("/api/operator/view", post(operator_view))
         .route("/api/operators", get(operators))
+        // rules 33: the policy, its watch settings and the nomination's defaults (read-only)
+        .route("/api/policy", get(policy))
         .route("/api/engage/options", post(engage_options))
         .route("/api/identify/options", post(identify_options))
         .route("/api/platforms", get(platforms))
@@ -915,9 +919,34 @@ async fn sensing_reach(State(app): State<App>, Query(q): Query<ReachQuery>) -> R
     };
     let (tracks, world) = (app.tracks.clone(), app.world.clone());
     match tokio::task::spawn_blocking(move || tracks.reach_json(&world, &of, clock::wall())).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => Json(reach_note(v, app.decision.rules(), app.decision.watch())).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, format!("sensor reach: {e}")),
     }
+}
+
+/// The sensor reach answer (`GET /api/sensing/reach`, MCP `get_sensor_reach`) as agents read it:
+/// under rules 33, where it shows reaches (the physical model), its note also says each is the
+/// even-chance range and an identify order's standoff 70 % of the camera's (`reach::p50_words`, at
+/// the run's watch bar); under older rules, and under the legacy model, as it was.
+pub(crate) fn reach_note(mut v: Value, rules: &murmur_decide::RulesConfig, watch: &murmur_decide::WatchSettings) -> Value {
+    let shows = v["vehicles"].is_array() && v["model"].as_str() == Some("physical") && v["available"] == json!(true);
+    if rules.scenario_settings()
+        && shows
+        && let Some(note) = v.get("note").and_then(Value::as_str)
+    {
+        let words = crate::tracks::reach::p50_words(watch.bar);
+        let mut first = words.chars();
+        let words = first.next().map(|c| c.to_uppercase().chain(first).collect::<String>()).unwrap_or_default();
+        v["note"] = json!(format!("{note} {words}"));
+    }
+    v
+}
+
+/// `GET /api/policy` (read-only, no identity needed): the policy in force as MCP `get_policy`
+/// serves it, with its decision rules and the nomination's defaults (the console's forms read
+/// them: `Decision::policy_api_json`).
+async fn policy(State(app): State<App>) -> Response {
+    Json(app.decision.policy_api_json()).into_response()
 }
 
 #[derive(Deserialize)]

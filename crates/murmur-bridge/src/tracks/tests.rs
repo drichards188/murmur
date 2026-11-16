@@ -23,6 +23,7 @@ mod physical;
 mod reach;
 mod reaches;
 mod scale;
+mod scenario_watch;
 mod sense_par;
 mod weapon_probe;
 mod weapons;

@@ -82,6 +82,16 @@ fn rig_policy(tweak: impl FnOnce(&mut Policy)) -> Rig {
 
 /// [`rig_with_manifest`] on the sim policy changed by `tweak`.
 fn rig_on(manifest: PathBuf, tweak: impl FnOnce(&mut Policy)) -> Rig {
+    rig_full(manifest, tweak, None)
+}
+
+/// [`rig_policy`] with the track store on `settings` (the run's drop time, its sensing model).
+fn rig_tracks(tweak: impl FnOnce(&mut Policy), settings: crate::tracks::Settings) -> Rig {
+    rig_full(root().join("sim/run/no-such-manifest.json"), tweak, Some(settings))
+}
+
+/// [`rig_on`], the track store on `settings` where given (else this process's environment).
+fn rig_full(manifest: PathBuf, tweak: impl FnOnce(&mut Policy), settings: Option<crate::tracks::Settings>) -> Rig {
     let root = root();
     let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
     tweak(&mut policy);
@@ -100,9 +110,13 @@ fn rig_on(manifest: PathBuf, tweak: impl FnOnce(&mut Policy)) -> Rig {
         land: vec![ring(-122.48, 37.79, -122.44, 37.808)],
         water_depth_m: 12.0,
     });
-    let tracks = Arc::new(
-        crate::tracks::Tracks::load(&root.join("sim/platforms.toml")).expect("sensors"),
-    );
+    let tracks = Arc::new(match settings {
+        None => crate::tracks::Tracks::load(&root.join("sim/platforms.toml")).expect("sensors"),
+        Some(s) => crate::tracks::Tracks::new(
+            crate::tracks::sensing::SensorCatalog::load(&root.join("sim/platforms.toml")).expect("sensors"),
+            s,
+        ),
+    });
     let d = Decision::from_parts(
         world.clone(),
         Parts {
@@ -2742,4 +2756,172 @@ async fn a_swarm_manifest_names_members_and_folds_their_alerts() {
     let inbox = r.d.inbox_json();
     assert_eq!(inbox["swarm_alerts"], json!([]), "no alert in force here: {inbox}");
     assert_eq!(inbox["counts"]["swarm_alerts"], 0);
+}
+
+// ---- rules 33: the scenario's settings in what the bridge serves (docs/SCENARIO-SETTINGS.md S4) ----
+
+/// The sim policy under rules 33, changed by `tweak` (and synced, as a loaded policy is).
+fn rules33(tweak: impl FnOnce(&mut Policy)) -> impl FnOnce(&mut Policy) {
+    move |p: &mut Policy| {
+        p.rules.rules_version = murmur_decide::SCENARIO_SETTINGS_SINCE;
+        tweak(p);
+        p.sync();
+    }
+}
+
+/// A fast boat seen by one of ours (legacy sensing, so the fix is certain) for 30 s, its last
+/// detection `age_s` ago by the bridge's clock.
+fn boat_seen(r: &Rig, age_s: f64) {
+    use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
+    use crate::tracks::truth::{ContactTruth, Domain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
+    let observer = Observer {
+        uid: 3,
+        lat: LAT,
+        lon: LON,
+        nav_error_m: (0.0, 0.0),
+        alt_msl: 0.0,
+        mast_m: 4.0,
+        submerged: false,
+        heading_deg: None,
+        area: None,
+        sensors: vec![SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() }],
+    };
+    let contact = ContactTruth {
+        id: "boat".into(),
+        name: "boat".into(),
+        affiliation: TruthAffiliation::Hostile,
+        domain: Domain::Surface,
+        kind: "small_fast_boat".into(),
+        lat: LAT + 0.0135,
+        lon: LON,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 90.0,
+        emits: false,
+        signature: 1.0,
+        ais: None,
+    };
+    let now = crate::clock::wall();
+    for s in 0..30 {
+        let msg = TruthMessage {
+            t: now + f64::from(s),
+            s: f64::from(s),
+            seq: s as u64,
+            scenario: "test".into(),
+            seed: 1,
+            sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
+            contacts: vec![contact.clone()],
+            acts: Vec::new(),
+            aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new(), look: Vec::new(),
+        };
+        r.tracks
+            .on_truth_with(msg, std::slice::from_ref(&observer), now - age_s - 29.0 + f64::from(s))
+            .expect("sensing");
+    }
+}
+
+/// Stage S4: `get_tracks` reads the run's stale time (the policy's `[watch] stale_s` under rules 33,
+/// which the decision layer hands the tracker) and says the run's drop time (`MURMUR_TRACK_DROP_S`,
+/// logged as `track_drop_s`) in its note; under the default rules and the default drop time both
+/// answers are as they were.
+#[tokio::test(start_paused = true)]
+async fn get_tracks_reads_the_runs_stale_and_drop_times() {
+    let drop_90 = crate::tracks::Settings { drop_s: 90.0, ..crate::tracks::Settings::from_env() };
+    let r = rig_tracks(rules33(|p| p.watch.as_mut().expect("written out").stale_s = 13.0), drop_90);
+    assert_eq!(r.d.watch().stale_s, 13.0);
+    assert_eq!(r.tracks.stale_s(), 13.0, "the decision layer handed it to the tracker");
+    boat_seen(&r, 11.5);
+    let v = r.ok(&planner(), "get_tracks", json!({})).await;
+    assert_eq!(v["stale_after_s"], 13.0, "{v}");
+    assert_eq!(v["tracks"][0]["stale"], false, "11.5 s unseen, under 13: {v}");
+    let note = v["note"].as_str().expect("note");
+    assert!(note.contains("(no detection for 90 s)") && !note.contains("180"), "{note}");
+    assert!(r.log.lines()[0].contains("\"track_drop_s\":90"), "the drop time the run logged");
+    // the default rules and drop time: stale after 10 s, "180 s", as before
+    let d = rig_tracks(|_| {}, crate::tracks::Settings { drop_s: 180.0, ..crate::tracks::Settings::from_env() });
+    assert_eq!(d.tracks.stale_s(), crate::tracks::model::STALE_S);
+    boat_seen(&d, 11.5);
+    let v = d.ok(&planner(), "get_tracks", json!({})).await;
+    assert_eq!(v["stale_after_s"], 10.0, "{v}");
+    assert_eq!(v["tracks"][0]["stale"], true, "{v}");
+    assert!(v["note"].as_str().is_some_and(|n| n.contains("lost lists the contacts the tracker dropped (no detection for 180 s) that")), "{v}");
+}
+
+/// `GET /api/policy` (stage S4, for the console): the policy in force as `get_policy` serves it,
+/// its rules version and the nomination's defaults; a scenario's own (rules 33: an effect radius of
+/// 90 m, a 15-minute window) are what it serves then. Read-only: no identity, nothing logged.
+#[tokio::test(start_paused = true)]
+async fn api_policy_serves_the_policy_its_rules_and_the_nominations_defaults() {
+    async fn get(r: &Rig) -> Value {
+        let req = Request::builder().method("GET").uri("/api/policy").body(Body::empty()).expect("request");
+        let resp = r.api.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22).await.expect("body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+    let r = rig();
+    let lines = r.log.lines().len();
+    let v = get(&r).await;
+    let mcp = r.ok(&planner(), "get_policy", json!({})).await;
+    assert_eq!(v["rules_version"], murmur_decide::RULES_VERSION);
+    assert_eq!((&v["policy"], &v["watch"]), (&mcp["policy"], &mcp["watch"]));
+    assert_eq!(v["engage_defaults"], json!({"effect_radius_m": 75.0, "window_s": 600}));
+    assert_eq!(r.log.lines().len(), lines, "nothing logged");
+    let t = rig_policy(rules33(|p| {
+        let e = p.rules.engage.as_mut().expect("[rules.engage]");
+        e.default_effect_radius_m = Some(90.0);
+        e.default_window_s = 900;
+    }));
+    let v = get(&t).await;
+    let mcp = t.ok(&planner(), "get_policy", json!({})).await;
+    assert_eq!(v["rules_version"], murmur_decide::SCENARIO_SETTINGS_SINCE);
+    assert_eq!((&v["policy"], &v["watch"]), (&mcp["policy"], &mcp["watch"]));
+    assert_eq!(v["engage_defaults"], json!({"effect_radius_m": 90.0, "window_s": 900}));
+    assert_eq!(v["policy"]["rules"]["engage"]["default_effect_radius_m"], 90.0);
+}
+
+/// Stage S4: a nomination's default effect radius is the policy's (`[rules.engage]
+/// default_effect_radius_m`): `get_nomination_options` without one judges at a tailored 90 m, and
+/// the blocking look (the form's own dry run) takes the same.
+#[tokio::test(start_paused = true)]
+async fn the_default_effect_radius_is_the_policys() {
+    let r = rig_policy(rules33(|p| p.rules.engage.as_mut().expect("[rules.engage]").default_effect_radius_m = Some(90.0)));
+    assert_eq!(r.d.default_effect_radius_m(), 90.0);
+    r.vehicle(2, Firmware::Copter, "fpv", (37.8120, -122.4900)); // armed, 440 m away
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    hostile_track(&r);
+    let v = r.ok(&watch(), "get_nomination_options", json!({ "track_id": "T-0001" })).await;
+    let preview = &v["options"][0]["preview"];
+    assert_eq!(preview["effect_radius_m"], 90.0, "{v}");
+    let named = r.ok(&planner(), "get_nomination_options", json!({ "track_id": "T-0001", "effect_radius_m": 60.0 })).await;
+    assert_eq!(named["options"][0]["preview"]["effect_radius_m"], 60.0, "a radius named is the one judged");
+    // the shipped policy: 75 m, as before
+    assert_eq!(rig().d.default_effect_radius_m(), 75.0);
+}
+
+/// Stage S4: under rules 33 the reach answers agents read say what a reach is (the even-chance
+/// range) and how far an identify order stands off (70 % of the camera's), at the run's bar; under
+/// older rules, and where nothing is shown, they are as they were.
+#[test]
+fn the_reach_notes_say_the_reach_is_the_even_chance_range_under_rules_33() {
+    let r32 = murmur_decide::RulesConfig::default();
+    let r33 = murmur_decide::RulesConfig { rules_version: murmur_decide::SCENARIO_SETTINGS_SINCE, ..murmur_decide::RulesConfig::default() };
+    let w = murmur_decide::WatchSettings { bar: 0.75, ..murmur_decide::WatchSettings::default() };
+    let options = json!({"track": "T-0001", "vehicles": [], "note": "read-only: nothing was created or logged; passing first, soonest there first"});
+    assert_eq!(world::identify_reach_note(options.clone(), &r32, &w), options);
+    let said = world::identify_reach_note(options.clone(), &r33, &w);
+    let note = said["note"].as_str().expect("note");
+    assert!(note.starts_with("read-only: nothing was created or logged; passing first, soonest there first. reach_m is the camera's identification reach"), "{note}");
+    assert!(note.contains("even-chance (P50) range") && note.contains("the watch bar (0.75)") && note.contains("at 70 % of its camera's identification reach"), "{note}");
+    let reach = json!({"available": true, "model": "physical", "vehicles": [], "note": "Never logged."});
+    assert_eq!(crate::api::reach_note(reach.clone(), &r32, &w), reach);
+    let said = crate::api::reach_note(reach.clone(), &r33, &w);
+    assert!(said["note"].as_str().is_some_and(|n| n.starts_with("Never logged. Each reach is the sensor's even-chance (P50) range")), "{said}");
+    for unshown in [
+        json!({"available": true, "model": "legacy", "vehicles": [], "note": "Legacy sensing"}),
+        json!({"available": false, "model": "physical", "vehicles": [], "note": "Waiting for the first sensing step"}),
+    ] {
+        assert_eq!(crate::api::reach_note(unshown.clone(), &r33, &w), unshown);
+    }
 }

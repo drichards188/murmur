@@ -261,3 +261,31 @@ of this work.
   (`condition.policy`: `golden-gate-v3-watch.toml`, `san-diego-watch.toml`,
   `golden-gate-scale-watch.toml`, was `watch.toml`), so an aggregate keyed on the condition keeps
   new records apart from older ones.
+- S4 as built: the tracker reads no policy; the decision layer hands it the watch it decides under
+  (`Decision::tracker_watch`, `Tracks::set_watch`: main and the headless simulator right after the
+  store is made, `Decision::from_parts` for a store a test injects), and each track holds it under
+  its last truth message's sensing model (the legacy model keeps the call from 0.3). Under rules
+  below 33 that watch is exactly what the tracker did (a test holds it). The classification calls
+  that wait are the four neutral ones (fishing vessel, sailboat, light aircraft, helicopter); there
+  is no assumed-friend call by classification, and AIS and suspect calls are unchanged. Meanwhile
+  the track is unknown, saying what it lacks ("fishing_vessel at 0.45, under the watch bar 0.6: not
+  called neutral until identified"; or the level, or "supported by sonar, not by the watch's eo_ir
+  or ais for a surface contact"). `stale_s` drives the tracks, `/api/tracks`, the feed, the
+  keep-out explanation's memory and `get_tracks`. `get_tracks` names the run's drop time (180 s in
+  every run so far, so no answer moved); the reach notes (`get_sensor_reach` where it shows
+  physical reaches, `get_identify_options`) gain the even-chance sentence under rules 33 only, the
+  tool descriptions unchanged. `GET /api/policy` serves the console the policy, `watch`,
+  `rules_version` and `engage_defaults` (radius and window); MCP `get_policy` is unchanged (a model
+  digest reads it), so `eval/headless/scripted.py` reads `[rules.engage]` there and, under rules
+  below 33 (whose logged policy drops `default_effect_radius_m`), the engine's 75 m. The six
+  hostile-act situations headless on the physical model (world v3, the scripted chain, seed 1),
+  rules 32 against 33 on S4's code without S3: the same acts, declarations, flags (no conflict flag
+  in either), engagements and event counts; one fishing vessel in naval-drone shown unknown 9 s
+  longer (its camera's 0.42 until its own AIS was heard).
+- `[identification] conflict_confidence` (0.5 of the affiliation, so 0.625 of the identity at the
+  tracker's 0.8) still sits above the standing bar, so the calls the bar holds back never could
+  conflict with an act. One held back by the sensor criterion could (a sonar's identification of a
+  fishing vessel at 0.8 is 0.64 of affiliation): it is unknown now, and an act attributed to it
+  may be declared by rule where it was flagged. A scenario that raises the bar to 0.625 or more makes every
+  neutral call by classification a conflict for an act attributed to it; tying the two is left to
+  S6/S7.

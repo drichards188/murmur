@@ -358,6 +358,22 @@ pub fn areas(mcp: &Mcp) -> Value {
     v
 }
 
+/// `get_identify_options`' answer as agents read it: under rules 33 its note also says what
+/// `reach_m` and `standoff_m` are (the camera's even-chance identification range, the orbit 70 %
+/// of it: `tracks::reach::p50_words`, at the run's watch bar); under older rules as it was.
+pub fn identify_reach_note(mut v: Value, rules: &murmur_decide::RulesConfig, watch: &murmur_decide::WatchSettings) -> Value {
+    if rules.scenario_settings()
+        && let Some(note) = v.get("note").and_then(Value::as_str)
+    {
+        let more = format!(
+            "{note}. reach_m is the camera's identification reach of this contact, and standoff_m the orbit's radius: {}",
+            crate::tracks::reach::p50_words(watch.bar)
+        );
+        v["note"] = json!(more);
+    }
+    v
+}
+
 /// `get_policy`.
 pub fn policy(mcp: &Mcp) -> Value {
     json!({
@@ -549,7 +565,10 @@ pub async fn tracks(mcp: &Mcp, filter: &TrackFilter<'_>) -> Result<Value, Decisi
         None => mcp.api(Method::GET, "/api/tracks", None).await?,
     };
     let now = v["t"].as_f64().unwrap_or_else(clock::wall);
-    let stale_after = v["stale_after_s"].as_f64().unwrap_or(10.0);
+    // the tracker's stale time (the run's `[watch] stale_s` from rules 33) and drop time
+    // (`MURMUR_TRACK_DROP_S`, logged as `track_drop_s`), as the answer gives them, else the run's
+    let stale_after = v["stale_after_s"].as_f64().unwrap_or(mcp.decision.watch().stale_s);
+    let drop_after = v["drop_after_s"].as_f64().unwrap_or_else(|| crate::tracks::Settings::from_env().drop_s);
     let tracks: Vec<Value> = v["tracks"]
         .as_array()
         .cloned()
@@ -628,7 +647,7 @@ pub async fn tracks(mcp: &Mcp, filter: &TrackFilter<'_>) -> Result<Value, Decisi
         "t": now,
         "count": tracks.len(),
         "stale_after_s": stale_after,
-        "note": "Perception only: every track is what our own platforms' sensors reported, \
+        "note": format!("Perception only: every track is what our own platforms' sensors reported, \
                  fused by the bridge; nobody here knows what a contact really is. position \
                  is the last fix (as_of), predicted carries it along the estimated velocity \
                  to now, pos_sigma_now_m is the 1-sigma uncertainty now (it grows while \
@@ -651,10 +670,10 @@ pub async fn tracks(mcp: &Mcp, filter: &TrackFilter<'_>) -> Result<Value, Decisi
                  sensors reached which level). The confidence is that level's: small_air at \
                  0.99 is a sure size class, not an identified contact. sources lists which \
                  of our vehicles and sensors hold the track. \
-                 lost lists the contacts the tracker dropped (no detection for 180 s) that \
+                 lost lists the contacts the tracker dropped (no detection for {drop_after} s) that \
                  every engagement keep-out still counts, from their last fix (since_t), with \
                  the regions counted now; only an operator with engagement authority may \
-                 accept one for an engagement.",
+                 accept one for an engagement."),
         "tracks": tracks,
         // rules 16: read-only, as the console shows them
         "lost": lost,

@@ -456,7 +456,7 @@ async fn no_armed_platform_or_another_failing_check_holds_nothing_up() {
         .d
         .engage_options(engage::OptionsRequest {
             track: "T-0001".into(),
-            effect_radius_m: crate::decision::blocking::EFFECT_RADIUS_M,
+            effect_radius_m: e.r.d.default_effect_radius_m(),
             window_s: None,
             fallback: None,
             uids: Some(vec![1]),

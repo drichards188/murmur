@@ -13,8 +13,8 @@
 //!
 //! **How it knows "only this".** The nomination form's own dry run (the checks a nomination
 //! would get now, `Engine::dry_run_inputs` and `rules::evaluate`, as `engage_options` runs
-//! them, nothing logged), with the form's defaults ([`EFFECT_RADIUS_M`], the policy's window,
-//! fallback return), on the armed platforms nearest the track ([`MAX_PLATFORMS`]): an item
+//! them, nothing logged), with the form's defaults (the policy's effect radius and window,
+//! `Decision::default_effect_radius_m`, fallback return), on the armed platforms nearest the track ([`MAX_PLATFORMS`]): an item
 //! holds up a platform's nomination when `target_declared` fails and every other check passes
 //! (an engagement is consequential, so a check not evaluated or unverified would block it too
 //! and the item would not be alone). The cases:
@@ -52,10 +52,6 @@ use super::{Core, DUid, Decision};
 
 /// How often the bridge looks again, seconds: a new blocker shows within this.
 pub const REFRESH_S: u64 = 2;
-
-/// The nomination judged: the nomination form's default effect radius (and the MCP
-/// `get_nomination_options` default), metres.
-pub const EFFECT_RADIUS_M: f64 = 75.0;
 
 /// At most this many armed platforms are judged per track, nearest first: a far one that
 /// alone could take it is missed (no banner), never shown wrongly.
@@ -344,6 +340,8 @@ impl Decision {
             from: None,
             until: now.plus_ms(i64::from(self.rules.engage_rules().default_window_s) * 1000),
         };
+        // the nomination form's default effect radius, the policy's (rules 33's key; 75 m before)
+        let radius = self.default_effect_radius_m();
         // each candidate's track, if in the picture, and the armed platforms nearest it
         let mut jobs: Vec<(usize, Vec<IntentSpec>)> = Vec::new();
         for (k, c) in cands.iter().enumerate() {
@@ -356,7 +354,7 @@ impl Decision {
                     source: murmur_decide::Source::Human { id: murmur_decide::OperatorId::new("dry-run") },
                     task: Task::Engage {
                         track: c.track.clone(),
-                        effect_radius_m: EFFECT_RADIUS_M,
+                        effect_radius_m: radius,
                         window: Some(window),
                         fallback: Fallback::Return,
                         weapon: None,

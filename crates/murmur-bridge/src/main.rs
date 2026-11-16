@@ -280,6 +280,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // tracks of contacts that are not ours (Phase C2): sensors from the catalog
     let tracks = tracks::init(&world.cfg.platforms).map_err(|e| format!("tracks: {e}"))?;
+    // rules 33: the watch settings the tracker reads (stale, the neutral call), before any truth
+    tracks.set_watch(decision.tracker_watch());
     if tracks.eval_truth_enabled() {
         println!("MURMUR_EVAL_TRUTH=1: GET /api/sim/truth serves simulation truth (evaluation only)");
     }

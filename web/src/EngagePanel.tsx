@@ -41,6 +41,7 @@ import {
   windowFor,
 } from './engageSteps'
 import { KeepOutExplain } from './KeepOutExplain'
+import { useEngageDefaults } from './policy'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import type { Track, TracksMessage } from './tracks'
@@ -167,10 +168,11 @@ function CheckRows({ checks }: { checks: Check[] }) {
   )
 }
 
-/** A nomination's window as the form sets it: its length from the nomination, to 30 s. */
-function windowOf(i: Intent): number {
+/** A nomination's window as the form sets it: its length from the nomination, to 30 s; null for
+ *  one that named none (it took the policy's default window). */
+function windowOf(i: Intent): number | null {
   const w = engageParams(i).window
-  if (!w) return 600
+  if (!w) return null
   return Math.max(30, Math.round((w.until - (w.from ?? i.created_t)) / 30_000) * 30)
 }
 
@@ -201,8 +203,15 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
   const [base] = useState(() => (initial.replaces != null ? (intents.find((x) => x.id === initial.replaces) ?? null) : null))
   // nothing chosen for the operator: the target is the one the form was opened from, or none
   const [track, setTrack] = useState<string>(base ? engageParams(base).track : (initial.track ?? ''))
-  const [radius, setRadius] = useState(base ? Math.round(engageParams(base).effect_radius_m) : 75)
-  const [windowS, setWindowS] = useState(base ? windowOf(base) : 600)
+  // the radius and window the operator set, else the policy's defaults (`GET /api/policy`): null
+  // until those are read
+  const { defaults, error: defaultsError } = useEngageDefaults()
+  const [radiusSet, setRadius] = useState<number | null>(base ? Math.round(engageParams(base).effect_radius_m) : null)
+  const [windowSet, setWindowS] = useState<number | null>(base ? windowOf(base) : null)
+  const radius = radiusSet ?? (defaults ? Math.round(defaults.effect_radius_m) : null)
+  const windowS = windowSet ?? defaults?.window_s ?? null
+  /** a nomination's window, the policy's where it named none */
+  const windowIn = (i: Intent) => windowOf(i) ?? defaults?.window_s ?? null
   const [fallback, setFallback] = useState<Fallback>(base ? engageParams(base).fallback : 'return')
   const [options, setOptions] = useState<EngageOption[] | null>(null)
   const [uid, setUid] = useState<number | null>(base ? Number(base.uids[0]) : (initial.uid ?? null))
@@ -283,7 +292,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
 
   // the dry run, again when the parameters change and every few seconds (the picture moves)
   useEffect(() => {
-    if (!track) {
+    if (!track || radius == null || windowS == null) {
       setOptions(null)
       return
     }
@@ -390,7 +399,8 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
     if (track !== oldP.track) changed.push(`target ${oldP.track} → ${track || 'none'}`)
     if (uid !== oldUid) changed.push(`platform ${nameOf(oldUid)} → ${uid != null ? nameOf(uid) : 'none'}`)
     if (radius !== Math.round(oldP.effect_radius_m)) changed.push(`radius ${Math.round(oldP.effect_radius_m)} → ${radius} m`)
-    if (windowS !== windowOf(old)) changed.push(`window ${span(windowOf(old) * 1000)} → ${span(windowS * 1000)}`)
+    const oldW = windowIn(old)
+    if (windowS !== oldW) changed.push(`window ${oldW == null ? 'the default' : span(oldW * 1000)} → ${windowS == null ? 'the default' : span(windowS * 1000)}`)
     if (fallback !== oldP.fallback) changed.push(`fallback ${FALLBACK_LABEL[oldP.fallback]} → ${FALLBACK_LABEL[fallback]}`)
     if (rationale.trim() !== (old.rationale ?? '').trim()) changed.push('rationale edited')
   }
@@ -415,7 +425,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
   }
 
   const submit = async () => {
-    if (!track || uid == null || !canNominate) return
+    if (!track || uid == null || radius == null || windowS == null || !canNominate) return
     if (stepUp && !stepUpReady(step)) {
       setStepBad(true)
       return
@@ -634,17 +644,20 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
             <label>
               Radius
               <span className="eg-unit">
-                <input type="number" min={10} max={250} step={5} value={radius} onChange={(e) => setRadius(Math.max(1, Number(e.target.value) || 0))} />m
+                <input type="number" min={10} max={250} step={5} value={radius ?? ''} onChange={(e) => setRadius(Math.max(1, Number(e.target.value) || 0))} />m
               </span>
             </label>
             <label>
               Window
               <span className="eg-unit">
-                <input type="number" min={0.5} max={60} step={0.5} value={windowS / 60} onChange={(e) => setWindowS(Math.max(30, Math.round((Number(e.target.value) || 0) * 60)))} />
+                <input type="number" min={0.5} max={60} step={0.5} value={windowS == null ? '' : windowS / 60} onChange={(e) => setWindowS(Math.max(30, Math.round((Number(e.target.value) || 0) * 60)))} />
                 min
               </span>
             </label>
           </div>
+          {radius == null || windowS == null ? (
+            <p className="eg-muted">{defaultsError ? `The policy's defaults could not be read (${defaultsError}): name a radius and a window.` : "Reading the policy's defaults."}</p>
+          ) : null}
           <fieldset className="eg-fallbacks">
             <legend>If it stops before the effect (an abort, a void, a lost link)</legend>
             {FALLBACKS.map((f) => {
@@ -686,7 +699,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
                 <li>
                   The effect about {span(chosen.preview.effect_t - nowMs)} from now, {Math.round(chosen.preview.effect_radius_m)} m around the marked point
                 </li>
-                <li>It must come within the window, {span(windowS * 1000)} from the nomination</li>
+                {windowS != null && <li>It must come within the window, {span(windowS * 1000)} from the nomination</li>}
               </ul>
             </div>
           )}

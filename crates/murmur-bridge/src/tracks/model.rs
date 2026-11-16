@@ -58,7 +58,7 @@
 //! a new track.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use murmur_decide::{Affiliation, Fact, LonLat, Manoeuvre, Time, TrackFacts};
 use serde::Serialize;
@@ -73,8 +73,64 @@ use crate::clock::round;
 const HIT_GAIN: f64 = 0.25;
 /// Existence confidence halves about every 40 s without a detection.
 const CONF_DECAY_S: f64 = 60.0;
-/// A track is `stale` after this long without a detection (also the console's fade).
+/// A track is `stale` after this long without a detection (also the console's fade): the
+/// standing value, and the one before decision rules 33; from rules 33 the run's `[watch]
+/// stale_s` ([`TrackerWatch::stale_s`]).
 pub const STALE_S: f64 = 10.0;
+/// A classification at this identity confidence or more is a call the affiliation estimate
+/// makes ([`Track::estimate`]); below it the contact stays unknown, "not yet confident".
+const NEUTRAL_CALL: f64 = 0.3;
+
+/// What the run's watch settings make of the tracker (docs/SCENARIO-SETTINGS.md section 3,
+/// decision rules 33): how long a track goes unseen before it is stale, and the criteria a
+/// neutral call by classification waits for. The decision layer hands it to the store
+/// (`Tracks::set_watch`) from the settings its rules decide under
+/// ([`murmur_decide::RulesConfig::watch`]), as it prepares rules 32's reaches for it: the tracker
+/// reads no policy of its own. Each track holds the one its last truth message's sensing model
+/// gave it ([`Track::set_watch`]); a track made without one (a test) holds [`Self::standing`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackerWatch {
+    /// A track unseen this long is stale, s.
+    pub stale_s: f64,
+    /// Rules 33, the physical model, `[watch] neutral_after_bar`: a neutral call by classification
+    /// waits for the watch's criteria of the track's domain. None: a classification is called
+    /// neutral from [`NEUTRAL_CALL`], as before rules 33 (and under the legacy model always).
+    pub neutral_after: Option<NeutralBar>,
+}
+
+/// The watch's criteria a neutral call by classification waits for: the kind at the domain's
+/// level, supported by one of its sensors, at the bar or more (the brief's and the scoring's
+/// "identified", less the conflict, which shows the track suspect before any of this).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NeutralBar {
+    pub bar: f64,
+    pub domains: murmur_decide::WatchDomains,
+}
+
+impl TrackerWatch {
+    /// What the tracker did before rules 33: stale after [`STALE_S`], a neutral call by
+    /// classification from [`NEUTRAL_CALL`].
+    pub fn standing() -> Arc<TrackerWatch> {
+        static STANDING: OnceLock<Arc<TrackerWatch>> = OnceLock::new();
+        STANDING
+            .get_or_init(|| Arc::new(TrackerWatch { stale_s: STALE_S, neutral_after: None }))
+            .clone()
+    }
+
+    /// From the watch settings a run decides under (`RulesConfig::watch`: under rules below 33 the
+    /// legacy ones, whose `neutral_after_bar` is false and `stale_s` [`STALE_S`]).
+    pub fn of(w: &murmur_decide::WatchSettings) -> TrackerWatch {
+        TrackerWatch {
+            stale_s: w.stale_s,
+            neutral_after: w.neutral_after_bar.then(|| NeutralBar { bar: w.bar, domains: w.domain.clone() }),
+        }
+    }
+
+    /// The same under the legacy sensing model, which keeps the call from [`NEUTRAL_CALL`].
+    pub fn legacy_model(&self) -> TrackerWatch {
+        TrackerWatch { stale_s: self.stale_s, neutral_after: None }
+    }
+}
 /// AIS identity confidence (cooperative, spoofable).
 const AIS_CONF: f64 = 0.85;
 /// Dwell credited per detection is capped at this (a 1 Hz sensor gives 1 s a hit).
@@ -257,14 +313,14 @@ pub const MEAN_WINDOW_S: f64 = 60.0;
 pub const MEAN_MIN_S: f64 = 45.0;
 
 /// The memories above, as the keep-out explanation ages a picture with them
-/// (`murmur_decide::keepout::project`), with the stale limit and how long an unseen track is
-/// kept (`drop_after_s`, the run's `MURMUR_TRACK_DROP_S`).
-pub fn memory(drop_after_s: f64) -> murmur_decide::keepout::TrackerMemory {
+/// (`murmur_decide::keepout::project`), with the stale limit (the run's, [`TrackerWatch::stale_s`])
+/// and how long an unseen track is kept (`drop_after_s`, the run's `MURMUR_TRACK_DROP_S`).
+pub fn memory(stale_after_s: f64, drop_after_s: f64) -> murmur_decide::keepout::TrackerMemory {
     murmur_decide::keepout::TrackerMemory {
         mean_min_s: MEAN_MIN_S,
         mean_window_s: MEAN_WINDOW_S,
         manoeuvre_memory_s: MANOEUVRE_MEMORY_S,
-        stale_after_s: STALE_S,
+        stale_after_s,
         drop_after_s,
     }
 }
@@ -1002,6 +1058,9 @@ pub struct Track {
     /// the clock: the feed goes out several times a second, its tracks under the store's lock
     /// (bd murmur-jvdc).
     feed_memo: Option<(bool, usize, String)>,
+    /// The run's watch settings as the tracker reads them (stale, the neutral call), as its last
+    /// truth message's sensing model gave them ([`Self::set_watch`]).
+    watch: Arc<TrackerWatch>,
 }
 
 /// Speed the position uncertainty grows at while unobserved: at least walking pace, or a
@@ -1134,6 +1193,7 @@ impl Track {
             raised: None,
             identity_memo: OnceLock::new(),
             feed_memo: None,
+            watch: TrackerWatch::standing(),
         };
         // the first fix is the estimate: its own update would count it twice
         t.first_fix(d, now);
@@ -1263,7 +1323,22 @@ impl Track {
     }
 
     pub fn is_stale(&self, now: f64) -> bool {
-        self.age_s(now) > STALE_S
+        self.age_s(now) > self.watch.stale_s
+    }
+
+    /// The run's watch settings as the tracker reads them (the store's, for the sensing model of
+    /// the truth message that updated it). Whether that changed anything shown (the feed's memo
+    /// is emptied then).
+    pub fn set_watch(&mut self, watch: &Arc<TrackerWatch>) -> bool {
+        if Arc::ptr_eq(&self.watch, watch) {
+            return false;
+        }
+        let changed = *self.watch != **watch;
+        self.watch = watch.clone();
+        if changed {
+            self.feed_memo = None;
+        }
+        changed
     }
 
     /// Fold one detection in: the models' interaction and prediction to `now`, each one's
@@ -1873,7 +1948,10 @@ impl Track {
 
     /// The affiliation estimate and why, from the identity alone (what the decision engine is
     /// given; it fills declarations and raises from its own ledger). Hostile is never derived
-    /// here: it takes a declaration.
+    /// here: it takes a declaration. An AIS identity is called as it claims; a classification
+    /// from [`NEUTRAL_CALL`], but a neutral one, from decision rules 33 under the physical model
+    /// with `[watch] neutral_after_bar`, only once it meets the watch's criteria
+    /// ([`Self::short_of_watch`]: the track stays unknown, saying what it lacks).
     pub fn estimate(&self) -> (Affiliation, f64, String) {
         let id = self.identity();
         let conf = id.confidence;
@@ -1894,12 +1972,19 @@ impl Track {
                 format!("AIS identity {} ({}), consistent", a.name, a.ship_type),
             );
         }
-        if conf < 0.3 {
+        if conf < NEUTRAL_CALL {
             return (
                 Affiliation::Unknown,
                 conf,
                 format!("classification {kind} not yet confident"),
             );
+        }
+        // rules 33 (the physical model): a neutral call by classification waits for the watch's
+        // criteria; the suspect calls below do not
+        if matches!(kind, "fishing_vessel" | "sailboat" | "light_aircraft" | "helicopter")
+            && let Some(why) = self.short_of_watch(&id, kind)
+        {
+            return (Affiliation::Unknown, conf, why);
         }
         match kind {
             "fishing_vessel" | "sailboat" => (
@@ -1934,6 +2019,46 @@ impl Track {
                 format!("{kind}: nothing to judge affiliation by"),
             ),
         }
+    }
+
+    /// Rules 33 (docs/SCENARIO-SETTINGS.md section 3, `[watch] neutral_after_bar`, the physical
+    /// model): what keeps a classification `kind` (`id`, this track's identity) short of the
+    /// watch's criteria for its domain, so not yet called neutral: its confidence under the bar,
+    /// its level short of the domain's, no sensor of the domain's behind it. None: it meets them,
+    /// or the run calls it from [`NEUTRAL_CALL`] ([`TrackerWatch::neutral_after`] none).
+    fn short_of_watch(&self, id: &Identity, kind: &str) -> Option<String> {
+        let w = self.watch.neutral_after.as_ref()?;
+        let c = w.domains.get(self.domain.decide());
+        let mut short = Vec::new();
+        if id.confidence < w.bar {
+            short.push(format!("under the watch bar {}", w.bar));
+        }
+        let level = id.level.map(|l| match l {
+            Level::Detect => murmur_decide::identify::Level::Detect,
+            Level::Recognise => murmur_decide::identify::Level::Recognise,
+            Level::Identify => murmur_decide::identify::Level::Identify,
+        });
+        if level.is_none_or(|l| l < c.level) {
+            short.push(format!(
+                "at {}, short of the {} the watch asks of a {} contact",
+                level.map_or("no level", |l| l.as_str()),
+                c.level.as_str(),
+                self.domain.as_str()
+            ));
+        }
+        if !id.supported_by.iter().any(|s| c.sensors.iter().any(|n| n == s.as_str())) {
+            let by: Vec<&str> = id.supported_by.iter().map(|s| s.as_str()).collect();
+            short.push(format!(
+                "supported by {}, not by the watch's {} for a {} contact",
+                if by.is_empty() { "no sensor".to_string() } else { by.join(" and ") },
+                c.sensors.join(" or "),
+                self.domain.as_str()
+            ));
+        }
+        if short.is_empty() {
+            return None;
+        }
+        Some(format!("{kind} at {:.2}, {}: not called neutral until identified", id.confidence, short.join("; ")))
     }
 
     /// 15-character 2525C SIDC for the symbol: affiliation, battle dimension, function by

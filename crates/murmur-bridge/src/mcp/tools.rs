@@ -918,7 +918,8 @@ pub async fn call(
             mcp.decision
                 .engage_options(crate::decision::engage::OptionsRequest {
                     track: p.track_id,
-                    effect_radius_m: p.effect_radius_m.unwrap_or(75.0),
+                    // the policy's default effect radius (rules 33's key; 75 m before it)
+                    effect_radius_m: p.effect_radius_m.unwrap_or_else(|| mcp.decision.default_effect_radius_m()),
                     window_s: p.window_s,
                     fallback: p.fallback,
                     uids: p.uids,
@@ -946,6 +947,7 @@ pub async fn call(
                     standoff_m: p.standoff_m,
                 })
                 .await
+                .map(|v| world::identify_reach_note(v, mcp.decision.rules(), mcp.decision.watch()))
         }
         "get_recent_events" => {
             let p = params!(EventsParams);

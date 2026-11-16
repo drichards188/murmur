@@ -80,7 +80,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
-use self::model::{Declared, Track};
+use self::model::{Declared, Track, TrackerWatch};
 use self::sensing::{ActObservation, Detection, Observer, Params, SearchArea, SensorCatalog, misclassify_draw};
 use self::truth::{ActTruth, LookTruth, SensingModel, TruthMessage};
 use crate::clock::{self, round};
@@ -266,6 +266,10 @@ pub struct Tracks {
     reach_memo: Mutex<HashMap<reach::Inputs, Arc<reach::VehicleReach>>>,
     /// Rules 32: each vehicle's reach now as last prepared for the decisions.
     reach_now: Mutex<HashMap<u64, PreparedReach>>,
+    /// Rules 33: the run's watch settings as the tracker reads them, as the decision layer gave
+    /// them ([`Self::set_watch`]): under the physical model, and under the legacy one (which keeps
+    /// the neutral call from 0.3).
+    watch: Mutex<StoreWatch>,
     /// The headless simulator's word that a vehicle has left the world (a platform spent by
     /// its own effect): it senses nothing from then on, whatever its link's age.
     #[cfg(murmur_headless)]
@@ -275,6 +279,26 @@ pub struct Tracks {
     #[cfg(murmur_headless)]
     nav_error: OnceLock<NavError>,
     updates: watch::Sender<Arc<String>>,
+}
+
+/// The run's watch settings for the tracker by sensing model ([`Tracks::set_watch`]).
+struct StoreWatch {
+    physical: Arc<TrackerWatch>,
+    legacy: Arc<TrackerWatch>,
+}
+
+impl StoreWatch {
+    fn of(physical: Arc<TrackerWatch>) -> StoreWatch {
+        let legacy = Arc::new(physical.legacy_model());
+        StoreWatch { physical, legacy }
+    }
+
+    fn under(&self, model: SensingModel) -> &Arc<TrackerWatch> {
+        match model {
+            SensingModel::Physical => &self.physical,
+            SensingModel::Legacy => &self.legacy,
+        }
+    }
 }
 
 #[cfg(murmur_headless)]
@@ -344,6 +368,7 @@ impl Tracks {
             reach_cache: Mutex::new(HashMap::new()),
             reach_memo: Mutex::new(HashMap::new()),
             reach_now: Mutex::new(HashMap::new()),
+            watch: Mutex::new(StoreWatch::of(TrackerWatch::standing())),
             #[cfg(murmur_headless)]
             gone: OnceLock::new(),
             #[cfg(murmur_headless)]
@@ -426,9 +451,35 @@ impl Tracks {
         self.settings.drop_s
     }
 
-    /// The tracker's memories for the keep-out explanation, this run's drop time included.
+    /// The tracker's memories for the keep-out explanation, this run's stale and drop times
+    /// included.
     pub fn memory(&self) -> murmur_decide::keepout::TrackerMemory {
-        model::memory(self.settings.drop_s)
+        model::memory(self.stale_s(), self.settings.drop_s)
+    }
+
+    /// Rules 33 (docs/SCENARIO-SETTINGS.md section 3): the run's watch settings as the tracker
+    /// reads them, from the decision layer, which alone knows the rules and the policy
+    /// (`Decision::tracker_watch`; before the first truth message: main and the headless
+    /// simulator right after the store is made, `Decision::from_parts` for a store a test
+    /// injects). Every track held takes them at once, under the sensing model in force (the
+    /// legacy model keeps the neutral call from 0.3), shown at the next publish; a track made
+    /// later, at its first fix.
+    pub fn set_watch(&self, watch: TrackerWatch) {
+        let w = StoreWatch::of(Arc::new(watch));
+        let model = self.sensing_model();
+        {
+            let mut inner = lock(&self.inner);
+            for t in inner.tracks.values_mut() {
+                t.set_watch(w.under(model));
+            }
+        }
+        *lock(&self.watch) = w;
+    }
+
+    /// How long a track goes without a detection before it is stale, s (the run's `[watch]
+    /// stale_s` from rules 33, else [`model::STALE_S`]).
+    pub fn stale_s(&self) -> f64 {
+        lock(&self.watch).physical.stale_s
     }
 
     /// Whether a request on the simulation channel carries this stack's token (compared as
@@ -745,7 +796,8 @@ impl Tracks {
                     observers.iter().map(|o| (o.uid, o.lat, o.lon, o.nav_error_m)).collect(),
                 );
             }
-            self.fold(&mut inner, &detections, now);
+            let watch = lock(&self.watch).under(model).clone();
+            self.fold(&mut inner, &detections, now, &watch);
             // rules 9: the hostile acts of this tick, as our sensors observe them (after the
             // fold: an act by a contact first seen this tick is attributed to its new track)
             let physical = (model == SensingModel::Physical).then_some((detections.as_slice(), &launches));
@@ -1189,7 +1241,7 @@ impl Tracks {
         }
     }
 
-    fn fold(&self, inner: &mut Inner, detections: &[Detection], now: f64) {
+    fn fold(&self, inner: &mut Inner, detections: &[Detection], now: f64, watch: &Arc<TrackerWatch>) {
         for d in detections {
             let existing = inner
                 .by_contact
@@ -1200,6 +1252,7 @@ impl Tracks {
                 Some(id) => {
                     if let Some(t) = inner.tracks.get_mut(&id) {
                         t.update(d, now);
+                        t.set_watch(watch);
                     }
                 }
                 None => {
@@ -1209,9 +1262,9 @@ impl Tracks {
                     let no = inner.next_no;
                     inner.next_no += 1;
                     let id = format!("T-{no:04}");
-                    inner
-                        .tracks
-                        .insert(id.clone(), Track::new(id.clone(), no, d, now));
+                    let mut t = Track::new(id.clone(), no, d, now);
+                    t.set_watch(watch);
+                    inner.tracks.insert(id.clone(), t);
                     inner.by_contact.insert(d.contact_id.clone(), id);
                 }
             }
@@ -1556,7 +1609,7 @@ impl Tracks {
         let mut v = json!({
             "t": round(now, 2),
             "count": tracks.len(),
-            "stale_after_s": model::STALE_S,
+            "stale_after_s": self.stale_s(),
             "drop_after_s": self.settings.drop_s,
             "tracks": tracks,
             // rules 16: contacts the tracker dropped that the keep-outs still count
@@ -1585,7 +1638,7 @@ impl Tracks {
         msg.push_str("{\"type\":\"tracks\",\"t\":");
         msg.push_str(&json!(round(now, 2)).to_string());
         msg.push_str(",\"stale_after_s\":");
-        msg.push_str(&json!(model::STALE_S).to_string());
+        msg.push_str(&json!(self.stale_s()).to_string());
         msg.push_str(",\"tracks\":[");
         for (i, t) in tracks.iter().enumerate() {
             if i > 0 {

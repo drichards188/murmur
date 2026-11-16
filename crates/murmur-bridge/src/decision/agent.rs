@@ -280,6 +280,37 @@ impl Decision {
         serde_json::to_value(&self.watch).unwrap_or(Value::Null)
     }
 
+    /// The watch settings this run decides under ([`Self::watch_json`]'s).
+    pub fn watch(&self) -> &murmur_decide::WatchSettings {
+        &self.watch
+    }
+
+    /// The effect radius of a nomination that names none, metres: the policy's `[rules.engage]
+    /// default_effect_radius_m` (rules 33's key; before it, and without one, the code's 75, which
+    /// a run of older rules refuses any other value than). The nomination form, MCP
+    /// `get_nomination_options` and the blocking look take it.
+    pub fn default_effect_radius_m(&self) -> f64 {
+        self.rules.engage_rules().default_effect_radius()
+    }
+
+    /// `GET /api/policy` (read-only, no identity needed): the policy in force, as MCP `get_policy`
+    /// serves it (`policy`, the effective `watch`), with the decision rules it runs under and the
+    /// nomination's defaults it sets (`engage_defaults`: the effect radius and window of a
+    /// nomination that names neither), for the console's forms.
+    pub fn policy_api_json(&self) -> Value {
+        let e = self.rules.engage_rules();
+        json!({
+            "t": crate::clock::wall(),
+            "rules_version": self.rules.rules_version,
+            "policy": self.policy_json(),
+            "watch": self.watch_json(),
+            "engage_defaults": {
+                "effect_radius_m": e.default_effect_radius(),
+                "window_s": e.default_window_s,
+            },
+        })
+    }
+
     /// The areas the rules and policy read (approved, no-go), with their polygons.
     pub fn areas(&self) -> &AreaSet {
         &self.areas

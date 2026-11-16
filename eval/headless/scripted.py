@@ -39,8 +39,13 @@ from .sim import HeadlessSession
 LABEL = "scripted agent (not a person, not a model)"
 #: an engagement nomination that stands (eval/engage.py STANDING)
 STANDING = ("proposed", "checked", "pending_approval", "approved", "queued", "dispatched", "effected", "done")
-ENGAGE_DEFAULTS: dict[str, Any] = {"effect_radius_m": 75.0, "window_s": 600, "fallback": "return", "uids": None,
+#: `effect_radius_m` and `window_s` None: the run's policy's (`get_policy`, `policy_defaults`)
+ENGAGE_DEFAULTS: dict[str, Any] = {"effect_radius_m": None, "window_s": None, "fallback": "return", "uids": None,
                                    "max_nominations": 3}
+#: what the engine takes for a nomination's radius where the policy it serves names none: its
+#: `engage::DEFAULT_EFFECT_RADIUS_M`, the only value rules below 33 run with (their logged policy
+#: drops `[rules.engage] default_effect_radius_m`, a key of rules 33's schema)
+ENGINE_EFFECT_RADIUS_M = 75.0
 COLLECT_DEFAULTS: dict[str, Any] = {"at_s": 60.0, "area": {"kind": "circle", "center": [-122.4783, 37.8199], "radius_km": 2.0},
                                     "capabilities": ["optical", "sar"], "window_s": 4 * 3600, "rank": "earliest_product",
                                     "min_lead_s": 600.0}
@@ -83,6 +88,18 @@ class ScriptedPlan:
                 "collect": None if self.collect is None else {**COLLECT_DEFAULTS, **self.collect},
                 "cover": None if self.cover is None else {**COVER_DEFAULTS, **self.cover},
                 "period_s": self.period_s}
+
+
+def policy_defaults(answer: dict[str, Any]) -> dict[str, Any]:
+    """A nomination's effect radius and window where the plan names none, from MCP `get_policy`'s
+    answer: the policy's `[rules.engage] default_effect_radius_m` and `default_window_s` (pure, for
+    tests). The radius is the engine's own where the served policy names none (rules below 33)."""
+    eng = ((answer.get("policy") or {}).get("rules") or {}).get("engage") or {}
+    window = eng.get("default_window_s")
+    if window is None:
+        raise ValueError("get_policy names no [rules.engage] default_window_s: name window_s in the scripted plan")
+    radius = eng.get("default_effect_radius_m")
+    return {"effect_radius_m": float(ENGINE_EFFECT_RADIUS_M if radius is None else radius), "window_s": int(window)}
 
 
 def iso(unix_s: float) -> str:
@@ -157,6 +174,8 @@ class ScriptedAgent:
         self.collect_done = plan.collect is None
         self.cover_done = plan.cover is None
         self.detail: dict[str, Any] = {"plan": plan.as_dict()}
+        #: the policy's nomination defaults, read once (`get_policy`) when a nomination needs them
+        self._policy_defaults: dict[str, Any] | None = None
 
     def describe(self) -> dict[str, Any]:
         return self.detail
@@ -192,6 +211,18 @@ class ScriptedAgent:
 
     # ---- engage ----------------------------------------------------------------------------
 
+    def _engage_cfg(self) -> dict[str, Any]:
+        """The plan's engage settings, the radius and window it leaves out the policy's."""
+        cfg = {**ENGAGE_DEFAULTS, **(self.plan.engage or {})}
+        if cfg["effect_radius_m"] is None or cfg["window_s"] is None:
+            if self._policy_defaults is None:
+                self._policy_defaults = policy_defaults(self.call("get_policy"))
+                self.detail["policy_defaults"] = dict(self._policy_defaults)
+            for k in ("effect_radius_m", "window_s"):
+                if cfg[k] is None:
+                    cfg[k] = self._policy_defaults[k]
+        return cfg
+
     def _engage(self, now: float) -> None:
         cfg = {**ENGAGE_DEFAULTS, **(self.plan.engage or {})}
         tracks = self.call("get_tracks").get("tracks") or []
@@ -199,6 +230,7 @@ class ScriptedAgent:
         if not hostile:
             return
         noms = self.call("get_nominations").get("nominations") or []
+        cfg = self._engage_cfg()
         # one dry run a wake (the tool allows one a second), the tracks taken in turn
         k = self._turn % len(hostile)
         self._turn += 1

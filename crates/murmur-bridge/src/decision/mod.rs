@@ -932,8 +932,22 @@ impl Decision {
             intent_texts: Mutex::new(message::IntentTexts::default()),
             publish_due: tokio::sync::Notify::new(),
         });
+        // rules 33: a store a test injects reads the run's watch settings from the start (main
+        // and the headless simulator hand them to the process-wide one as they make it)
+        if let Some(t) = &d.tracks {
+            t.set_watch(d.tracker_watch());
+        }
         d.publish();
         Ok(d)
+    }
+
+    /// Rules 33 (docs/SCENARIO-SETTINGS.md section 3): the watch settings the tracker reads (its
+    /// stale time, and whether and when it calls a contact neutral by its classification), from
+    /// the ones these rules decide under (`RulesConfig::watch`: under older rules the legacy
+    /// ones, which change nothing the tracker did). The tracker reads no policy of its own: the
+    /// store is given them before its first truth message (`Tracks::set_watch`).
+    pub fn tracker_watch(&self) -> crate::tracks::model::TrackerWatch {
+        crate::tracks::model::TrackerWatch::of(&self.watch)
     }
 
     pub fn audit_path(&self) -> &Path {

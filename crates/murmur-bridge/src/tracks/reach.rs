@@ -66,6 +66,20 @@ pub const CLASS_KINDS: [(SizeClass, Domain, &str); 6] = [
     (SizeClass::LargeGround, Domain::Ground, "vehicle"),
 ];
 
+/// Rules 33 (docs/SCENARIO-SETTINGS.md section 3): what a reach shown to agents is, in words, at
+/// the run's watch bar: each reach is where a look comes half the time (the even-chance range,
+/// Johnson's N50), so an identification there is a coin toss and its confidence may well sit
+/// under the bar the brief counts a contact identified at; an identify order stands off at
+/// [`murmur_decide::identify::STANDOFF_SHARE`] of its camera's. MCP `get_sensor_reach` and
+/// `get_identify_options` say it in their answers under rules 33 (the tool descriptions, and
+/// every answer under older rules, are as they were).
+pub fn p50_words(bar: f64) -> String {
+    format!(
+        "each reach is the sensor's even-chance (P50) range: out there it detects, recognises or identifies the contact half the time, so an identification made at the reach is a coin toss and its confidence may sit under the watch bar ({bar}) at which a contact counts as identified; closer in it does better. An identify order that names no standoff_m orbits at {:.0} % of its camera's identification reach (slant range), or at its tightest orbit if that is wider.",
+        murmur_decide::identify::STANDOFF_SHARE * 100.0
+    )
+}
+
 /// The reference height of a contact in `domain`, m ([`DOMAINS`]).
 pub fn reference_height_m(domain: Domain) -> f64 {
     DOMAINS.iter().find(|(d, _, _)| *d == domain).map_or(0.0, |(_, _, h)| *h)

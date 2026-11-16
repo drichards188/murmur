@@ -581,6 +581,8 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
     crate::estimate::init(&world);
     let decision = Decision::load(world.clone(), &settings).map_err(err("decision layer"))?;
     let tracks = crate::tracks::init(&platforms).map_err(err("tracks"))?;
+    // rules 33: the watch settings the tracker reads (stale, the neutral call), before any truth
+    tracks.set_watch(decision.tracker_watch());
 
     // the link emulator, then the bridge's in-memory links, then the stand-ins
     let vspecs: Vec<murmur_linkemu::config::VehicleSpec> = spec
