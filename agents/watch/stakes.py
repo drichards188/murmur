@@ -9,17 +9,19 @@ matters to the watch; otherwise it is a routine wake, exactly as before. Every o
 trigger is unchanged: the engagement chain, a GPS glitch or an armed platform's lost link (and
 their flapping: those are about our own vehicles, which a contact's stakes do not describe).
 
-**Where the watch is**: the situation's `[playbook]` watch areas and protected points, the table
-the playbook engine reads (a live situation's runner writes it into the AI's directory as
-`playbook.json` and passes it as `--watch-config`; a headless episode hands the officer the
-config its playbook would run on). No other source carries the protected area in both: the
-bridge's `get_areas` has approved, no-go, engagement and no-strike areas only, and a brief is
-free text. With neither a watch area nor a protected point (no table, or one without them),
-nothing is known, and the gate lets every escalation through, as before.
+**Where the watch is**: the scenario's circle, its policy's `[watch.area]` (MCP `get_policy`'s
+`watch`, docs/SCENARIO-SETTINGS.md; agents/roe.py `Roe.area`), when it sets one; else the
+situation's `[playbook]` watch areas, the table the playbook engine reads (a live situation's
+runner writes it into the AI's directory as `playbook.json` and passes it as `--watch-config`; a
+headless episode hands the officer the config its playbook would run on). The protected points
+are the table's, else the circle's centre. The bridge's `get_areas` has approved, no-go,
+engagement and no-strike areas only, and a brief is free text. With neither a watch area nor a
+protected point, nothing is known, and the gate lets every escalation through, as before.
 
 **When a contact matters** (`Watch.standing`): the playbook's own relevance geometry
-(agents/playbook/beliefs.py `interest_of`, `closing_alert`, `cpa`, on the config's thresholds:
-`cpa_alert_m` 457 m, `tcpa_max_s` 600 s, `holding_mps`), as `isr.investigate` reads it: inside a
+(agents/playbook/beliefs.py `interest_of`, `closing_alert`, `cpa`, on the config the playbook runs
+on, agents/playbook/config.py `under`: `cpa_alert_m` 457 m, `tcpa_max_s` twice the watch's
+approach horizon (600 s under v0's 300), `holding_mps`), as `isr.investigate` reads it: inside a
 watch area, or closing on a protected point (its closest approach within 457 m inside 10 minutes,
 or already within 457 m); and one thing the playbook does not need: coming into a watch area
 within those 10 minutes on its course. The playbook judges every track afresh each tick and sees
@@ -36,26 +38,25 @@ the gate reads nothing from the bridge, so the `Waker` stays pure. A change with
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from playbook.beliefs import M_PER_DEG, closing_alert, enu, haversine_m, in_polygon, interest_of
+from playbook.config import make, under
+from roe import Roe, v0
 
 #: the escalations the gate judges: a conflict on a contact (and one the driver found has come
 #: to matter since: agents/watch/picture.py `Poller.stakes`), and a conflict coming and going
 GATED = ("track.identity_conflict", "track.conflict_matters")
 GATED_FLAPPING = ("identity_conflict",)
-#: how far ahead a contact in doubt is looked for coming into a watch area (the routine wake, bd
-#: murmur-1h2r; `Watch.entry`). A drone first seen 4 to 5 km out came inside the 3 km circle 61 to 162 s
-#: later (median 108) and its identification had a 30 s air deadline after that: the wake has to
-#: leave the time to launch and fly a camera, so it comes this long before the line. Far enough that
-#: a drone at first sight (1 to 2 km outside the line, 40 to 80 s at its speed) is already inside the
-#: horizon; short enough that a ferry kilometres off, or one passing the area, wakes nothing.
-APPROACH_HORIZON_S = 180.0
-#: a track with no velocity yet in the air is taken to come straight in at this speed (the
-#: evaluation's honest-ceiling rule for a small drone: the threat's own speed, not the tracker's
-#: unknown). Other domains with no velocity are judged where they are.
-AIR_NO_VELOCITY_MPS = 25.0
+# How far ahead a contact in doubt is looked for coming into a watch area (the routine wake, bd
+# murmur-1h2r; `Watch.entry`) is the scenario's `approach_horizon_s` (agents/roe.py; v0's 300 s, the
+# scoring's "justified"; 180 s before stage S5). A drone first seen 4 to 5 km out came inside the
+# 3 km circle 61 to 162 s later (median 108) and its identification had a 30 s air deadline after
+# that: the wake has to leave the time to launch and fly a camera. A track shown without velocity
+# (none, or slower than `still_mps`) is taken straight in at its domain's `no_velocity_mps` (the
+# air's 25 m/s: the evaluation's honest-ceiling rule for a small drone, the threat's own speed, not
+# the tracker's unknown); in a domain without one it is judged where it is.
 #: a polygon area's way in is looked for along the course every this many seconds
 STEP_S = 5.0
 
@@ -163,11 +164,12 @@ def km(m: float) -> str:
 
 @dataclass
 class Watch:
-    """The watch areas and protected points of a situation (a playbook `Config`), and the
-    playbook's thresholds for judging a contact against them."""
+    """The watch areas and protected points of a situation (a playbook `Config`), the playbook's
+    thresholds for judging a contact against them, and the run's watch settings (`roe`)."""
 
-    cfg: Any  # playbook.config.Config
+    cfg: Any  # playbook.config.Config, under the run's watch settings (`watch_of`)
     source: str = "the situation's [playbook] table"
+    roe: Roe = field(default_factory=v0)  # agents/roe.py: the run's settings (get_policy's watch, else v0's)
 
     @property
     def known(self) -> bool:
@@ -267,15 +269,20 @@ class Watch:
         return self.standing(carried(p, vel, (now - as_of) if as_of is not None else 0.0), vel)
 
     def entry(self, where: tuple[float, float], vel: tuple[float, float] | None, domain: Any,
-              horizon_s: float = APPROACH_HORIZON_S) -> Entry | None:
+              horizon_s: float | None = None) -> Entry | None:
         """A contact in doubt against the watch areas alone (bd murmur-1h2r): inside one now, or
-        coming into one within `horizon_s` (the earliest), else None. No velocity in the air is
-        taken straight in at `AIR_NO_VELOCITY_MPS` (towards the area's centre); no velocity in
-        another domain is judged where it is."""
+        coming into one within `horizon_s` (the earliest; the watch's `approach_horizon_s` unless
+        given), else None. One shown without velocity (none, or slower than the watch's
+        `still_mps`) is taken straight in (towards the area's centre) at its domain's
+        `no_velocity_mps`, or judged where it is in a domain without one."""
+        h = self.roe.horizon_s if horizon_s is None else float(horizon_s)
+        still = self.roe.still(vel)
+        speed = self.roe.no_velocity_mps.get(str(domain)) if still else None
+        what = "no velocity yet" if vel is None else f"slower than {self.roe.still_mps:g} m/s"
         best: Entry | None = None
         for a in self.cfg["watch_area"]:
             v, basis = vel, "its velocity"
-            if v is None and domain == "air":
+            if speed is not None:
                 if "polygon" in a:
                     ring = a["polygon"]
                     tgt = (sum(float(q[0]) for q in ring) / len(ring), sum(float(q[1]) for q in ring) / len(ring))
@@ -283,11 +290,11 @@ class Watch:
                     tgt = (float(a["center"][0]), float(a["center"][1]))
                 x, y = enu(tgt, where)
                 n = math.hypot(x, y)
-                v = (AIR_NO_VELOCITY_MPS * x / n, AIR_NO_VELOCITY_MPS * y / n) if n > 0 else None
-                basis = f"no velocity yet: at {AIR_NO_VELOCITY_MPS:.0f} m/s straight in"
-            elif v is None:
-                basis = "no velocity yet: judged where it is"
-            ln = self._line(a, where, v, horizon_s)
+                v = (speed * x / n, speed * y / n) if n > 0 else None
+                basis = f"{what}: at {speed:g} m/s straight in"
+            elif still:
+                v, basis = None, f"{what}: judged where it is"
+            ln = self._line(a, where, v, h)
             if ln.inside:
                 e = Entry("inside", ln.name, ln.to_edge_m, 0.0, basis)
             elif ln.enters_s is not None:
@@ -325,10 +332,31 @@ class Watch:
         return False, f"track {c.get('track')}: {s.why}: a routine wake, not the senior consult"
 
 
-def watch_of(cfg: Any, source: str | None = None) -> Watch | None:
-    """The gate for a playbook config, or None when it knows no watch area or protected point
-    (every escalation then goes through, as before)."""
-    if cfg is None:
+def watch_of(cfg: Any, source: str | None = None, roe: Roe | None = None) -> Watch | None:
+    """The watch for a playbook config (the situation's table, or None) under the run's watch
+    settings (`roe`, agents/roe.py; v0's when not given): the settings' circle as the only watch
+    area when they have one, else the table's; the table's protected points, else the circle's
+    centre; the playbook's thresholds as it runs them (agents/playbook/config.py `under`). None
+    when it knows no watch area or protected point (every escalation then goes through, as
+    before)."""
+    roe = roe if roe is not None else v0()
+    if cfg is None and roe.area is None:
         return None
-    w = Watch(cfg, source or "the situation's [playbook] table")
+    table = source or "the situation's [playbook] table"
+    if roe.area is not None:
+        source = "the scenario's [watch.area] (get_policy)" + (
+            f" and the protected points of {table}" if cfg is not None and cfg["protected"] else "")
+    cfg = under(cfg if cfg is not None else make(None, "defaults"), roe, area_wins=True)
+    w = Watch(cfg, source or table, roe)
     return w if w.known else None
+
+
+def of_run(policy: Any, table: Any, source: str | None, watch: Watch | None) -> tuple[Roe, Watch | None]:
+    """What an officer runs under once it has read the bridge's policy (MCP `get_policy`'s answer,
+    read at each connect): the run's watch settings (agents/roe.py `Roe.of_policy`) and the watch
+    they give the situation's table (`table`, a playbook Config or None; `watch_of`). With no table
+    and no area in the settings, the watch it had (`watch`: None, or a test's own) is kept."""
+    roe = Roe.of_policy(policy)
+    if table is None and roe.area is None:
+        return roe, watch
+    return roe, watch_of(table, source, roe)

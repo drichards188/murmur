@@ -15,12 +15,15 @@ agent, never the model, and puts it at the end of the consult's update:
   `OPTIONS_MAX`). Not on a consult of the engagement chain, whose first read is
   `get_nomination_options`: both share the bridge's one dry run a second per agent;
 - what each of those vehicles would be taken from (`opportunity`, the owner's third change):
-  its current order, and the open needs it covers now, the contacts shown unknown or suspect and
-  not yet identified, inside the protected line or coming to it, that its order aims at or its
-  camera saw in the last `classifier_fresh_s` (the playbook's 10 s); from `get_fleet` compact for
-  those vehicles and a whole-picture `get_tracks` the driver reads and the model never sees;
+  its current order, and the open needs it covers now, the contacts not yet identified as the
+  run's watch rules count it (agents/roe.py `Roe.identified`, `unsettled`: whatever they are
+  shown as, since a contact shown neutral or assumed friend stays in doubt until identified),
+  inside the protected line or coming to it, that its order aims at or its camera saw in the last
+  `stale_s` (the watch's, v0's 10 s); from `get_fleet` compact for those vehicles and a
+  whole-picture `get_tracks` the driver reads and the model never sees;
 - the open intents (anyone's) on the contact or on those vehicles: an identify or engagement of
-  it, an orbit centred on it (within its radius or 500 m), any order of a candidate vehicle;
+  it, an orbit centred on it (within its radius or the watch's `look_m`), any order of a
+  candidate vehicle;
 - what earlier consults of this run concluded about the same contact (`Notes`: each consult's
   final text, trimmed, with its proposals).
 
@@ -39,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from playbook.beliefs import NOT_RUNNING
+from roe import LEVELS, Roe, v0
 
 from .picture import OPEN, distance_m, hms, quote
 from .stakes import GATED, GATED_FLAPPING, km
@@ -59,9 +63,9 @@ NOTE_CHARS = 500
 #: playbook's 10 minutes)
 LOOK_S = 3 * 3600.0
 CASE_MAX = 16_000
-#: an orbit centred this near a contact, or within its radius, is a look on it (eval/headless
-#: labels.py's association distance, as the headless mapping of a model's orbit judges it)
-LOOK_M = 500.0
+# An orbit centred within the watch's `look_m` of a contact (agents/roe.py; v0's 1000 m, the
+# scoring's; 500 m before stage S5), or within its radius, is a look on it, as the headless
+# mapping of a model's orbit judges it (eval/headless/officer.py `map_proposal`).
 
 
 def consult_tracks(wake: Any) -> list[str]:
@@ -212,8 +216,9 @@ def options_lines(opts: dict[str, Any]) -> list[str]:
 
 
 def touching(intents: list[dict[str, Any]], track: str, where: tuple[float, float] | None,
-             uids: set[int]) -> list[dict[str, Any]]:
-    """Open intents (anyone's) on the contact or on these vehicles."""
+             uids: set[int], look_m: float) -> list[dict[str, Any]]:
+    """Open intents (anyone's) on the contact or on these vehicles (an orbit centred within its
+    radius or `look_m` of the contact is on it)."""
     out = []
     for i in intents:
         if not isinstance(i, dict) or i.get("state") not in OPEN:
@@ -223,7 +228,7 @@ def touching(intents: list[dict[str, Any]], track: str, where: tuple[float, floa
         c = p.get("center")
         if not on_track and where is not None and isinstance(c, (list, tuple)) and len(c) == 2:
             try:
-                r = max(float(p.get("radius_m") or 0.0), LOOK_M)
+                r = max(float(p.get("radius_m") or 0.0), look_m)
                 on_track = distance_m(float(c[0]), float(c[1]), where[0], where[1]) <= r
             except (TypeError, ValueError):
                 pass
@@ -247,20 +252,27 @@ def intent_line(i: dict[str, Any], track: str) -> str:
             + (f" ({', '.join(what)})" if what else "") + reason)
 
 
-def unsettled(t: dict[str, Any], settled: float) -> str | None:
-    """Why a contact is not shown identified, or None: its kind short of the identification level
-    (recognition will do under water), or below the playbook's `classification_settled`, or in
-    conflict."""
+def unsettled(t: dict[str, Any], roe: Roe) -> str | None:
+    """Why a contact is not shown identified as the run's watch rules count it (agents/roe.py
+    `Roe.identified`), or None when it is: in conflict, its kind short of its domain's level
+    (recognition will do under water, under v0's), from none of its domain's sensors, or under the
+    bar. The first of those that holds."""
+    if roe.identified(t):
+        return None
     ident = t.get("identity") if isinstance(t.get("identity"), dict) else {}
     level, conf = ident.get("level"), ident.get("confidence")
     if ident.get("conflict"):
         return "an identity conflict"
-    enough = ("recognise", "identify") if t.get("domain") == "subsurface" else ("identify",)
-    if level not in enough:
+    c = roe.criteria(t.get("domain"))
+    if c is None:
+        return f"in the {t.get('domain') or 'unknown'} domain, which the watch rules name no criteria for"
+    if level not in LEVELS or LEVELS.index(level) < LEVELS.index(c.level):
         return f"only {level or 'detected'}"
-    if not isinstance(conf, (int, float)) or conf < settled:
-        return f"{ident.get('kind')} at {conf if conf is not None else '?'}, under {settled:g}"
-    return None
+    support = ident.get("supported_by")
+    if not (isinstance(support, list) and set(support) & set(c.sensors)):
+        return f"{ident.get('kind')} by {', '.join(map(str, support or [])) or 'no sensor said'}, not by " \
+               f"{' or '.join(c.sensors)}"
+    return f"{ident.get('kind')} at {conf if conf is not None else '?'}, under {roe.bar:g}"
 
 
 def _declared(t: dict[str, Any]) -> str | None:
@@ -269,11 +281,11 @@ def _declared(t: dict[str, Any]) -> str | None:
 
 
 def covers(uid: int, order: dict[str, Any] | None, task: dict[str, Any] | None, tracks: list[dict[str, Any]],
-           t_now: float, fresh_s: float) -> dict[str, str]:
+           t_now: float, fresh_s: float, look_m: float) -> dict[str, str]:
     """The contacts a vehicle covers now, each with how: the one its running order aims at (an
-    identify or a track of it, an orbit centred within its radius or 500 m of it), and those its
-    camera saw within `fresh_s`. `order` is its current intent (get_intents), `task` the compact
-    fleet entry's current task."""
+    identify or a track of it, an orbit centred within its radius or `look_m` of it), and those
+    its camera saw within `fresh_s`. `order` is its current intent (get_intents), `task` the
+    compact fleet entry's current task."""
     out: dict[str, str] = {}
     running = isinstance(task, dict) and task.get("state") not in NOT_RUNNING
     p = (order or {}).get("params") if isinstance((order or {}).get("params"), dict) else {}
@@ -288,7 +300,7 @@ def covers(uid: int, order: dict[str, Any] | None, task: dict[str, Any] | None, 
         if (isinstance(c, (list, tuple)) and len(c) == 2 and isinstance(w, (list, tuple)) and len(w) == 2):
             try:
                 d = distance_m(float(c[0]), float(c[1]), float(w[0]), float(w[1]))
-                if d <= max(float(p.get("radius_m") or 0.0), LOOK_M):
+                if d <= max(float(p.get("radius_m") or 0.0), look_m):
                     how.append(f"its order's orbit, centred {d:.0f} m off")
             except (TypeError, ValueError):
                 pass
@@ -303,21 +315,21 @@ def covers(uid: int, order: dict[str, Any] | None, task: dict[str, Any] | None, 
 
 
 async def opportunity(session: Any, options: dict[str, Any], intents: list[dict[str, Any]], watch: Any,
-                      subject: str) -> list[str]:
+                      subject: str, roe: Roe | None = None) -> list[str]:
     """For each candidate in the identify options shown (bd murmur-5xaf, the owner's third change):
-    its current order and the open needs it covers now, the contacts it would leave: shown unknown
-    or suspect (or declared hostile), not shown identified, inside the protected line or coming to
-    it (the stakes gate's `matters`; every such contact when no line is known), that its order
-    aims at or its camera saw within the playbook's `classifier_fresh_s`. From what the agent sees
-    (get_fleet compact for the candidates, the whole get_tracks picture read by the driver, the
-    intents already read), never the truth."""
+    its current order and the open needs it covers now, the contacts it would leave: in doubt as
+    the run's watch rules hold it (`roe`, agents/roe.py `Roe.in_doubt`: not identified, or not
+    shown neutral, assumed friend or friend), inside the protected line or coming to it (the stakes
+    gate's `matters`; every such contact when no line is known), that its order aims at (an orbit
+    within its radius or the watch's `look_m`) or its camera saw within the watch's `stale_s`.
+    From what the agent sees (get_fleet compact for the candidates, the whole get_tracks picture
+    read by the driver, the intents already read), never the truth."""
     cands = [u for o in (options.get("vehicles") or [])[:OPTIONS_MAX] if isinstance(o, dict)
              for u in _uids([o.get("uid")])]
     if not cands:
         return []
-    th = watch.cfg.t if watch is not None else {}
-    settled = float(th.get("classification_settled", 0.6))
-    fresh_s = float(th.get("classifier_fresh_s", 10.0))
+    roe = roe if roe is not None else (watch.roe if watch is not None else v0())
+    fresh_s = roe.stale_s
     try:
         fleet = {u: v for v in (await session.call("get_fleet", compact=True, uids=cands)).get("vehicles") or []
                  if isinstance(v, dict) for u in _uids([v.get("uid")])}
@@ -329,11 +341,9 @@ async def opportunity(session: Any, options: dict[str, Any], intents: list[dict[
     needs: dict[str, str] = {}
     tracks = [t for t in pic.get("tracks") or [] if isinstance(t, dict) and t.get("id") is not None]
     for t in tracks:
-        if not (t.get("affiliation") in ("unknown", "suspect") or _declared(t) == "hostile"):
+        if not (roe.in_doubt(t) or _declared(t) == "hostile"):
             continue
-        why = unsettled(t, settled)
-        if why is None:
-            continue
+        why = unsettled(t, roe) or f"identified as {(t.get('identity') or {}).get('kind')}"
         s = watch.of_track(t) if watch is not None else None
         if watch is not None and (s is None or not s.matters):
             continue
@@ -342,8 +352,8 @@ async def opportunity(session: Any, options: dict[str, Any], intents: list[dict[
     scope = ("inside the protected line or coming to it" if watch is not None
              else "anywhere (no protected line is known)")
     out = [f"- What each would be taken from: its current order (get_fleet, get_intents) and the open needs it "
-           f"covers now, contacts shown unknown or suspect and not yet identified, {scope}, that its order aims "
-           f"at or its camera saw in the last {fresh_s:.0f} s:"]
+           f"covers now, contacts in doubt (not identified, or not shown neutral or assumed friend), {scope}, that "
+           f"its order aims at or its camera saw in the last {fresh_s:.0f} s:"]
     for u in cands:
         v = fleet.get(u) or {}
         task = v.get("task") if isinstance(v.get("task"), dict) else None
@@ -357,7 +367,7 @@ async def opportunity(session: Any, options: dict[str, Any], intents: list[dict[
             said = f", {quote(head[0], 100)}" if head and head[0] else ""
             doing = (f"on #{task.get('intent_id')} {task.get('task')} by {src} (task {task.get('state')}"
                      f"{'; not flying it' if task.get('state') in NOT_RUNNING else ''}){said}")
-        cov = covers(u, order, task, tracks, t_now, fresh_s)
+        cov = covers(u, order, task, tracks, t_now, fresh_s, roe.look_m)
         open_ = [(tid, how) for tid, how in cov.items() if tid in needs]
         if open_:
             shown = [f"{tid}{' (this contact)' if tid == subject else ''} ({needs[tid]}; by {how})"
@@ -370,12 +380,14 @@ async def opportunity(session: Any, options: dict[str, Any], intents: list[dict[
 
 
 async def build(session: Any, tracks: list[str], watch: Any, notes: Notes, now: float,
-                identify: bool = True) -> str | None:
+                identify: bool = True, roe: Roe | None = None) -> str | None:
     """The case file for a consult about `tracks` (`consult_tracks`), or None when there is none
-    to make. `identify`: read get_identify_options (not on a consult of the engagement chain)."""
+    to make. `identify`: read get_identify_options (not on a consult of the engagement chain).
+    `roe`: the run's watch settings (agents/roe.py; the watch's own, else v0's, when not given)."""
     tracks = [str(t) for t in tracks][:MAX_SUBJECTS]
     if not tracks or session is None:
         return None
+    roe = roe if roe is not None else (watch.roe if watch is not None else v0())
     errors: list[str] = []
     try:
         r = await session.call("get_tracks", track_id=tracks)
@@ -425,7 +437,7 @@ async def build(session: Any, tracks: list[str], watch: Any, notes: Notes, now: 
             # the vehicles shown (the first OPTIONS_MAX): their orders are the ones told
             cands = {u for o in (options[tr].get("vehicles") or [])[:OPTIONS_MAX] if isinstance(o, dict)
                      for u in _uids([o.get("uid")])}
-            sec += await opportunity(session, options[tr], intents, watch, tr)
+            sec += await opportunity(session, options[tr], intents, watch, tr, roe)
         elif tr in opt_note:
             sec.append(f"- Who could identify it: {opt_note[tr]}.")
         where = None
@@ -433,7 +445,7 @@ async def build(session: Any, tracks: list[str], watch: Any, notes: Notes, now: 
             p = t.get("predicted") or t.get("position")
             if isinstance(p, (list, tuple)) and len(p) == 2:
                 where = (float(p[0]), float(p[1]))
-        on = touching(intents, tr, where, cands)
+        on = touching(intents, tr, where, cands, roe.look_m)
         if on:
             sec.append("- Open orders on it or on those vehicles (get_intents, anyone's):")
             sec += [f"  - {intent_line(i, tr)}" for i in on[:INTENTS_MAX]]

@@ -156,9 +156,14 @@ def make_run_dir(given: Path | None) -> Path:
 
 class Officer:
     def __init__(self, args, backend, log: SituationLog, waker: Waker, poller: Poller, shadow,
-                 until: float, watch=None):
+                 until: float, watch=None, table=None, table_source: str | None = None):
         self.args = args
         self.watch = watch  # agents/watch/stakes.py `Watch`, or None (no watch area known)
+        # the situation's [playbook] table (a playbook Config, `--watch-config`), and the run's watch
+        # settings (agents/roe.py `Roe`), read from the bridge's policy at each connect (`adopt`)
+        self.table = table
+        self.table_source = table_source
+        self.roe = None
         self.backend = backend
         self.log = log
         self.waker = waker
@@ -212,6 +217,16 @@ class Officer:
 
     # ---- the bridge ------------------------------------------------------------------------
 
+    def adopt(self) -> dict:
+        """The run's watch settings from the policy the poller read at this connect (its `watch`,
+        else v0's: agents/roe.py), the watch line they give (agents/watch/stakes.py `of_run`) and
+        the stakes gate on it; what the connect line says of them."""
+        from watch.stakes import of_run
+
+        self.roe, self.watch = of_run(getattr(self.poller, "policy", None), self.table, self.table_source, self.watch)
+        self.waker.stakes = self.watch.gate if self.watch is not None else None
+        return {**self.roe.describe(), "watch": self.watch.describe() if self.watch is not None else None}
+
     async def connect(self) -> dict | None:
         delay = 2.0
         while not self.stop.is_set() and time.time() < self.until:
@@ -252,7 +267,7 @@ class Officer:
                     try:
                         info = await self.poller.open()
                         self.log.write("bridge.reconnected", cursor=info["cursor"], bridge_run=info["run"],
-                                       reset=info["reset"])
+                                       reset=info["reset"], watch_settings=self.adopt())
                         if info.get("reset"):
                             self.bridge_restarted = True
                             self.waker.add([{"kind": "feed.reset", "t": time.time(), "run": info.get("run")}],
@@ -271,8 +286,14 @@ class Officer:
             return "error"
         if info is None:
             return self.stop_reason or "until"
+        try:
+            settings = self.adopt()
+        except ValueError as e:  # the bridge's watch settings cannot be read: never v0's in their place
+            self.log.write("error", error=f"the bridge's watch settings: {e}")
+            return "error"
         # bridge_run: the bridge's audit-log run (a line's own run is this driver's)
-        self.log.write("bridge.connected", cursor=info["cursor"], bridge_run=info["run"], tools=info["tools"])
+        self.log.write("bridge.connected", cursor=info["cursor"], bridge_run=info["run"], tools=info["tools"],
+                       watch_settings=settings)
         if hasattr(self.backend, "murmur_tools"):
             self.backend.murmur_tools = set(info["tools"])
         started = await self.backend.start()
@@ -497,7 +518,7 @@ class Officer:
             return None
         try:
             return await casefile.build(self.poller.session, tracks, self.watch, self.consult_by_track, now,
-                                        identify=wake.side)
+                                        identify=wake.side, roe=self.roe)
         except Exception as e:  # noqa: BLE001 (the consult goes ahead without it)
             self.log.write("case_file.error", n=wake.n, error=f"{type(e).__name__}: {e}")
             return None
@@ -626,14 +647,17 @@ async def main_async(args) -> int:
                       max_escalations=args.max_escalations, max_wakes=args.max_wakes,
                       heartbeat_s=args.heartbeat_s, coalesce_s=args.coalesce_s, min_gap_s=args.min_gap_s)
     # where the watch is (bd murmur-5xaf): the situation's [playbook] watch areas and protected
-    # points, for the stakes gate on identity conflicts; none known, every escalation as before
-    watch = None
+    # points, for the stakes gate on identity conflicts; none known, every escalation as before.
+    # At each connect the officer takes the run's watch settings from the bridge's policy, whose
+    # area, when it sets one, is the watch line (`Officer.adopt`); until then, v0's
+    watch = table = None
     if args.watch_config:
         from playbook.config import ConfigError, load_file
         from watch.stakes import watch_of
 
         try:
-            watch = watch_of(load_file(args.watch_config, "watch"), source=str(args.watch_config))
+            table = load_file(args.watch_config, "watch")
+            watch = watch_of(table, source=str(args.watch_config))
         except (ConfigError, OSError) as e:
             log.write("error", error=f"the watch config: {e}")
             return 2
@@ -668,7 +692,8 @@ async def main_async(args) -> int:
               on_limit=args.on_limit, shadow=shadow.name if shadow else None,
               shadow_config=shadow_cfg.label if shadow_cfg else None,
               watch=watch.describe() if watch else None)
-    officer = Officer(args, backend, log, waker, poller, shadow, until, watch=watch)
+    officer = Officer(args, backend, log, waker, poller, shadow, until, watch=watch, table=table,
+                      table_source=str(args.watch_config) if args.watch_config else None)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, officer.signal, sig.name)
@@ -753,7 +778,8 @@ def parse_args(argv: list[str] | None = None):
                          "protected; a situation's runner passes its playbook.json). An identity conflict then goes "
                          "to the stronger model only when its contact is inside a watch area, closing on a protected "
                          "point or coming into a watch area within 10 minutes (agents/watch/stakes.py); without it, "
-                         "or with neither in the table, as before")
+                         "or with neither in the table, as before. A circle the bridge's policy sets ([watch.area], "
+                         "get_policy's watch) is the watch area in place of the table's")
     ap.add_argument("--quiet", action="store_true", help="no lines on stderr")
     return ap.parse_args(argv)
 

@@ -51,10 +51,10 @@ note: it rides along with the next update.
   routine model, exactly as it would have without the stronger model, and the wake says why
   (`Wake.gated`). Without a judge, or for a change without a position, nothing changes.
 - Contacts in doubt at the watch (bd murmur-1h2r, agents/watch/stakes.py `Watch.entry`): the
-  driver reads each contact not known friendly or neutral whose identity is unresolved (below the
-  mission's 0.6, or in conflict) and wakes the model once when it is predicted to come inside a
-  watch area within `APPROACH_HORIZON_S` (`track.approaching`) and once when it is inside
-  (`track.in_watch`). Routine wakes only, never the stronger model, whether or not escalation is
+  driver reads each contact in doubt as the run's watch rules hold it (agents/roe.py: not
+  identified at the bar from its domain's sensor, or not shown neutral or assumed friend) and
+  wakes the model once when it is predicted to come inside a watch area within the watch's
+  `approach_horizon_s` (`track.approaching`) and once when it is inside (`track.in_watch`). Routine wakes only, never the stronger model, whether or not escalation is
   on; each track once per stage (the driver lets it go after, and the subject limits above hold).
 - The heartbeat backs off (doubling up to `heartbeat_max_s`) while nothing new arrives:
   autopilot chatter, vehicles joining and repeats of a subject just reported are not news.

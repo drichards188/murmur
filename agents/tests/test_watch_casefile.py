@@ -199,8 +199,9 @@ def test_which_contacts_a_consult_is_about():
 
 def test_each_candidate_says_what_it_would_be_taken_from():
     """The owner's third change: for each vehicle that could identify the contact, its current order
-    and the open needs it covers now (unknown or suspect, not identified, inside the line or coming
-    to it, that its order aims at or its camera saw in the last 10 s), from what the agent sees."""
+    and the open needs it covers now (in doubt as the run's watch rules hold it, agents/roe.py: not
+    identified, or not shown neutral or assumed friend; inside the line or coming to it; that its
+    order aims at or its camera saw in the last `stale_s`, v0's 10 s), from what the agent sees."""
     fleet = [
         {"uid": 1, "callsign": "REAPER 1", "task": None},
         {"uid": 2, "callsign": "HAWK 1", "task": {"intent_id": 13, "task": "orbit", "state": "active"}},
@@ -211,10 +212,13 @@ def test_each_candidate_says_what_it_would_be_taken_from():
     coming = track("T-0040", -3500, 0, ve=8.0)  # 3.5 km west, east at 8 m/s: in within a minute
     coming["identity"] = {"kind": "small_craft", "level": "recognise", "confidence": 0.9, "conflict": None}
     coming["sources"].append({"uid": 2, "sensor": "eo_ir", "hits": 3, "last_t": 990.0})  # 20 s ago: not now
-    settled = track("T-0041", 1000, 0)  # inside but identified: no need
-    settled["identity"] = {"kind": "fishing_vessel", "level": "identify", "confidence": 0.9, "conflict": None}
+    settled = track("T-0041", 1000, 0)  # inside, identified by our camera and shown neutral: no need
+    settled["affiliation"] = "neutral"
+    settled["identity"] = {"kind": "fishing_vessel", "level": "identify", "confidence": 0.9, "conflict": None,
+                           "supported_by": ["eo_ir"]}
     settled["sources"].append({"uid": 2, "sensor": "eo_ir", "hits": 9, "last_t": 1009.0})
-    neutral = track("T-0042", 800, 0)  # inside, unsettled, but shown neutral: not the mission's
+    # inside, unsettled, shown neutral: in doubt all the same (before stage S5 it was left out)
+    neutral = track("T-0042", 800, 0)
     neutral["affiliation"] = "neutral"
     neutral["sources"].append({"uid": 2, "sensor": "eo_ir", "hits": 9, "last_t": 1009.0})
     far = track("T-0016", -16_900, -6_200, ve=2.85, vn=-2.66)  # the subject, far out
@@ -232,15 +236,17 @@ def test_each_candidate_says_what_it_would_be_taken_from():
     assert "T-0032 (suspect, an identity conflict; inside the Golden Gate approaches; by its camera, 2 s ago)" in hawk
     assert "T-0040 (suspect, only recognise; closing on the Golden Gate Bridge" in hawk
     assert "by its order's orbit, centred 50 m off" in hawk, "not by its camera: 20 s ago"
-    assert "T-0041" not in hawk and "T-0042" not in hawk and "T-0016" not in hawk
-    assert hawk.index("T-0032") < hawk.index("T-0040")
+    assert "T-0042 (neutral, an identity conflict; inside the Golden Gate approaches; by its camera, 1 s ago)" in hawk
+    assert "T-0041" not in hawk and "T-0016" not in hawk
+    assert hawk.index("T-0032") < hawk.index("T-0040") < hawk.index("T-0042")
     puma = lines["uid 4 PUMA 2"]
     assert "on #12 identify by agent-watch (task superseded; not flying it)" in puma
     assert puma.endswith("covers no open need"), "a superseded order aims at nothing"
     # without a protected line, any unidentified contact it covers counts, said so
     s = Session({"T-0016": far}, intents=intents, fleet=fleet, picture=picture)
     text = build(s, ["T-0016"], watch=False)
-    assert "not yet identified, anywhere (no protected line is known)," in text
+    assert "contacts in doubt (not identified, or not shown neutral or assumed friend), anywhere (no protected " \
+           "line is known)," in text
     assert "T-0032 (suspect, an identity conflict; no protected line known; by its camera, 2 s ago)" in text
     # a read that fails is said in its place
     s = Session({"T-0016": far}, intents=intents, fleet=fleet, fail=("get_fleet",))

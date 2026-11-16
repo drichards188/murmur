@@ -32,7 +32,9 @@ affiliation_min = 0.5
 classification_settled = 0.6
 # an unsettled classification is a reason to look only while no classifying sensor of ours (EO/IR,
 # sonar: they raise a classification with dwell; radar and ESM give a class only) has detected the
-# track this recently: the tracker's stale age, the same freshness every live track already has
+# track this recently: the tracker's stale age, the same freshness every live track already has.
+# The run reads it from its policy's watch settings (`stale_s`; config.py `under`) and a situation
+# may not set it; the key stays for the config hash (docs/SCENARIO-SETTINGS.md, stage S5)
 classifier_fresh_s = 10.0
 # ...and only while that sensor is actually raising it: the identity confidence rose by at least
 # classify_rise_min within classify_rise_s. The tracker classifies with dwell, 1 - exp(-dwell/tau):
@@ -52,7 +54,9 @@ fast_mps = 8.0
 # the 500-yard naval vessel protection zone of 33 CFR 165 subpart G
 cpa_alert_m = 457.0
 # inside the policy's assumed task length (task_duration_s 900): a look proposed now is still on
-# station at the closest approach
+# station at the closest approach. The run reads it as twice its policy's watch approach horizon
+# (`approach_horizon_s`, 300 s; config.py `under`) and a situation may not set it; the key stays
+# for the config hash (docs/SCENARIO-SETTINGS.md, stage S5)
 tcpa_max_s = 600.0
 # a contact slower than this has no closest approach to compute: its distance now counts
 holding_mps = 0.5

@@ -1,9 +1,18 @@
 """The scenario's rules for the watch as an agent reads them (docs/SCENARIO-SETTINGS.md section 3):
 pure predicates over a track as MCP `get_tracks` returns it and the scenario's `[watch]` table
 (MCP `get_policy`'s `watch`; eval/headless/v3/settings.py `Settings.watch()` is the scoring's
-copy). No I/O, no bridge. Nothing reads it yet: the officer (agents/watch/picture.py `resolved`,
-`CLEAR`; stakes.py `Watch.entry`), its case file and the playbook move to it in stage S5.
+copy). No bridge; the one file it reads is v0's (`Roe.of_policy`). Read since stage S5 by the
+officer (agents/watch/picture.py `Poller.approach`: who is in doubt; stakes.py `Watch.entry`: the
+horizon, the still speed and the no-velocity speeds; stakes.py `watch_of`: the watch line from
+`area`), its case file (casefile.py: `unsettled`, `look_m`, `stale_s`) and the playbook
+(playbook/config.py `under`: `stale_s`, the approach horizon, the area where its table has none;
+its own "settled" stays its confidence-only check until stage S7).
 
+- `Roe.of_policy(policy)`: the run's settings from MCP `get_policy`'s answer: its top-level
+  `watch` (the effective settings the run decides under, from decision rules 33), else the frozen
+  v0 settings, sim/policy-v0-watch.toml's `[watch]` (read here and nowhere else in agents/), which
+  every run before rules 33 was briefed and graded by. A `watch` that is not a table, or lacks a
+  value the agents read, is refused (ValueError), never replaced by v0's.
 - `criteria(domain)`: the domain's level, sensors and grace (`[watch.domain.<domain>]`); None for
   a domain the table does not name.
 - `identified(track)`: the identity shows a kind at the domain's level or above (`identify`; the
@@ -25,8 +34,8 @@ copy). No I/O, no bridge. Nothing reads it yet: the officer (agents/watch/pictur
   one. The geometry is the officer's (stakes.py `Watch._line` for a circle: haversine inside, the
   course's crossing of the circle on the local plane).
 
-Two intended differences from the officer's code today. Its clear list, `("friendly",
-"neutral")`, names an affiliation the bridge never sends (`friendly`) and leaves out one it does
+Two intended differences from the officer's code before S5. Its clear list, `("friendly",
+"neutral")`, named an affiliation the bridge never sends (`friendly`) and left out one it does
 (`assumed_friend`: a Coast Guard cutter on AIS); here neutral, assumed_friend and friend are
 clear. And it let a contact go when it was shown neutral or identified, either one; the tracker
 calls a fishing boat neutral at 0.3 identity confidence, before the bar (section 1), so here a
@@ -35,8 +44,12 @@ contact leaves doubt only when it is both.
 
 from __future__ import annotations
 
+import copy
+import functools
 import math
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 #: the affiliations a contact may be shown with and be out of doubt once identified (the bridge
@@ -47,6 +60,22 @@ LEVELS = ("detect", "recognise", "identify")
 #: the bridge's figure for carrying a track along its velocity (MCP `get_tracks`' `predicted`)
 M_PER_DEG = 111_320.0
 EARTH_R = 6_371_000.0
+#: the frozen settings of every run before decision rules 33 (docs/SCENARIO-SETTINGS.md section 3,
+#: "Old results stay honest"): what an agent runs under when the bridge's `get_policy` has no `watch`
+V0_FILE = Path(__file__).resolve().parents[1] / "sim" / "policy-v0-watch.toml"
+#: where a `Roe`'s settings came from (`Roe.source`)
+FROM_POLICY = "get_policy"
+FROM_V0 = "v0"
+
+
+@functools.lru_cache(maxsize=1)
+def _v0_watch() -> dict[str, Any]:
+    return tomllib.loads(V0_FILE.read_text())["watch"]
+
+
+def v0_watch() -> dict[str, Any]:
+    """v0's `[watch]` table (sim/policy-v0-watch.toml), a fresh copy each call."""
+    return copy.deepcopy(_v0_watch())
 
 
 @dataclass(frozen=True)
@@ -108,17 +137,54 @@ def position(track: dict[str, Any], now: float | None = None) -> tuple[float, fl
     return p[0] + v[0] * dt / (M_PER_DEG * math.cos(math.radians(p[1]))), p[1] + v[1] * dt / M_PER_DEG
 
 
-class Roe:
-    """The predicates over one scenario's `[watch]` table."""
+def _area(a: Any) -> dict[str, Any] | None:
+    """The scenario's circle (`[watch.area]`: name, center [lon, lat], radius_m), or None."""
+    if a is None:
+        return None
+    c = _pair(a.get("center")) if isinstance(a, dict) else None
+    r = _num(a.get("radius_m")) if isinstance(a, dict) else None
+    if c is None or r is None or r <= 0:
+        raise ValueError(f"watch.area needs center = [lon, lat] and radius_m > 0, not {a!r}")
+    return {"name": str(a.get("name") or "the watch area"), "center": [c[0], c[1]], "radius_m": r}
 
-    def __init__(self, watch: dict[str, Any]):
+
+class Roe:
+    """The predicates over one scenario's `[watch]` table, and the values the agents read from it.
+    `source`: where the table came from (`FROM_POLICY`, `FROM_V0`)."""
+
+    def __init__(self, watch: dict[str, Any], source: str = FROM_POLICY):
+        if not isinstance(watch, dict):
+            raise ValueError(f"the watch settings are a table, not {watch!r}")
         self.watch = watch
-        self.bar = float(watch["bar"])
-        self.horizon_s = float(watch["approach_horizon_s"])
-        self.still_mps = float(watch["still_mps"])
-        self.no_velocity_mps = {str(k): float(v) for k, v in (watch.get("no_velocity_mps") or {}).items()}
-        self._criteria = {str(d): Criteria(str(c["level"]), tuple(str(s) for s in c["sensors"]), float(c["grace_s"]))
-                          for d, c in (watch.get("domain") or {}).items()}
+        self.source = source
+        try:
+            self.bar = float(watch["bar"])
+            self.horizon_s = float(watch["approach_horizon_s"])
+            self.still_mps = float(watch["still_mps"])
+            #: an orbit centred this near a contact (or within its radius) is a look on it
+            self.look_m = float(watch["look_m"])
+            #: the tracker's stale age: a sensor's sighting this recent holds the track now
+            self.stale_s = float(watch["stale_s"])
+            self.no_velocity_mps = {str(k): float(v) for k, v in (watch.get("no_velocity_mps") or {}).items()}
+            self._criteria = {str(d): Criteria(str(c["level"]), tuple(str(s) for s in c["sensors"]),
+                                               float(c["grace_s"]))
+                              for d, c in (watch.get("domain") or {}).items()}
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            raise ValueError(f"the watch settings lack or garble a value the agents read ({type(e).__name__}: "
+                             f"{e})") from e
+        #: the scenario's circle, when its policy sets one (`[watch.area]`), else None
+        self.area = _area(watch.get("area"))
+
+    @classmethod
+    def of_policy(cls, policy: Any) -> "Roe":
+        """The run's settings from MCP `get_policy`'s answer: its `watch`, else v0's."""
+        watch = policy.get("watch") if isinstance(policy, dict) else None
+        return v0() if watch is None else cls(watch, FROM_POLICY)
+
+    def describe(self) -> dict[str, Any]:
+        """For a log: where the settings came from, and the scenario's circle."""
+        return {"source": ("get_policy's watch" if self.source == FROM_POLICY else
+                           f"v0 (sim/{V0_FILE.name}: the bridge's get_policy has no watch)"), "area": self.area}
 
     def criteria(self, domain: Any) -> Criteria | None:
         return self._criteria.get(str(domain)) if domain is not None else None
@@ -178,3 +244,9 @@ class Roe:
     def approaches(self, track: dict[str, Any], area: dict[str, Any], horizon_s: float | None = None,
                    now: float | None = None) -> bool:
         return self.entry(track, area, horizon_s, now) is not None
+
+
+@functools.lru_cache(maxsize=1)
+def v0() -> Roe:
+    """The predicates over v0's `[watch]` (sim/policy-v0-watch.toml)."""
+    return Roe(_v0_watch(), FROM_V0)

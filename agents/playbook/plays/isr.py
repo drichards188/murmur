@@ -182,6 +182,9 @@ def look_reasons(tr: Track, b: Beliefs) -> tuple[list[str], str | None]:
     if not where:
         return [], "outside the watch"
     worth = []
+    # settled by confidence alone, at any level and from any sensor (so a confident size class
+    # counts); stage S7 of docs/SCENARIO-SETTINGS.md moves this, custody_held and the ledger's
+    # `see_classification` to agents/roe.py `Roe.identified`, re-taking the golden it moves
     if tr.kind_conf < th["classification_settled"]:
         why = classify_reason(tr, b)
         if why:
@@ -818,7 +821,8 @@ def custody_holders(tr: Track, b: Beliefs) -> tuple[list[tuple[Vehicle, str, str
 def custody_held(tr: Track, now: list[tuple[Vehicle, str]], b: Beliefs) -> bool:
     """Custody is held: a classifying sensor of a vehicle still reporting has the track now and
     its identity is settled (a camera far off that sees it but cannot identify it does not hold it:
-    the identity stays under the engagement rules' confidence and the fix loosens)."""
+    the identity stays under the engagement rules' confidence and the fix loosens). Confidence
+    alone until stage S7 moves it to agents/roe.py `Roe.identified` (look_reasons says why)."""
     return bool(now) and tr.kind_conf >= b.cfg.t["classification_settled"]
 
 

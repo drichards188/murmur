@@ -310,28 +310,63 @@ def test_a_track_straight_inside_wakes_inside_only():
     assert c["kind"] == "track.in_watch" and p.following == {}
 
 
-def test_a_neutral_or_identified_contact_does_not_wake():
+def boat(track: str, kind: str, level: str, conf: float, support: list[str], affiliation: str,
+         east_m: float = -4000, ve: float = 12.0) -> dict:
+    """A surface contact east_m east of mid-span, ve m/s east, with the identity given."""
+    e = entry(track, east_m, 0, ve=ve, conflict=None)
+    e["affiliation"] = affiliation
+    e["identity"] = {"kind": kind, "level": level, "confidence": conf, "conflict": None, "supported_by": support}
+    return e
+
+
+def test_only_a_contact_identified_and_shown_clear_leaves_doubt():
+    """docs/SCENARIO-SETTINGS.md section 1, the clear list: the officer's list named `friendly`,
+    which the bridge never sends, and left out `assumed_friend`, so a Coast Guard boat stayed in
+    doubt and woke the model; and it let a contact go when shown neutral before it was identified
+    (the tracker calls a fishing boat neutral at 0.3). Now (agents/roe.py `Roe.in_doubt`): out of
+    doubt only identified at the bar from its domain's sensor and shown neutral, assumed friend or
+    friend; followed whatever the feed shows it as, and let go once a read by id shows it clear."""
     from watch.picture import Poller
 
     w = watch()
     p = Poller(lambda: None)
-    follow(p, "T-1", "T-2", "T-3")
-    identified = air("T-2", -4500, 0, confidence=0.9)
-    identified["identity"].update(level="identify", supported_by=["eo_ir"])
-    conflicted = air("T-3", -4500, 0, confidence=0.9, conflict="AIS says cargo")
+    follow(p, "T-1", affiliation="assumed_friend")
+    follow(p, "T-2", "T-3", affiliation="neutral")
+    follow(p, "T-4", "T-5", "T-6")
+    assert set(p.following) == {"T-1", "T-2", "T-3", "T-4", "T-5", "T-6"}, "an affiliation alone lets none go"
+    # a Coast Guard boat on its AIS, identified at the bar (0.6) and shown assumed friend: out of doubt
+    cutter = boat("T-1", "patrol_boat", "identify", 0.6, ["ais"], "assumed_friend")
+    # a fishing boat the tracker calls neutral at 0.45: in doubt, and coming in it wakes the model
+    fishing = boat("T-2", "fishing_vessel", "identify", 0.45, ["eo_ir"], "neutral")
+    # the same at 0.75: out of doubt
+    settled = boat("T-3", "fishing_vessel", "identify", 0.75, ["eo_ir"], "neutral")
+    # identified, but shown unknown: in doubt however well identified
+    unknown = air("T-4", -4500, 0, confidence=0.9)
+    unknown["identity"].update(level="identify", supported_by=["eo_ir"])
+    conflicted = air("T-5", -4500, 0, confidence=0.9, conflict="AIS says cargo")
     conflicted["identity"].update(level="identify", supported_by=["eo_ir"])
-    p.session = Session({"T-1": air("T-1", -4500, 0, affiliation="neutral"), "T-2": identified, "T-3": conflicted})
+    friendly = boat("T-6", "patrol_boat", "identify", 0.9, ["ais"], "friendly")  # never sent: not clear
+    p.session = Session({"T-1": cutter, "T-2": fishing, "T-3": settled, "T-4": unknown, "T-5": conflicted,
+                         "T-6": friendly})
     out = asyncio.run(p.approach(w, now=0.0))
-    assert [c["track"] for c in out] == ["T-3"], "a conflict is in doubt whatever the confidence"
-    follow(p, "T-4", affiliation="friendly")
-    assert "T-4" not in p.following and "T-1" not in p.following and "T-2" not in p.following
+    assert [c["track"] for c in out] == ["T-2", "T-4", "T-5", "T-6"]
+    assert {c["kind"] for c in out} == {"track.approaching"}
+    assert out[0]["affiliation"] == "neutral" and out[0]["identity_confidence"] == 0.45
+    assert set(p.following) == {"T-2", "T-4", "T-5", "T-6"}, "the cutter and the settled boat let go"
+    # a later affiliation change follows the cutter again; its next read lets it go again
+    follow(p, "T-1", affiliation="assumed_friend")
+    assert "T-1" in p.following
+    p.session = Session({"T-1": cutter})
+    assert asyncio.run(p.approach(w, now=10.0)) == [] and "T-1" not in p.following
+    # one under the bar stays: a Coast Guard boat at 0.55 is in doubt
+    assert w.roe.in_doubt({**cutter, "identity": {**cutter["identity"], "confidence": 0.55}})
 
 
 def test_a_confident_size_class_is_still_in_doubt():
     """bd murmur-p9lt: a fast boat first seen as a radar detection, `small_surface` at 0.93, was let
     go as identified and never announced as it came in. Only the brief's identification resolves
     a contact: its kind at the domain's level from the domain's identifying sensor."""
-    from watch.picture import Poller, resolved
+    from watch.picture import Poller
 
     def boat(level: str, conf: float, support: list[str], kind: str = "small_surface", domain: str = "surface"):
         e = entry("T-1", -4000, 0, ve=12.0, conflict=None)
@@ -339,6 +374,7 @@ def test_a_confident_size_class_is_still_in_doubt():
         e["identity"] = {"kind": kind, "level": level, "confidence": conf, "conflict": None, "supported_by": support}
         return e
 
+    resolved = watch().roe.identified
     assert not resolved(boat("detect", 0.93, ["radar"])), "a size class"
     assert not resolved(boat("identify", 0.63, ["sonar"], "small_fast_boat")), "sonar does not identify a boat"
     assert resolved(boat("identify", 0.9, ["eo_ir"], "small_fast_boat"))
@@ -367,13 +403,14 @@ def test_a_ferry_far_off_and_moving_away_does_not_wake():
     ferry["identity"]["confidence"] = 0.3
     still = entry("T-2", -8000, 0)  # surface, no velocity: judged where it is
     still["velocity_mps"], still["course_deg"], still["identity"]["confidence"] = None, None, 0.3
-    far_drone = air("T-3", -8000, 0)  # in the air, no velocity, 8 km: 5000 m at 25 m/s is 200 s, past 180
+    # in the air, no velocity, 11 km: 8000 m at 25 m/s is 320 s, past v0's 300 s horizon
+    far_drone = air("T-3", -11_000, 0)
     p.session = Session({"T-1": ferry, "T-2": still, "T-3": far_drone})
     assert asyncio.run(p.approach(w, now=0.0)) == []
     assert set(p.following) == {"T-1", "T-2", "T-3"}, "still followed"
-    p.session.tracks["T-3"] = air("T-3", -7000, 0)  # 4000 m past the edge is 160 s: within the horizon
+    p.session.tracks["T-3"] = air("T-3", -10_000, 0)  # 7000 m past the edge is 280 s: within the horizon
     (c,) = asyncio.run(p.approach(w, now=10.0))
-    assert c["track"] == "T-3" and c["enters_s"] == 160
+    assert c["track"] == "T-3" and c["enters_s"] == 280
 
 
 def test_a_moving_track_is_predicted_on_its_velocity_and_nothing_without_a_watch_area():

@@ -1,7 +1,8 @@
 """What the driver reads from the bridge, and how it tells the model.
 
 The driver reads as the same agent the model acts as, over MCP (the agent's key in a
-credentials run): `get_changes` every couple of seconds for what changed, and, while a track
+credentials run): `get_policy` once a session (`Poller.policy`: the run's watch settings and the
+longest intercept), `get_changes` every couple of seconds for what changed, and, while a track
 is declared hostile, `get_nomination_options` now and then to see whether a nomination has
 become possible (a `nomination.possible` change), for the armed platforms that could pass
 only and asking only whether each passes. Around each wake the live driver reads `get_inbox`'s
@@ -43,37 +44,14 @@ FALLBACK_REACH_M = 30_000.0
 MAX_APPROACH = 200
 # contacts remembered as told for the run (`Poller.told`), the oldest forgotten past this
 MAX_TOLD = 5000
-#: an identity below this confidence is in doubt (the mission's resolve line,
-#: eval/headless/v3/mission.py RESOLVE_CONF)
-RESOLVE_CONF = 0.6
-CLEAR = ("friendly", "neutral")
-#: what resolves a contact's identity, as the mission's brief counts it (eval/headless/v3/mission.py
-#: DOMAINS): its kind at the domain's level or above, from the domain's identifying sensor (its AIS
-#: too on the surface). A detection's size class (`small_surface` at 0.93) resolves nothing: the
-#: approach wake once let such a fast boat go before it came in (bd murmur-p9lt)
-LEVELS = ("detect", "recognise", "identify")
-RESOLVE_LEVEL = {"subsurface": "recognise"}
-RESOLVE_SENSORS = {"surface": ("eo_ir", "ais"), "air": ("eo_ir",), "ground": ("eo_ir",), "subsurface": ("sonar",)}
+# Who is in doubt is the run's watch rules' (agents/roe.py `Roe.in_doubt`, on `get_policy`'s
+# `watch`, else v0's): a contact leaves doubt only identified (its kind at its domain's level, from
+# one of its domain's sensors, at the bar, no conflict: a detection's size class, `small_surface`
+# at 0.93, identifies nothing, bd murmur-p9lt) and shown neutral, assumed friend or friend. Before
+# stage S5 the officer let a contact go on either one, from a clear list that named `friendly`
+# (never sent) and not `assumed_friend` (a Coast Guard cutter on AIS).
 # contacts the stakes gate kept routine that the driver keeps reading (`Poller.stakes`)
 MAX_GATED = 50
-
-
-def resolved(t: dict) -> bool:
-    """A `get_tracks` entry's identity resolves the contact: no conflict, RESOLVE_CONF or more, at
-    its domain's level (`identify`; `recognise` under the water) or above, and supported by its
-    domain's identifying sensor where the entry says what supports it (`supported_by`)."""
-    ident = t.get("identity") or {}
-    conf = ident.get("confidence")
-    if ident.get("conflict") or not isinstance(conf, (int, float)) or conf < RESOLVE_CONF:
-        return False
-    domain = t.get("domain")
-    level, need = ident.get("level"), RESOLVE_LEVEL.get(domain, "identify")
-    if level not in LEVELS or LEVELS.index(level) < LEVELS.index(need):
-        return False
-    support = ident.get("supported_by")
-    if isinstance(support, list):
-        return bool(set(support) & set(RESOLVE_SENSORS.get(domain, ())))
-    return True
 
 
 def max_transit_s(policy: dict) -> float:
@@ -147,6 +125,9 @@ class Poller:
         self.nomination_every_s = nomination_every_s
         self.cruise: dict | None = None  # platform id -> catalog cruise speed (read once a session)
         self.transit_s: float | None = None  # the policy's max_transit_s (read once a session)
+        # get_policy's answer, read at each `open` (a new bridge may run another policy): the
+        # officer takes its watch settings from it (agents/roe.py `Roe.of_policy`)
+        self.policy: dict | None = None
 
     async def open(self) -> dict:
         if self.session is not None:
@@ -156,11 +137,15 @@ class Poller:
         self.session = s
         self.cruise = None
         self.transit_s = None
+        self.policy = None
         if "get_changes" not in s.tools:
             await self.close()
             raise NoChangesTool(
                 "this bridge has no get_changes tool: rebuild it from this tree (make build) "
                 "and restart the stack")
+        policy = await s.call("get_policy")
+        self.policy = policy if isinstance(policy, dict) else {}
+        self.transit_s = max_transit_s(self.policy)
         first = await s.call("get_changes")
         reset = self.run is not None and first.get("run") != self.run
         if reset or self.cursor is None:
@@ -210,13 +195,12 @@ class Poller:
                 self.hostile.discard(c.get("track"))
                 self.passing.pop(c.get("track"), None)
             if k in ("track.new", "track.affiliation", "track.identity_conflict") and c.get("track") is not None:
-                aff = c.get("to") if k == "track.affiliation" else c.get("affiliation")
-                if k == "track.identity_conflict" or aff not in CLEAR + (None,):
-                    self.following.setdefault(str(c["track"]), None)
-                    while len(self.following) > MAX_APPROACH:  # the oldest go first
-                        self.following.pop(next(iter(self.following)))
-                elif aff in CLEAR:
-                    self.following.pop(str(c["track"]), None)
+                # followed whatever it is shown as: no affiliation alone takes a contact out of
+                # doubt, and the feed's summary does not say how surely it is identified; the
+                # next read by id (`approach`) lets it go once it is out of doubt
+                self.following.setdefault(str(c["track"]), None)
+                while len(self.following) > MAX_APPROACH:  # the oldest go first
+                    self.following.pop(next(iter(self.following)))
             if k == "track.dropped":
                 self.following.pop(str(c.get("track")), None)
             if k in ("track.identity_cleared", "track.dropped"):
@@ -269,12 +253,13 @@ class Poller:
         return out
 
     async def approach(self, watch: Any, now: float | None = None) -> list[dict]:
-        """bd murmur-1h2r: each contact in doubt (not known friendly or neutral, and not identified as
-        the brief counts it: `resolved`, bd murmur-p9lt), read by id every `approach_every_s`: one predicted to come
-        inside a watch area within the horizon is a `track.approaching` change, once, and one
-        inside a `track.in_watch`, once (then it is let go). A contact identified, declared
-        friendly or neutral, or gone from the picture is let go. A read-only driver read, not
-        logged by the bridge; without a watch area nothing is read."""
+        """bd murmur-1h2r: each contact in doubt (the run's watch rules, `watch.roe.in_doubt`: not
+        identified, or not shown neutral, assumed friend or friend; bd murmur-p9lt), read by id
+        every `approach_every_s`: one predicted to come inside a watch area within the watch's
+        approach horizon is a `track.approaching` change, once, and one inside a `track.in_watch`,
+        once (then it is let go). A contact out of doubt (identified and shown clear) or gone from
+        the picture is let go. A read-only driver read, not logged by the bridge; without a watch
+        area nothing is read."""
         now = time.time() if now is None else now
         if watch is None or not self.following or now - self.approach_checked < self.approach_every_s:
             return []
@@ -293,8 +278,7 @@ class Poller:
                 continue
             ident = t.get("identity") or {}
             conf = ident.get("confidence")
-            doubt = t.get("affiliation") not in CLEAR and not resolved(t)
-            if not doubt:
+            if not watch.roe.in_doubt(t):
                 self.following.pop(tid, None)
                 continue
             try:

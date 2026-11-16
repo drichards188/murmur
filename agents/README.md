@@ -534,14 +534,15 @@ shows. `AI=none`: no AI ("None").
   since the bridge allows an agent one dry run a second and the chain's first read is
   `get_nomination_options`; the opening words say another in the same second is refused); for
   each of those vehicles, what it would be taken from: its current order (`get_fleet` compact,
-  its intent from `get_intents`) and the open needs it covers now, the contacts shown unknown or
-  suspect and not yet identified (short of the identification level, recognition under water,
-  under the playbook's 0.6, or in conflict), inside the protected line or coming to it as the
-  gate judges, that its running order aims at (an identify of it, an orbit centred within its
-  radius or 500 m) or its camera saw in the last 10 s (the playbook's `classifier_fresh_s`), four
-  at most each, from a whole-picture read the driver makes and the model never sees; the
-  open intents, anyone's, on it (an identify or engagement of it, an orbit centred within its
-  radius or 500 m of it) or on those vehicles; and what earlier consults of the watch concluded
+  its intent from `get_intents`) and the open needs it covers now, the contacts in doubt as the
+  run's watch rules hold it (`agents/roe.py`: not identified, that is short of its domain's
+  level, recognition under water, from none of its domain's sensors, under the bar or in
+  conflict; or not shown neutral or assumed friend), inside the protected line or coming to it
+  as the gate judges, that its running order aims at (an identify of it, an orbit centred within
+  its radius or the watch's `look_m`, v0's 1000 m) or its camera saw in the last `stale_s` (v0's
+  10 s), four at most each, from a whole-picture read the driver makes and the model never sees;
+  the open intents, anyone's, on it (an identify or engagement of it, an orbit centred within its
+  radius or `look_m` of it) or on those vehicles; and what earlier consults of the watch concluded
   about it (the last three, each trimmed to 500 characters, with their proposals). At most
   16 000 characters in all (Harbor watch's paused model episode: 4 354); a read that fails is
   said in its place. The engagement chain's consults and those about our own vehicles are
@@ -644,23 +645,29 @@ would never reach the stronger model when its contact came in); a conflict that 
 contact that leaves the picture, is let go. The watch areas and protected points are the situation's `[playbook]` table
 (`--watch-config`, which the situation runner passes; the headless officer gets the config its
 playbook would run on): the bridge's `get_areas` carries no protected area and a brief is free
-text, so it is the one source both have. The contact's position is the change's own track
+text. A scenario whose policy sets its circle (`[watch.area]`, in `get_policy`'s `watch`) has
+that circle as the watch area instead, and its centre as the protected point where the table
+names none (docs/SCENARIO-SETTINGS.md). The contact's position is the change's own track
 summary (last fix, speed, course, `as_of`), carried along its course to the moment the wake is
 judged, so the gate reads nothing from the bridge. A change without a position, a run without
 a watch config, or a table with neither a watch area nor a protected point escalates as before.
 A contact in doubt at the watch (bd murmur-1h2r; `Poller.approach`, `Watch.entry`): the driver
-follows each contact that is new or newly suspect (anything but friendly or neutral) and reads
-it by id every 5 s while its identity is unresolved (confidence under the mission's 0.6, or a
-conflict). One predicted to come inside a watch area within 180 s (`APPROACH_HORIZON_S`: the
-small drone of the paid pilot was seen 61 to 162 s, median 108, before it crossed the 3 km line
-and had 30 s after that to be identified, so the model must be woken in time to launch and fly a
-camera, while a ferry kilometres off or passing by wakes nothing) wakes it as `track.approaching`,
+follows each contact that is new or whose affiliation or identity conflict changes, and reads it
+by id every 5 s while it is in doubt as the run's watch rules hold it (`agents/roe.py`, on
+`get_policy`'s `watch`, else v0's: not identified, that is its kind at its domain's level from
+one of its domain's sensors at the bar, 0.6, without a conflict; or not shown neutral, assumed
+friend or friend; so a Coast Guard boat identified on its AIS and shown assumed friend is let
+go, and a fishing boat the tracker calls neutral at 0.45 is not). One predicted to come inside a
+watch area within the watch's `approach_horizon_s` (v0's 300 s, the scoring's "justified"; 180 s
+before docs/SCENARIO-SETTINGS.md's stage S5: the small drone of the paid pilot was seen 61 to
+162 s, median 108, before it crossed the 3 km line and had 30 s after that to be identified, so
+the model must be woken in time to launch and fly a camera) wakes it as `track.approaching`,
 and one inside as `track.in_watch`, each once per track (it is let go after the second; the
 subject limits of the table hold too). They are routine wakes and never escalate, whether or not
 escalation is on, and need only the watch config (a run without one changes nothing). The
-prediction uses the track's velocity; a track in the air with none yet is taken straight in at
-25 m/s (the evaluation's ceiling for a small drone); other domains with none are judged where
-they are. The line says the track, its distance outside (or past the edge of) the area, the
+prediction uses the track's velocity; a track shown without one (none yet, or slower than the
+watch's `still_mps`, 0.5 m/s) is taken straight in at its domain's `no_velocity_mps` (v0's air
+25 m/s: the evaluation's ceiling for a small drone); in other domains it is judged where it is. The line says the track, its distance outside (or past the edge of) the area, the
 predicted entry and its basis ("no velocity yet: at 25 m/s straight in"), its identity and
 confidence and its position uncertainty. A track with no velocity is shown as "no velocity yet"
 everywhere (the feed's speed is 0.0 then, which is not standing still); the change feed does

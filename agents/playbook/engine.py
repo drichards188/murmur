@@ -59,8 +59,9 @@ from . import rationale as R
 from . import rulebook, tier
 from .arbiter import ENGAGED, Held, arbitrate, cooling, hms, statuses
 from .beliefs import NOT_RUNNING, RECOVERING_MODES, Beliefs, build, catalog
-from .config import Config
+from .config import Config, under
 from .beliefs import CLASSIFYING
+from roe import Roe  # agents/roe.py (agents/ is on sys.path wherever the playbook runs)
 from .ledger import APPROVED, OPEN, RESTART_WITHDRAWAL, WAITING, Decision, Ledger, key_of, pair_of
 from .plays import P0, PLAYS, Candidate, Result, Withdrawal, isr
 from .reads import Reads
@@ -126,7 +127,13 @@ class TickReport:
 class Engine:
     def __init__(self, cfg: Config, ledger: Ledger | None = None, *, shadow: bool = False,
                  log: Callable[..., Any] | None = None, ledger_path: Path | None = None):
+        # the file's config (its label is what the bridge is told at connect), and what the plays
+        # run on: the file's under the run's watch settings (config.py `under`, `run_config`), set
+        # from each tick's policy read; the same object under v0's settings and a table that names
+        # its areas
+        self.file_cfg = cfg
         self.cfg = cfg
+        self._under: tuple[str, Config] | None = None
         self.led = ledger or Ledger()
         self.shadow = shadow
         self.log = log or (lambda kind, **f: None)
@@ -424,7 +431,7 @@ class Engine:
         a look then ranks as before."""
         if "isr.investigate" not in self.cfg["plays"]:
             return {}
-        queries = isr.link_queries(build(r, self.cfg, self.led), self.led)
+        queries = isr.link_queries(build(r, self.run_config(r.policy), self.led), self.led)
         if not queries:
             return {}
         try:
@@ -445,7 +452,17 @@ class Engine:
 
     # ---- the pure part ----------------------------------------------------------------------------
 
+    def run_config(self, policy: dict[str, Any] | None) -> Config:
+        """The config the plays run on under `policy` (MCP `get_policy`'s answer): the file's under
+        the run's watch settings (agents/roe.py `Roe.of_policy`: its `watch`, else v0's), kept
+        while the policy's `watch` stays the same."""
+        key = json.dumps((policy or {}).get("watch") if isinstance(policy, dict) else None, sort_keys=True)
+        if self._under is None or self._under[0] != key:
+            self._under = (key, under(self.file_cfg, Roe.of_policy(policy)))
+        return self._under[1]
+
     def plan(self, reads: Reads) -> Plan:
+        self.cfg = self.run_config(reads.policy)
         led, cfg = self.led, self.cfg
         t = reads.tick_t
         led.note_changes(reads.changes)

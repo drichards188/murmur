@@ -467,10 +467,25 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: the changes are that version and, for the model, the two descriptions in its tool list (its
 #: prompt sizes and token estimates); the playbook's moved by the version alone. These worlds run
 #: the legacy sensing model, which has no reach now, so no decision moved.
+#: The two model digests re-taken for the officer reading the scenario's watch settings
+#: (docs/SCENARIO-SETTINGS.md stage S5; v0's here, the bridge's get_policy carrying no `watch`).
+#: With every S5 change to the officer reverted in-process this code gave the digests before
+#: (f1026e2f..., b9a7f3a0...) byte for byte; the playbook's did not move. Three causes move them,
+#: each proved alone (the others reverted): (1) who is in doubt is agents/roe.py's: Harbor watch's
+#: T-0008, identified as small_fast_boat at 0.96 but shown suspect, is no longer let go and is told
+#: `track.in_watch` at 297 s (9d681537...); (2) the approach horizon is v0's 300 s, not 180 s: T-0008
+#: is told approaching at 177 s, 268 s out (was 183 s, 174 s out), the fake model's orbit goes in
+#: then rather than at 243 s and the world follows from there (cf5927b1...), and v2's T-0008 is told
+#: at 123 s, 192 s out (was 135 s, 155 s out), which alone gives v2's new digest; (3) the case file's
+#: open needs are the contacts in doubt as roe holds them: the 549 s consult on T-0007 lists T-0008
+#: (identified, shown suspect) under the three cameras that cover it, and its heading names the
+#: rule (4 722 characters, was 4 356; cd695b9a...). The still speed, the look distance of 1000 m in
+#: the case file and in `map_proposal`, and reading get_policy at connect moved nothing, alone or
+#: with the three.
 PAUSED = {
-    "model harbor-watch s1": "f1026e2fd33846d77b3b23175b554bb0ab7d505fea98576d137656adcf16bb55",
+    "model harbor-watch s1": "34748944ce61203ba7402c04402248ac4785d014db50d60f13d28b2cd21d35cd",
     "playbook v2 fast-unknown 1000": "fd7d8c828ad4b87e24e48f18c05365ee1a1f60007bba5d1cc98dc0a238cedce7",
-    "model v2 fast-unknown 1000": "b9a7f3a0a044f55599bf4984a4e58df7ad0fdccb92c7bb747c813ad07413604a",
+    "model v2 fast-unknown 1000": "7554d022b986c4a62204a537bafabfdffd4b9169248aa41700b60ef9d9f1e6d9",
 }
 
 

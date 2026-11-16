@@ -475,6 +475,7 @@ class Ledger:
             c["t"] = round(t, 3)
             held = any(s.get("sensor") in classifying and isinstance(s.get("last_t"), (int, float))
                        and t - float(s["last_t"]) <= th["classifier_fresh_s"] for s in tr.get("sources") or [])
+            # confidence alone until stage S7 (agents/roe.py `Roe.identified`; isr.look_reasons)
             if held and float(conf) < th["classification_settled"] and c.get("since") is None:
                 c["since"] = round(t, 3)
 

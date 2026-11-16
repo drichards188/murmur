@@ -25,6 +25,10 @@ that can be imported is:
   rules 30 the standing of ours from get_inbox's review every 5 s, so one of ours presumed lost
   wakes it, and every 10 s a contact the stakes gate kept routine, by id, until it matters)
   over the session adapter, as agent `agent-watch`, the live officer's id;
+- **the run's watch settings**: `Officer.adopt`'s, read at each connect from get_policy's `watch`,
+  else v0's (agents/roe.py): who is in doubt, the approach horizon, the still and no-velocity
+  speeds, `look_m` (the case file's, and `map_proposal`'s look distance), and the policy's circle
+  as the watch line when it sets one;
 - **what it is told**: `compose` (the update), `render_mine` (its own proposals), the
   officer's own budget line (`Officer.budget_line`), the review items that alone hold up a
   nomination (`Poller.blocking`; the headless simulator computes none, so its updates have
@@ -96,7 +100,7 @@ from typing import Any
 from eval.model_agent import PRICES, CostGuard, CostGuardExceeded, Ledger, _n, price_of, tool_defs
 
 from . import REPO
-from .labels import AMBIGUOUS, AMBIGUOUS_RATIO, ASSOC_M, dist_m
+from .labels import AMBIGUOUS, AMBIGUOUS_RATIO, dist_m
 from .metrics import LOW_RESERVE_PCT
 from .sim import HeadlessSession, Sim
 
@@ -107,8 +111,9 @@ from playbook.plays.safety import STUCK_KINDS  # noqa: E402
 from watch.backend import ToolCall, Turn, excerpt  # noqa: E402
 from watch import casefile  # noqa: E402
 from watch.picture import NoChangesTool, Poller, compose, render_mine  # noqa: E402
-from watch.stakes import watch_of  # noqa: E402
+from watch.stakes import of_run, watch_of  # noqa: E402
 from watch.wake import Budgets, Wake, Waker  # noqa: E402
+from roe import FROM_POLICY, v0  # noqa: E402  (agents/roe.py)
 
 #: the live officer's agent id (eval/situation.py WATCH_AGENT)
 AGENT = "agent-watch"
@@ -687,14 +692,17 @@ def running_look(v: dict[str, Any] | None, looks: dict[int, dict[str, Any]]) -> 
     return {**looks[iid], "intent": iid}
 
 
-def map_proposal(req: dict[str, Any], picture: dict[str, Any], looks: dict[int, dict[str, Any]]) -> dict[str, Any]:
+def map_proposal(req: dict[str, Any], picture: dict[str, Any], looks: dict[int, dict[str, Any]],
+                 look_m: float | None = None) -> dict[str, Any]:
     """The play category a model proposal is equivalent to, from what it does (docs/HEADLESS.md
     section 14, metrics.py): its task, vehicle, aim point and the track it aims at as the
     picture showed it when it was proposed (`picture`: `tracks` from get_tracks, `vehicles` from
     get_fleet compact, `alerts` from get_inbox, read at that instant). `looks`: the model's
-    earlier looks, intent id -> {track, uid}. Anything that does not map is `unjudged:<task>`.
+    earlier looks, intent id -> {track, uid}. `look_m`: the run's watch settings' (agents/roe.py,
+    the officer's; v0's 1000 m when not given; labels.py's 500 m `ASSOC_M` before stage S5).
+    Anything that does not map is `unjudged:<task>`.
 
-    - an orbit whose centre is within max(its radius, 500 m) of a track shown: a look on the
+    - an orbit whose centre is within max(its radius, `look_m`) of a track shown: a look on the
       nearest such track, `isr.recentre` when the vehicle already flies the model's own look on
       that track, else `isr.investigate`; a second track within 1.5 times that distance makes
       the aim `ambiguous` (judged as the playbook's ambiguous targets are); an orbit near no
@@ -720,7 +728,7 @@ def map_proposal(req: dict[str, Any], picture: dict[str, Any], looks: dict[int, 
             out["rule"] = "an orbit without a centre"
             return out
         radius = float(req.get("radius_m") or 200.0)
-        reach = max(radius, ASSOC_M)
+        reach = max(radius, v0().look_m if look_m is None else float(look_m))
         near = sorted((dist_m((float(c[0]), float(c[1])), (w[0], w[1])), str(t["id"]))
                       for t in tracks if (w := track_where(t)) is not None)
         lead_s = None
@@ -728,8 +736,9 @@ def map_proposal(req: dict[str, Any], picture: dict[str, Any], looks: dict[int, 
             # not on any track now: an orbit placed ahead of a moving track, on its course
             near = sorted(lead for t in tracks if (lead := lead_point(t, (float(c[0]), float(c[1])))) is not None)
             if not near or near[0][0] > reach:
-                out["rule"] = (f"an orbit whose centre is not within {reach:.0f} m (its radius or 500 m) of a track "
-                               f"shown, nor of where one will be on its course within {LEAD_HORIZON_S:.0f} s")
+                out["rule"] = (f"an orbit whose centre is not within {reach:.0f} m (its radius or the watch's look "
+                               f"distance) of a track shown, nor of where one will be on its course within "
+                               f"{LEAD_HORIZON_S:.0f} s")
                 return out
             lead_s = near[0][2]
             near = [(d, tid) for d, tid, _ in near]
@@ -837,8 +846,12 @@ class WatchOfficer:
                                heartbeat_s=a.heartbeat_s, coalesce_s=a.coalesce_s, min_gap_s=a.min_gap_s)
         # where the watch is (bd murmur-5xaf): the situation's [playbook] watch areas and protected
         # points, the config its playbook would run on (`watch`: a playbook Config), as the live
-        # runner hands the officer its playbook.json; none known, every escalation as before
+        # runner hands the officer its playbook.json; none known, every escalation as before. At
+        # each connect the run's watch settings (`roe`, agents/roe.py: get_policy's watch, else
+        # v0's) and the watch they give that table replace these (`adopt`, as the live Officer's)
+        self.table = watch
         self.watch = watch_of(watch, source="the situation's [playbook] table")
+        self.roe: Any = None
         escalation = cfg.escalation and not a.no_escalation
         self.waker = Waker(self.budgets, escalation=escalation,
                            stakes=self.watch.gate if self.watch is not None else None)
@@ -934,7 +947,13 @@ class WatchOfficer:
                 delay, self.connect_delay = self.connect_delay, min(self.connect_delay * 2, 30.0)
                 return now_s + delay
             self.connected = True
-            self.log.write("bridge.connected", cursor=info["cursor"], bridge_run=info["run"], tools=info["tools"])
+            try:
+                settings = self.adopt()
+            except ValueError as e:  # the bridge's watch settings cannot be read: never v0's in their place
+                self.log.write("error", error=f"the bridge's watch settings: {e}")
+                return self.stop(now_s, "error")
+            self.log.write("bridge.connected", cursor=info["cursor"], bridge_run=info["run"], tools=info["tools"],
+                           **settings)
             self.next_poll = now_s
         assert self.next_poll is not None
         if now_s >= self.next_poll - 1e-9:
@@ -975,6 +994,18 @@ class WatchOfficer:
             nxt = min(nxt, self.lanes["routine"].until)
         return min(self.next_poll, now_s + max(0.05, nxt - bnow))
 
+    def adopt(self) -> dict[str, Any]:
+        """Officer.adopt: the run's watch settings from the policy the poller read at this connect
+        (agents/roe.py), the watch they give the situation's table and the stakes gate on it. What
+        the connect line adds: the settings, only when the bridge's policy carries them (a record
+        without them ran under v0's, as the scoring reads a record without a logged [watch])."""
+        self.roe, self.watch = of_run(self.poller.policy, self.table, "the situation's [playbook] table", self.watch)
+        self.waker.stakes = self.watch.gate if self.watch is not None else None
+        if self.roe.source != FROM_POLICY:
+            return {}
+        return {"watch_settings": {**self.roe.describe(),
+                                   "watch": self.watch.describe() if self.watch is not None else None}}
+
     def stop(self, now_s: float, reason: str) -> None:
         self.stopped, self.stopped_t = reason, round(now_s, 3)
         self.log.write("run.stop", reason=reason, wakes=self.waker.wakes, escalations=self.waker.escalations,
@@ -1005,7 +1036,8 @@ class WatchOfficer:
             if self.poll_errors >= 3:
                 try:
                     info = self.run(self.poller.open())
-                    self.log.write("bridge.reconnected", cursor=info["cursor"], bridge_run=info["run"], reset=info["reset"])
+                    self.log.write("bridge.reconnected", cursor=info["cursor"], bridge_run=info["run"], reset=info["reset"],
+                                   **self.adopt())
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -1227,7 +1259,7 @@ class WatchOfficer:
             return None
         try:
             return self.run(casefile.build(self.poller.session, tracks, self.watch, self.consult_by_track, bnow,
-                                           identify=wake.side))
+                                           identify=wake.side, roe=self.roe))
         except Exception as e:  # noqa: BLE001 (the consult goes ahead without it)
             self.log.write("case_file.error", n=wake.n, error=f"{type(e).__name__}: {e}")
             return None
@@ -1280,7 +1312,7 @@ class WatchOfficer:
         if iid is None:
             return
         req = {k: v for k, v in args.items() if k != "rationale"}
-        m = map_proposal(req, picture, self.looks)
+        m = map_proposal(req, picture, self.looks, look_m=self.roe.look_m if self.roe is not None else None)
         uids = [u for u in (_uid(x) for x in req.get("uids") or []) if u is not None]
         uid = uids[0] if uids else None
         ctx = self._wake_ctx or {}
