@@ -732,18 +732,10 @@ impl Engine {
         } else {
             roster.scripted = None;
         }
-        // what the rules read from other sections (rules 9: `[identification]`, which older
-        // rules don't have: no build of theirs logged one)
-        let mut policy = policy;
-        if !policy.rules.rule_id() {
-            policy.identification = None;
-        }
-        // rules 10: the step-up and login factors (no build of older rules logged them)
-        if !policy.rules.passkeys() {
-            policy.approval.step_up_factor = None;
-            policy.approval.login_factor = None;
-        }
-        policy.sync();
+        // what the rules read from other sections, without what older rules don't have (rules
+        // 9's `[identification]`, rules 10's step-up and login factors: no build of theirs
+        // logged one); `murmur-policy show` prints the same
+        let policy = policy.as_logged();
         let areas = match areas {
             Some(a) => Some(LoggedAreas {
                 sha256: a.content_hash()?,

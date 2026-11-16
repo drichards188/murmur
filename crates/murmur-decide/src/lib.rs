@@ -359,7 +359,7 @@ pub use passkey::{
     Study,
 };
 pub use policy::{
-    DeadlineBasis, KindApproval, LoginFactor, Policy, PolicyDecision, StepUpAct, StepUpFactor, Tier,
+    DeadlineBasis, KindApproval, Layer, LoginFactor, Policy, PolicyDecision, StepUpAct, StepUpFactor, Tier,
     Until,
 };
 pub use queue::{

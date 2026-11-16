@@ -695,18 +695,20 @@ def test_ident_comparison_runs(tmp_path: Path):
 
 def test_eval_policies_follow_the_shipped_policy():
     """eval/policy/*.toml are sim/policy.toml with the documented differences only: every
-    human tier leaves `submitter_authorizes` false (base.toml's header), and strict.toml adds
-    its `every-vehicle-task` tier before the default. Rules, the queue for unreachable vehicles,
-    approval kinds (engagement included) and every other tier field are the shipped ones."""
-    import tomllib
+    human tier leaves `submitter_authorizes` false (base.toml's header), and strict.toml, which
+    extends base.toml, adds its `every-vehicle-task` tier before the default. Rules, the queue
+    for unreachable vehicles, approval kinds (engagement included) and every other tier field are
+    the shipped ones. Read through the decision layer's own merge, as a run logs them
+    (`murmur-policy show`, eval.policy_file)."""
+    from eval.policy_file import show
 
-    sim = tomllib.loads((REPO / "sim" / "policy.toml").read_text())
+    sim = show("sim/policy.toml")["policy"]
 
     def tier_core(t: dict) -> dict:
         return {k: v for k, v in t.items() if k not in ("submitter_authorizes", "reason")}
 
     for name, extra in (("base", []), ("strict", ["every-vehicle-task"])):
-        pol = tomllib.loads((REPO / "eval" / "policy" / f"{name}.toml").read_text())
+        pol = show(f"eval/policy/{name}.toml")["policy"]
         assert pol["rules"] == sim["rules"], name
         assert pol.get("queue") == sim.get("queue"), name
         assert pol["approval"]["kind"] == sim["approval"]["kind"], name
@@ -728,13 +730,16 @@ def test_eval_policies_follow_the_shipped_policy():
 
 
 def test_the_minimal_approval_profile_differs_only_as_documented():
-    """eval/policy/minimal.toml (rules 9) is sim/policy.toml with a rule declaration nominable
-    before an operator confirms it, and no step-up besides the engagement signatures; rule
-    declaration on; tiers, rules, queue and approval kinds the shipped ones."""
-    import tomllib
+    """eval/policy/minimal.toml (rules 9) extends sim/policy.toml with a rule declaration
+    nominable before an operator confirms it, and no step-up besides the engagement signatures;
+    rule declaration on; tiers, rules, queue and approval kinds the shipped ones. Through the
+    decision layer's merge, as a run logs it."""
+    from eval.policy_file import show
 
-    sim = tomllib.loads((REPO / "sim" / "policy.toml").read_text())
-    pol = tomllib.loads((REPO / "eval" / "policy" / "minimal.toml").read_text())
+    sim = show("sim/policy.toml")["policy"]
+    shown = show("eval/policy/minimal.toml")
+    assert [layer["path"] for layer in shown["layers"]] == ["eval/policy/minimal.toml", "../../sim/policy.toml"]
+    pol = shown["policy"]
     for key in ("rules", "queue", "tier"):
         assert pol.get(key) == sim.get(key), key
     assert {k: v for k, v in pol["approval"].items() if k != "step_up_acts"} == sim["approval"]

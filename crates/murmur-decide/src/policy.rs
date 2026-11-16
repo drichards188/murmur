@@ -41,9 +41,21 @@
 //! policy schema 7): `[approval] step_up_factor` says what a person's step-up must be
 //! (`password`, the default, takes the password or a passkey; `passkey` only a passkey bound to
 //! the act) and `login_factor` how people sign in.
+//!
+//! **A supplement** (docs/SCENARIO-SETTINGS.md section 3). A policy file may say `extends =
+//! "<file>"` (relative to its own directory) and set only what it changes; [`Policy::load`]
+//! merges it over that file before reading either: tables merge key by key, a value or an array
+//! replaces the one it inherits, and each of its `[[tier]]` entries names `before = "<an
+//! inherited tier>"` and goes in just before it. It refuses a key set to the value it inherits
+//! (a copy, which would hide what the file changes), a `before` naming no inherited tier, a tier
+//! name already there, a cycle, and more than [`MAX_LAYERS`] files in one chain, each refusal
+//! naming the file and the key. Neither `extends` nor `before` is part of the merged policy, so
+//! a supplement logs exactly what the whole file it stands for would: what is logged is the
+//! policy, not the files. [`Policy::load_layers`] also says which files it was built from
+//! (`murmur-policy show`).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -353,17 +365,54 @@ pub enum PolicyError {
     Io(String, std::io::Error),
     #[error("policy: {0}")]
     Invalid(String),
+    /// A file that extends another, or one it extends, refused: the file (as its child names
+    /// it) and why, starting with the key.
+    #[error("policy {file}: {why}")]
+    Layer { file: String, why: String },
+}
+
+/// The most files one policy may be built from: the file given and those it extends, in turn
+/// (a scenario's supplement on the watch policy on the standing values is three).
+pub const MAX_LAYERS: usize = 4;
+
+/// One file a policy was built from ([`Policy::load_layers`]): its path as written (the file
+/// given as it was given, each further one as the `extends` naming it says) and the SHA-256 of
+/// its bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Layer {
+    pub path: String,
+    pub sha256: String,
 }
 
 impl Policy {
     pub fn from_toml(text: &str) -> Result<Self, PolicyError> {
-        let mut p: Policy = toml::from_str(text)?;
+        Self::finish(toml::from_str(text)?)
+    }
+
+    /// What every file gets once read: its defaults written out, its bounds checked, synced.
+    fn finish(mut p: Policy) -> Result<Self, PolicyError> {
         // The file default: a human's own submission authorizes it. Written out explicitly
         // so the logged copy says so (an unset value in a log means false).
         p.approval.submitter_authorizes.get_or_insert(true);
         p.validate()?;
         p.sync();
         Ok(p)
+    }
+
+    /// The policy as a run deciding under its own rules version logs it in `run.started` and
+    /// decides with it ([`crate::Engine::start`]): without what older rules never had (rules
+    /// 9's `[identification]`, rules 10's step-up and login factors; no build of theirs logged
+    /// one), synced.
+    pub fn as_logged(mut self) -> Self {
+        if !self.rules.rule_id() {
+            self.identification = None;
+        }
+        if !self.rules.passkeys() {
+            self.approval.step_up_factor = None;
+            self.approval.login_factor = None;
+        }
+        self.sync();
+        self
     }
 
     /// Copy what the rules read from other sections into [`RulesConfig`] (rules 9: the
@@ -476,10 +525,42 @@ impl Policy {
         Ok(())
     }
 
+    /// The policy file at `path`, merged over the files it extends if it says `extends`.
     pub fn load(path: &Path) -> Result<Self, PolicyError> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| PolicyError::Io(path.display().to_string(), e))?;
-        Self::from_toml(&text)
+        Self::load_layers(path).map(|(p, _)| p)
+    }
+
+    /// [`Policy::load`], and the files the policy was built from: `path` first, then each file
+    /// it extends, in turn. A file that extends none is read exactly as it always was.
+    pub fn load_layers(path: &Path) -> Result<(Self, Vec<Layer>), PolicyError> {
+        let shown = path.display().to_string();
+        let text = std::fs::read_to_string(path).map_err(|e| PolicyError::Io(shown.clone(), e))?;
+        let table: toml::Table = toml::from_str(&text)?;
+        let mut layers = vec![Layer {
+            path: shown.clone(),
+            sha256: crate::hash::sha256_hex(text.as_bytes()),
+        }];
+        if !table.contains_key("extends") {
+            no_before(&table, &shown)?;
+            return Ok((Self::from_toml(&text)?, layers));
+        }
+        let own = std::fs::canonicalize(path).map_err(|e| PolicyError::Io(shown.clone(), e))?;
+        let merged = layered(table, path, &shown, &mut layers, &mut vec![own])?;
+        let p: Policy = toml::Value::Table(merged).try_into().map_err(|e: toml::de::Error| PolicyError::Layer {
+            file: shown.clone(),
+            why: format!("merged with the files it extends: {}", e.to_string().trim_end().replace('\n', " ")),
+        })?;
+        let p = Self::finish(p).map_err(|e| PolicyError::Layer {
+            file: shown,
+            why: format!(
+                "merged with the files it extends: {}",
+                match e {
+                    PolicyError::Invalid(why) => why,
+                    e => e.to_string(),
+                }
+            ),
+        })?;
+        Ok((p, layers))
     }
 
     /// `[queue]`, or its defaults.
@@ -520,6 +601,169 @@ impl Policy {
         tier.and_then(|t| t.submitter_authorizes)
             .or(self.approval.submitter_authorizes)
             .unwrap_or(false)
+    }
+}
+
+// ---- supplements: one file over another ----------------------------------------------------------
+
+fn refused(file: &str, why: String) -> PolicyError {
+    PolicyError::Layer { file: file.to_string(), why }
+}
+
+/// The policy file `table` (read from `path`, named `shown`) merged over the file it extends,
+/// itself merged over its own, and so on: the standing values first, each supplement over
+/// them. `layers` gains each file read; `chain` holds the files of this chain so far
+/// (canonical paths), the file being read last.
+fn layered(
+    mut table: toml::Table,
+    path: &Path,
+    shown: &str,
+    layers: &mut Vec<Layer>,
+    chain: &mut Vec<PathBuf>,
+) -> Result<toml::Table, PolicyError> {
+    let Some(extends) = table.remove("extends") else {
+        no_before(&table, shown)?;
+        return Ok(table);
+    };
+    let toml::Value::String(rel) = extends else {
+        return Err(refused(shown, "`extends` names the file this one supplements, a path relative to it".into()));
+    };
+    if layers.len() >= MAX_LAYERS {
+        return Err(refused(
+            shown,
+            format!("`extends` = {rel:?}: a policy is built from {MAX_LAYERS} files at most"),
+        ));
+    }
+    let parent = path.parent().unwrap_or(Path::new(".")).join(&rel);
+    let text = std::fs::read_to_string(&parent).map_err(|e| refused(shown, format!("`extends` = {rel:?}: {e}")))?;
+    let canonical = std::fs::canonicalize(&parent).map_err(|e| refused(shown, format!("`extends` = {rel:?}: {e}")))?;
+    if let Some(i) = chain.iter().position(|c| *c == canonical) {
+        let cycle: Vec<String> = chain[i..].iter().chain([&canonical]).map(|c| c.display().to_string()).collect();
+        return Err(refused(shown, format!("`extends` = {rel:?}: a cycle ({})", cycle.join(" extends "))));
+    }
+    let base: toml::Table =
+        toml::from_str(&text).map_err(|e| refused(&rel, e.to_string().trim_end().replace('\n', " ")))?;
+    layers.push(Layer {
+        path: rel.clone(),
+        sha256: crate::hash::sha256_hex(text.as_bytes()),
+    });
+    chain.push(canonical);
+    let mut merged = layered(base, &parent, &rel, layers, chain)?;
+    for (key, value) in table {
+        if key == "tier" {
+            insert_tiers(&mut merged, value, shown, &rel)?;
+        } else {
+            merge_key(&mut merged, key.clone(), value, &key, shown, &rel)?;
+        }
+    }
+    Ok(merged)
+}
+
+/// A file that extends none has no tier to place among inherited ones.
+fn no_before(table: &toml::Table, shown: &str) -> Result<(), PolicyError> {
+    let tiers = table.get("tier").and_then(toml::Value::as_array).into_iter().flatten();
+    if let Some(t) = tiers.filter_map(toml::Value::as_table).find(|t| t.contains_key("before")) {
+        return Err(refused(
+            shown,
+            format!(
+                "tier {}: `before` places a tier among the ones a file inherits, and this file extends none",
+                tier_name(t).unwrap_or("(no name)")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Set `key` (at `at`, its dotted path) of the inherited table to `value`: a table into a table
+/// key by key, anything else in place of what it inherits. A value equal to the inherited one
+/// is refused: a supplement sets only what it changes.
+fn merge_key(
+    base: &mut toml::Table,
+    key: String,
+    value: toml::Value,
+    at: &str,
+    shown: &str,
+    inherited: &str,
+) -> Result<(), PolicyError> {
+    if let (Some(toml::Value::Table(b)), toml::Value::Table(over)) = (base.get_mut(&key), &value) {
+        for (k, v) in over.clone() {
+            let path = format!("{at}.{k}");
+            merge_key(b, k, v, &path, shown, inherited)?;
+        }
+        return Ok(());
+    }
+    if base.get(&key).is_some_and(|b| same(b, &value)) {
+        return Err(refused(
+            shown,
+            format!("`{at}` = {value} is what {inherited} gives it already: a supplement sets only what it changes"),
+        ));
+    }
+    base.insert(key, value);
+    Ok(())
+}
+
+/// A supplement's `[[tier]]` entries, each just before the inherited tier its `before` names,
+/// in the file's order (`before` dropped).
+fn insert_tiers(base: &mut toml::Table, value: toml::Value, shown: &str, inherited: &str) -> Result<(), PolicyError> {
+    let toml::Value::Array(new) = value else {
+        return Err(refused(shown, "`tier`: a supplement adds tiers as [[tier]] entries".into()));
+    };
+    let Some(toml::Value::Array(tiers)) = base.get_mut("tier") else {
+        return Err(refused(shown, format!("[[tier]]: {inherited} has no tiers to place one before")));
+    };
+    let names: Vec<String> = tiers
+        .iter()
+        .filter_map(|t| t.as_table().and_then(tier_name))
+        .map(str::to_string)
+        .collect();
+    for t in new {
+        let toml::Value::Table(mut t) = t else {
+            return Err(refused(shown, "`tier`: a supplement adds tiers as [[tier]] entries".into()));
+        };
+        let Some(name) = tier_name(&t).map(str::to_string) else {
+            return Err(refused(shown, "[[tier]]: a tier without a name".into()));
+        };
+        let before = match t.remove("before") {
+            Some(toml::Value::String(b)) => b,
+            Some(_) => return Err(refused(shown, format!("tier {name}: `before` names an inherited tier"))),
+            None => {
+                return Err(refused(
+                    shown,
+                    format!("tier {name}: a supplement's tier says where it goes, before = \"<a tier of {inherited}>\""),
+                ));
+            }
+        };
+        if tiers.iter().any(|x| x.as_table().and_then(tier_name) == Some(name.as_str())) {
+            return Err(refused(shown, format!("tier {name}: there is a tier of that name already")));
+        }
+        if !names.contains(&before) {
+            return Err(refused(
+                shown,
+                format!("tier {name}: `before` = {before:?} names no tier of {inherited}"),
+            ));
+        }
+        let at = tiers
+            .iter()
+            .position(|x| x.as_table().and_then(tier_name) == Some(before.as_str()))
+            .unwrap_or(tiers.len());
+        tiers.insert(at, toml::Value::Table(t));
+    }
+    Ok(())
+}
+
+fn tier_name(t: &toml::Table) -> Option<&str> {
+    t.get("name").and_then(toml::Value::as_str)
+}
+
+/// The same value as the policy reads it: an integer and a float of one value are the same
+/// number (`reserve_pct = 20` is `20.0`).
+fn same(a: &toml::Value, b: &toml::Value) -> bool {
+    use toml::Value::{Array, Float, Integer, Table};
+    match (a, b) {
+        (Integer(i), Float(f)) | (Float(f), Integer(i)) => *i as f64 == *f,
+        (Array(x), Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same(a, b)),
+        (Table(x), Table(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w))),
+        _ => a == b,
     }
 }
 
@@ -829,5 +1073,54 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> 
         approvers: 1,
         proposer_excluded: false,
         step_up: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn table(text: &str) -> toml::Table {
+        toml::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn a_number_is_the_same_written_either_way() {
+        let v = |s: &str| table(&format!("v = {s}")).remove("v").unwrap();
+        assert!(same(&v("20"), &v("20.0")) && same(&v("20.0"), &v("20")));
+        assert!(!same(&v("20"), &v("20.5")));
+        assert!(same(&v("[1, 2.0]"), &v("[1.0, 2]")) && !same(&v("[1, 2]"), &v("[2, 1]")));
+        assert!(same(&v("{ a = 1, b = [\"x\"] }"), &v("{ b = [\"x\"], a = 1.0 }")));
+        assert!(!same(&v("{ a = 1 }"), &v("{ a = 1, b = 2 }")));
+        assert!(!same(&v("\"20\""), &v("20")));
+    }
+
+    #[test]
+    fn tables_merge_key_by_key_and_the_rest_replaces() {
+        let mut base = table("[a]\nx = 1\ny = [1, 2]\n[a.inner]\np = 1\nq = 2\n");
+        let over = table("[a]\ny = [3]\nz = \"new\"\n[a.inner]\nq = 5\n");
+        for (k, v) in over {
+            merge_key(&mut base, k.clone(), v, &k, "over.toml", "base.toml").unwrap();
+        }
+        assert_eq!(base, table("[a]\nx = 1\ny = [3]\nz = \"new\"\n[a.inner]\np = 1\nq = 5\n"));
+        // a copy, however deep, is refused by its dotted key
+        let copy = toml::Value::Table(table("inner = { p = 1.0 }"));
+        let e = merge_key(&mut base, "a".into(), copy, "a", "over.toml", "base.toml").unwrap_err().to_string();
+        assert!(e.starts_with("policy over.toml: `a.inner.p` = 1.0 is what base.toml gives it already"), "{e}");
+    }
+
+    #[test]
+    fn tiers_go_before_the_ones_they_name_in_the_files_order() {
+        let mut base = table("[[tier]]\nname = \"one\"\n[[tier]]\nname = \"two\"\n");
+        let over = table(
+            "[[tier]]\nname = \"a\"\nbefore = \"two\"\n[[tier]]\nname = \"b\"\nbefore = \"two\"\n[[tier]]\nname = \"c\"\nbefore = \"one\"\n",
+        );
+        insert_tiers(&mut base, over["tier"].clone(), "over.toml", "base.toml").unwrap();
+        let tiers = base["tier"].as_array().unwrap();
+        let names: Vec<&str> = tiers.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["c", "one", "a", "b", "two"]);
+        assert!(tiers.iter().all(|t| !t.as_table().unwrap().contains_key("before")));
     }
 }

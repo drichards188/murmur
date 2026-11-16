@@ -216,7 +216,7 @@ Each lands green on main by itself; bd tracks each under the epic.
 
 | stage | what | rules |
 |---|---|---|
-| S1 | layered policy: `extends`, `before`, the copy refusal, `murmur-policy show`, `eval/policy.py`; the full policy copies become supplements | none; moves nothing (digests re-run to prove it) |
+| S1 | layered policy: `extends`, `before`, the copy refusal, `murmur-policy show`, `eval/policy_file.py` (`eval/policy/` is the policies' directory); the full policy copies become supplements (those that are copies plus changes: the stale and tier-edited ones stay whole, section 7) | none; moves nothing (digests re-run to prove it) |
 | S2 | `[watch]` parsed and logged, the floor, the frozen v0 file, area supplements for the v3 watch situations | `RULES_NEWEST` 33, staged |
 | S3 | engine: identify criteria and `named`, engagement identity level, settings for out of view, time on station, drift | 33 |
 | S4 | bridge: neutral after the bar, stale, tool texts, identify progress, effect-radius default, `/api/policy`, console defaults | 33 |
@@ -238,3 +238,13 @@ of this work.
 - AIS-based neutral calls are left as they are; one `stale_s` drives tracker staleness, out of
   view and playbook freshness together.
 - Python's tests need the `murmur-policy` binary built (the harness builds its binaries already).
+- S1 left four policy files whole, because no supplement of them merges to the same policy: a
+  supplement can only add and change, never remove. `sim/scenarios/engage/policies/
+  no-engagement-tier.toml` exists to lack the engagement tier (scenario 20), and also lacks
+  `step_up_factor`, `[identification]`, `[queue]` and five `[rules.engage]` keys (an older copy);
+  `orbit-never-queued.toml` (scenarios 70, 71, 81) lacks `step_up_factor` and `[identification]`;
+  `nominate-unconfirmed.toml` (75) lacks `step_up_factor`; `eval/policy/base.toml` edits the
+  inherited tiers (no `submitter_authorizes`, the default's reason shortened). As supplements of
+  `sim/policy.toml` the three engage files would log the shipped values (scenarios 70, 71, 75
+  and 81 still end as designed so, checked once); base.toml would need a way to change an
+  inherited tier. Converting them is the owner's call: it moves those scenarios' logs.

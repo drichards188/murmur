@@ -755,11 +755,18 @@ def test_events_files_merge_into_one(tmp_path: Path):
 
 
 def test_the_watch_policy_is_the_shipped_one_plus_agent_tasking():
-    """sim/situations/policies/watch.toml is sim/policy.toml with one tier added before the
+    """sim/situations/policies/watch.toml extends sim/policy.toml with one tier added before the
     default: an agent's orbit, patrol, track or identify order goes to a human. Everything
-    else, the engagement tier and identification included, is the shipped policy."""
-    sim = tomllib.loads((REPO / "sim" / "policy.toml").read_text())
-    pol = tomllib.loads((S.SITUATIONS / "policies" / "watch.toml").read_text())
+    else, the engagement tier and identification included, is the shipped policy. Read through
+    the decision layer's own merge, as a run logs it (`murmur-policy show`, eval.policy_file)."""
+    from eval.policy_file import show
+
+    sim = show("sim/policy.toml")["policy"]
+    shown = show(S.SITUATIONS / "policies" / "watch.toml")
+    assert [layer["path"] for layer in shown["layers"][1:]] == ["../../policy.toml"]
+    pol = shown["policy"]
+    # neither `extends` nor a tier's `before` is part of the policy
+    assert "extends" not in pol and not any("before" in t for t in pol["tier"])
     added = [t for t in pol["tier"] if t["name"] == "agent-tasking"]
     assert added == [
         {
@@ -1614,7 +1621,9 @@ def test_hostile_act_engagement_fits_the_chain():
     assert (sit.operator, sit.ai, sit.cosigner, sit.reveal) == ("autoplay", "claude", "scripted", False)
     assert sit.duration_s == 720 and sit.rate == 1
     assert sit.policy == (S.SITUATIONS / "policies" / "watch.toml").resolve()
-    pol = tomllib.loads(sit.policy.read_text())
+    from eval.policy_file import show
+
+    pol = show(sit.policy)["policy"]
     assert pol["identification"]["rule_declaration"] is True and pol["identification"]["nominate_unconfirmed"] is False
     keep_out = pol["rules"]["engage"]["keep_out_m"]
     # the fleet: stand-ins, one armed (the loitering munition), no opening order for it

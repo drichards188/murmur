@@ -150,7 +150,9 @@ policies in `policy/` (`base.toml`: `sim/policy.toml` with `submitter_authorizes
 a second human's consequential proposals wait in the inbox exactly as an agent's do;
 `strict.toml`: every orbit, patrol and track is a human decision; `minimal.toml`, rules 9:
 the shipped policy with a rule declaration nominable before an operator confirms it and no
-step-up besides the engagement signatures, the minimal-approval profile).
+step-up besides the engagement signatures, the minimal-approval profile). `strict.toml` and
+`minimal.toml` extend `base.toml` and `sim/policy.toml` and set only what they change; read
+their merged values with `eval.policy_file.show` (`murmur-policy show`), never by parsing them.
 
 ### Adding a scenario
 

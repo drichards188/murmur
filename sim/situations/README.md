@@ -489,8 +489,11 @@ sensor platform), `every_s` (the tick). Only the table goes to the AI's director
 `playbook.json`, never the rest of the file.
 
 **Policies.** `policies/watch.toml` is `sim/policy.toml` with one tier before the default,
-`agent-tasking`: an AI's orbit, patrol or track waits for the operator, however routine
-(`eval/tests/test_situation.py` holds it to the shipped policy). Name `sim/policy.toml` to let
+`agent-tasking`: an AI's orbit, patrol or track waits for the operator, however routine. It
+extends the shipped policy and sets only that tier (`extends`, `before`; the decision layer
+merges it; `target/release/murmur-policy show sim/situations/policies/watch.toml` prints the
+result as a run logs it), and
+`eval/tests/test_situation.py` holds it to the shipped policy. Name `sim/policy.toml` to let
 the shipped policy dispatch an agent's routine orbit itself.
 
 Tests: `.venv/bin/python -m pytest eval/tests/test_situation.py` (the format, the status

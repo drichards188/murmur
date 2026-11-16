@@ -68,6 +68,14 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    leaving. One floor holds whatever the file says: an intent with any `unverified` check is
    never auto-approved (an auto match becomes human, rule `(unverified)`). The decision's
    `facts.unverified` lists those checks, so the inbox can show why a human is needed.
+   A policy file may be a supplement (docs/SCENARIO-SETTINGS.md section 3): `extends =
+   "<file>"`, relative to it, and only what it changes; its `[[tier]]` entries each name
+   `before = "<an inherited tier>"`. `Policy::load` merges it (tables key by key, values and
+   arrays replaced) and refuses a key set to what it inherits, an unknown or repeated tier, a
+   cycle and more than four files, naming the file and the key; what is logged is the merged
+   policy, so a supplement logs what the whole file it stands for would. `murmur-policy show
+   <file> [--rules N]` prints that policy as `run.started` would log it, with the files it was
+   built from and their SHA-256 (Python reads merged values only there, `eval/policy_file.py`).
 4. **Approval**: a human tier needs a human decision, and who that is depends on where
    the intent came from.
    - **A human's own submission** (`Engine::submit`, `amend_collect`; the console's
