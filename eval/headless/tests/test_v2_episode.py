@@ -102,6 +102,12 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
+#: the batch's condition: its operator, the policy it ran under (a v2 world, on the legacy sensing
+#: model: the watch policy's supplement, eval/headless/situations.py `run_policy`, since decision
+#: rules 33 became the default) and its clock
+COND = "approve-all;legacy-v1v2.toml;paused"
+
+
 def test_a_v2_smoke_batch_gives_labels_an_aggregate_and_a_scorecard(smoke: Path):
     from eval.headless.v2.aggregate import score
     from eval.headless.v2.record import load
@@ -123,12 +129,12 @@ def test_a_v2_smoke_batch_gives_labels_an_aggregate_and_a_scorecard(smoke: Path)
         for a in e["labels"]["actions"]:
             assert a["label"] in L.ACTION_LABELS and a["instrument"]["name"] == "v2.action_label"
     agg = json.loads((smoke / "aggregate_v2.json").read_text())
-    block = agg["families"]["fast-unknown"]["approve-all;watch.toml;paused"]
+    block = agg["families"]["fast-unknown"][COND]
     assert set(block["arms"]) == {"none", "playbook"} and "playbook - none" in block["comparisons"]
     assert block["arms"]["playbook"]["metrics"]["served_share"]["n_situations"] == 1
     assert agg["multiverse"] and agg["none_added_for_pairing"]
     card = json.loads((smoke / "scorecard.json").read_text())
-    row = card["conditions"]["approve-all;watch.toml;paused"]["rows"][0]
+    row = card["conditions"][COND]["rows"][0]
     assert row["area"] == "S1" and row["metrics"]["served_share"]["playbook"]["mark"] == "descriptive, underpowered"
     md = (smoke / "scorecard.md").read_text()
     assert "S1 identify" in md and "†" in md

@@ -2577,10 +2577,11 @@ Rules versions:
   and tests written for rules 32 decide under it by name. The v1 and v2 worlds run
   `sim/situations/policies/legacy-v1v2.toml` (`neutral_after_bar = false`: their legacy tracker
   calls neutral from 0.3). MCP `get_policy` carries `engage_defaults` (rules 33 only). Fixtures (a
-  clean build of the flip): `tests/data/audit/v33-engagement-scenario-01.jsonl` (no identify order:
-  as rules 32 decided it, its logged settings and layers aside),
-  `v33-identify-goes-on-past-a-first-naming-scenario-149.jsonl` (relabelled rules 32, its own looks'
-  details and its `named` step are caught).
+  clean build of `2e5ccd6`): `tests/data/audit/v33-engagement-scenario-01.jsonl` (the decisions
+  rules 32 made: its logged settings and layers, its target's identity level in each picture and the
+  identity check's words aside), `v33-identify-goes-on-past-a-first-naming-scenario-149.jsonl`
+  (relabelled rules 32, its logged settings, its own looks' sensors and its `named` step are
+  caught; with the settings taken out as rules 32 logged a policy, the last two still are).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

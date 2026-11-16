@@ -1466,7 +1466,19 @@ sensor's reach under the conditions now, bd murmur-ahss) re-took it for `run.sta
 record `1a7d4115...`, audit `34c3911e...`, 152 events: the new record with its audit log's
 `rules_version` put back to 31 hashes to `c93ac2ac...` and `0c4e58e1...` byte for byte (the
 playbook's tool list names the tools only, so the two descriptions rules 32 rewrote move nothing
-here); the legacy model has no reach now.
+here); the legacy model has no reach now. Rules 33 (the scenario's settings,
+docs/SCENARIO-SETTINGS.md stage S7) re-took it to record `47df670d...`, audit `d9f2a2b3...`, 152
+events, with no event,
+decision or proposal moved (the same events at the same times). The episode now runs
+`sim/situations/policies/legacy-v1v2.toml` (`neutral_after_bar = false`, the legacy tracker's
+neutral call from 0.3), and the playbook settles a track as the watch identifies it. With
+`run.started`'s `rules_version` put back to 32, its `policy_schema` to 7 and its `policy_layers`
+dropped, the logged policy's rules 33 keys dropped (`[watch]`, `[rules.silent]`, the two new
+`[rules.engage]` keys), each logged picture's own looks without their sensor, level and confidence
+(its sha256 recomputed, and every reference to it), and the playbook's configuration labels, its
+evidence's `bar` (was `classification_settled`) and its settle words put back, the new record and
+audit log hash to `1a7d4115...` and `34c3911e...` byte for byte; each of those causes alone moves
+both.
 
 ### 17.3 The bake tool
 

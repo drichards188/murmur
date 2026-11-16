@@ -24,7 +24,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 91] = [
+const LOGS: [(&str, u32); 93] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -255,13 +255,19 @@ const LOGS: [(&str, u32); 91] = [
     // an identify order in fog of 50 m visibility, sent once it thins to 1.2 km)
     ("v32-engagement-scenario-01.jsonl", REACH_NOW_SINCE),
     ("v32-identify-in-fog-refused-until-it-lifts-scenario-146.jsonl", REACH_NOW_SINCE),
+    // rules 33 (the scenario's settings; a clean build of 2e5ccd6, docs/SCENARIO-SETTINGS.md stage
+    // S7): scenario 01 (the decisions rules 32 made: its logged settings and layers, its target's
+    // identity level in each picture and the identity check's words aside) and 149 (PUMA 1's camera
+    // names the boat at 0.11, a `named` step, and identifies it at 0.65, ending the order)
+    ("v33-engagement-scenario-01.jsonl", SCENARIO_SETTINGS_SINCE),
+    ("v33-identify-goes-on-past-a-first-naming-scenario-149.jsonl", SCENARIO_SETTINGS_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v32-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v33-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2298,4 +2304,39 @@ fn without_class(line: &str) -> String {
         out.replace_range(i..close, "");
     }
     out
+}
+
+/// Rules 33: scenario 149's log relabelled rules 32 carries what no build of rules 32 logged (the
+/// scenario's settings in the logged policy, an own look's sensor, an identify order's naming below
+/// the criteria) and is caught; with the policy's markers taken out as a rules 32 build logged it
+/// (`common::claim_older_rules`), its own looks and its `named` step still give it away; under its
+/// own rules it replays.
+#[test]
+fn an_identify_order_held_to_the_criteria_is_caught_under_older_rules() {
+    let ls = lines(&fixture("v33-identify-goes-on-past-a-first-naming-scenario-149.jsonl"));
+    let v33 = format!("\"rules_version\":{SCENARIO_SETTINGS_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v33));
+    assert!(ls.iter().any(|l| l.contains("\"step\":\"named\"")), "the naming below the bar is logged");
+    assert!(ls.iter().any(|l| l.contains("\"sensor\":\"eo_ir\"")), "an own look's sensor is logged");
+    old[0] = old[0].replacen(&v33, &format!("\"rules_version\":{REACH_NOW_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(REACH_NOW_SINCE))).iter().map(|s| s.to_string()).collect();
+    for what in [
+        "the scenario's settings for the watch",
+        "the sensor of a vehicle's own look",
+        "an identify order's naming below the scenario's criteria",
+    ] {
+        assert!(w.iter().any(|m| m.starts_with(what)), "{what}: {w:?}");
+    }
+    let mut events = parse_log(&ls.join("\n")).unwrap();
+    common::claim_older_rules(&mut events[0].body, REACH_NOW_SINCE);
+    let stripped: Vec<String> = events.iter().map(|e| serde_json::to_string(e).unwrap()).collect();
+    assert!(!stripped[0].contains("\"watch\":"), "{}", stripped[0]);
+    let w: Vec<String> = whats(&with(&rechain(&stripped), RulesAccepted::Exactly(REACH_NOW_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(!w.iter().any(|m| m.starts_with("the scenario's settings for the watch")), "{w:?}");
+    for what in ["the sensor of a vehicle's own look", "an identify order's naming below the scenario's criteria"] {
+        assert!(w.iter().any(|m| m.starts_with(what)), "{what}: {w:?}");
+    }
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
 }

@@ -490,10 +490,25 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: before): the officer now logs them as `watch_settings` on its connect line, which it does only
 #: when the policy carries them. With that one line's settings left out this code gives the
 #: digests before (34748944..., 7554d022...) byte for byte; the playbook's did not move.
+#: Re-taken when decision rules 33 became the default (docs/SCENARIO-SETTINGS.md stage S7), with no
+#: event, decision or proposal moved in any of the three. With the old tool texts (a binary built
+#: with get_intents', explain_intent's and get_nomination_options' radius texts put back), Harbor
+#: watch's brief without the scenario's ROE card, and in each record `run.started`'s
+#: `rules_version` put back to 32, its `policy_schema` to 7 and its `policy_layers` dropped, the
+#: logged policy's rules 33 keys dropped, each logged picture's own looks without their sensor, level
+#: and confidence (its sha256 recomputed), the playbook's configuration labels, its evidence's `bar`
+#: (was `classification_settled`) and its settle words ("not identified (0.10 under the bar 0.60)",
+#: was "classification 0.10 under 0.60") put back, and a v2 record's condition naming watch.toml,
+#: this code gives the digests before (ac7044b1..., fd7d8c82..., 0f9c12cc...) byte for byte, and each
+#: cause alone moves them. The model records move by the card (Harbor watch's prompt 5 738 to 7 948
+#: characters, the card's stale and look lines included) and the three texts (its tool list 46 140 to
+#: 46 463 characters), so their prompt sizes, token estimates and dollars; v2's brief is its mission,
+#: no card. These worlds run sim/situations/policies/legacy-v1v2.toml (`neutral_after_bar = false`,
+#: the legacy tracker's neutral call), which a v2 record's condition now names.
 PAUSED = {
-    "model harbor-watch s1": "ac7044b1260eb5cfc1024d4b99f26420d140c2e6b1d42d49632d63ba8da31a42",
-    "playbook v2 fast-unknown 1000": "fd7d8c828ad4b87e24e48f18c05365ee1a1f60007bba5d1cc98dc0a238cedce7",
-    "model v2 fast-unknown 1000": "0f9c12cc05d0e7326f64cf1f03e2b21ed09cadce0be46fcecbed57c0ff79d065",
+    "model harbor-watch s1": "2f6a7b34c089788c7e870605dbe3949b563dbc96a0e59c298c668608e889f852",
+    "playbook v2 fast-unknown 1000": "7ce2d32103294cf346ba7b2110af6ac8cd352713a5843daee8a0cce8e4b75950",
+    "model v2 fast-unknown 1000": "bcbeae2be0bbd8439ce78a25eaea8d822f09d81b1d7cc70a8f7ec0ddf945d0c3",
 }
 
 

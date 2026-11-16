@@ -1,8 +1,9 @@
 # Scenario settings: one source for what counts, per scenario
 
 Status: decided 2026-11-16 (the owner: "cater all thresholds to the scenario", scoring graded
-against the scenario's values, agents briefed on them); being built in stages (bd epic, section
-6). Decision record: docs/DECISIONS.md, "2026-11-16: Thresholds are the scenario's".
+against the scenario's values, agents briefed on them); built in stages S1 to S7 (bd epic, section
+6), decision rules 33 the default since S7 (section 7, "S7 as built"). Decision record:
+docs/DECISIONS.md, "2026-11-16: Thresholds are the scenario's".
 
 ## 1. What was found
 
@@ -189,11 +190,14 @@ messages state.
 ## 4. Legacy worlds
 
 The v1 and v2 worlds and the Harbor watch golden keep their meaning through
-`sim/situations/policies/legacy-v1v2.toml` (recognition by any classifying sensor at 0.6,
-`neutral_after_bar = false`), set beside `MURMUR_SENSE_MODEL=legacy`. The golden's behaviour does
-not change; its bytes move once, at adoption, by four causes each proved alone (the rules
+`sim/situations/policies/legacy-v1v2.toml`, set beside `MURMUR_SENSE_MODEL=legacy`. The golden's
+behaviour does not change; its bytes move once, at adoption, by causes each proved alone (the rules
 number, the logged `[watch]`, the policy schema and layers, the playbook's configuration hash), as
-fa31677 did for rules 32.
+fa31677 did for rules 32. As built (S7), measured first: the file sets `neutral_after_bar = false`
+only (the legacy tracker's call from 0.3, so the logged settings, `get_policy` and the card say
+what it does); recognition by any classifying sensor was not needed: under the standing criteria
+the golden and the paused episodes kept every event, decision and proposal (section 7, "S7 as
+built").
 
 ## 5. Tests that hold it
 
@@ -222,7 +226,7 @@ Each lands green on main by itself; bd tracks each under the epic.
 | S4 | bridge: neutral after the bar, stale, tool texts, identify progress, effect-radius default, `/api/policy`, console defaults | 33 |
 | S5 | agents: `agents/roe.py`, officer (clear-list fix, horizon, still speed), case file, playbook values | none |
 | S6 | harness: ROE card, settings by record, labels, metrics, report, ceiling and oracles held to the mission's sensors (measured before and after on dev seeds), live runner; the guard and end-to-end tests | none |
-| S7 | adoption: `RULES_VERSION` 33; v1/v2 legacy policy; playbook to `roe`; fixtures; golden, paused and scale-watch digests re-taken with each cause proved; docs (CLAUDE.md, crates/murmur-decide/README.md, agents/README.md, sim/situations/README.md, SCORING-V3 section 9 choices 42-47) | 33 default |
+| S7 | adoption: `RULES_VERSION` 33; v1/v2 legacy policy; playbook to `roe`; fixtures; golden, paused and scale-watch digests re-taken with each cause proved; docs (CLAUDE.md, crates/murmur-decide/README.md, agents/README.md, sim/situations/README.md, SCORING-V3 section 9 choices 42-47) | 33 default (built; section 7) |
 
 After S7: free baselines on dev seeds, then SCORING-V3 records what moved. No paid run is part
 of this work.
@@ -333,3 +337,34 @@ of this work.
   policy's circle, each inventory site reading the settings, and the perturbation check) and
   eval/headless/tests/test_v3_rescore.py (a synthetic v0 batch's report against the one the code
   before S6 wrote). The Rust guard and the end-to-end test are S7's.
+
+- S7 as built: rules 33 is the default (`RULES_VERSION = RULES_NEWEST = 33`, `POLICY_SCHEMA` 8; a
+  run asked for older rules logs schema 7). The legacy worlds were measured first: the Harbor watch
+  golden and the three paused episodes under rules 33 with the standing settings, before and after
+  the playbook's switch, kept every event at the same time and every decision and proposal; only
+  what is logged and said moved. So `sim/situations/policies/legacy-v1v2.toml` sets one key,
+  `neutral_after_bar = false` (the legacy tracker's call from 0.3, which S4 left on that model), so
+  the logged settings, `get_policy`'s `watch` (v0's exactly) and the card say what that tracker
+  does; `eval/headless/situations.py` `run_policy` gives it to every situation of the Golden Gate's
+  own world headless and `fullstack.py` to its copies (the Phase G stacks of eval/stack.py run their
+  own eval/policy files and serve no card: left as they are). A v2 record's condition names it, so
+  aggregates keep rules 33's v2 records apart. The playbook settles a track as `Roe.identified`
+  holds it (`Config.roe`, set by `under`; a conflict stays the look's own reason, `Roe.shortfall`
+  saying why a track is not identified); `defaults.toml` holds none of the three watch-derived keys.
+  The seven `[since.33]` tables are written into their files, each noting what rules 32 did.
+  Leftovers: `get_policy` serves `engage_defaults` (rules 33), `scripted.py` reads it; the tool
+  texts name the policy's radius and `identify_progress`; `MURMUR_TRACK_DROP_S` is floored at the
+  run's `stale_s` (the same notion: a track goes stale before it drops); `conflict_confidence` is
+  left untied, documented in sim/policy.toml; the card states `stale_s` and `look_m`, the report's
+  line `stale_s` and the time on station. Every digest moved with no event moved, each cause proved
+  alone with the others put back (docs/HEADLESS.md 17.2, eval/headless/tests/test_charged_clock.py,
+  docs/load-test.md): the golden by the rules number, the schema and layers, the logged settings,
+  the own looks' details in each logged picture (S3's, which the design's four causes did not name)
+  and the playbook's configuration and words; the paused model records by those and by the card in
+  Harbor watch's brief and the three rewritten tool texts; the scale watch by those and the neutral
+  rule (7 tracks shown unknown, not neutral, in its four pictures); the v1 generator's 21 digests
+  (eval/headless/tests/test_world_v2.py) by each spec's policy and its brief's card. The playbook's
+  own golden (agents/tests/fixtures/playbook) moved by its labels and evidence key, and at two ticks
+  by the settle check itself: its reads, recorded live on 2026-10-09, predate `identity.level`, so
+  the 0.99 fast boat shows no level and is not identified, and `isr.investigate` reports no free
+  sensor aircraft where it said ready (no proposal changed).

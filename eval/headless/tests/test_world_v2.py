@@ -125,28 +125,34 @@ def test_the_v2_fleet_is_harbor_watch_with_the_variants():
 #: decoy:1000 (their drawn water) and two-at-once:1 (no second boat on water until the generator
 #: rounds Point Bonita, `families.BONITA_OFF`); Harbor watch's traffic, which every family
 #: carries, moved the rest (its cargo ship's route east of Point Blunt).
+#: Re-taken 2026-11-16 when decision rules 33 became the default (docs/SCENARIO-SETTINGS.md stage
+#: S7): every v1 spec runs the watch policy's legacy supplement
+#: (sim/situations/policies/legacy-v1v2.toml, eval/headless/situations.py `run_policy`) and its
+#: brief carries the scenario's ROE card; with `policy` put back to watch.toml and the brief to
+#: Harbor watch's without the card this code gives the earlier digests, all 21, and with either
+#: alone none. The contacts files and every other field are as they were.
 V1_DIGESTS = {
-    "approval-flood:1": "a8e88e6f462af326314a8c0b022fbd95c7003adfa65d536621d958408c8e68f3",
-    "approval-flood:1000": "990729b2636842198fa20b689c44fbc341871f59af2f76b66b97cc441d114d12",
-    "approval-flood:17": "a64134a26a56b390324ad01c207d7b33e3c6a86f046407ff16d936b8d8361192",
-    "decoy:1": "9f47c1858caad4b3976319233adc4d2572d0fcb358d11d8a4a07835e3d4461da",
-    "decoy:1000": "39651229fe1203744d23aad4ea2f9824c41b04754ae64e023118cccc006335e5",
-    "decoy:17": "8327ac5470ffc99474bd42c842d61b05df6dda2db69d794717144c9c29c3bbb5",
-    "fast-unknown:1": "9503885f994eda7c98dacfd3033e3ff3f388bda7429feae449d9db3fef17dc93",
-    "fast-unknown:1000": "bb33296f62deb0db2dfa7dd8a5d45ac2945a8e3011287484db9d8c243f194fc1",
-    "fast-unknown:17": "edca36b5d1777d5d756ba24138d9ce5a23bdad41e36ad2be6ec67295a72a9708",
-    "link-cut-mid-look:1": "385ec09165010dd06ea9975e4c59027f0dffe7a05c8ca09c9a24f4dff5da74ee",
-    "link-cut-mid-look:1000": "ef7d2fbb0c6935ca4264dfded3b3b5e9a082808516949968280185474a814101",
-    "link-cut-mid-look:17": "624a5c623babadbb984a7cd151fc4411b681ef5006d265ddc823c9c5ad2b63dc",
-    "low-battery:1": "5de5c96981065ee078a28d09e6388749df674e9eeb64e722c07f5881bf023eb7",
-    "low-battery:1000": "81f223ed96aeebc988a55c35aca2225e15acd0acab9fbbb498a552f5b8f0964e",
-    "low-battery:17": "fda70d66085f249fc51140ba8223372e62dd9a0806f10d96f53767c0be3e333c",
-    "stuck-vehicle:1": "f3dd510e2ec41ffb23006234806649e3367281c55bd237f46ac324efdcd2b8cb",
-    "stuck-vehicle:1000": "10b4ad58c9d00037811cd6591374b600a502f56cc6fb3aa88c58b87d1d962f0a",
-    "stuck-vehicle:17": "159c14381c871af841ceb645c63d54239c779ca9caaec2b84ca9991715e1f027",
-    "two-at-once:1": "9eec20f0ec375bebef5d8e4ad1133a83f187c82e88c5d03070c65c7ebe9447f9",
-    "two-at-once:1000": "582d1d4cd99f426f00976569558d8776007f1f193856a796a00a7bcf2524fe10",
-    "two-at-once:17": "6a2a167b4f91c564838ca2810a6d353982d9a58340c2ca6f58446662d4e8713d",
+    "approval-flood:1": "5f71fdcb1cced75ac8e11874a07ea02997e1d20141a87ce2920315edf99ad54d",
+    "approval-flood:1000": "6dbc3b52b7dcc70b0ee70121f0cf48bffcbee38aca5017affe141005ff2135c3",
+    "approval-flood:17": "58763b75dd4cfb18580fb9a76bd972aef1db8ced5b81e2b5ebc884d7e2a697b6",
+    "decoy:1": "7c83fbe32d4b369977eb40b7f345c05c2a516bd732c7ec1dda08bfc704f649d9",
+    "decoy:1000": "365960797cb7d5900919469fac849152c53b1b3562c5f1f6e6c7737a9e9b208a",
+    "decoy:17": "37b4883737af9a5f4cb156f39b44c7b434fbbb471faa4ff8a9d398af94df0faf",
+    "fast-unknown:1": "000502523c924affa9716a558ff0ae8236bec372fcc7bafde7c6f8ebb6549da0",
+    "fast-unknown:1000": "71d819e4fac2e1a93460d52b6bf949a7894a7bfd61c27195a75aaebbbeb616c2",
+    "fast-unknown:17": "64eac338c50c1ec1088894eb0edc8d872f7f12d1acaa4596a2b0e545b373ec52",
+    "link-cut-mid-look:1": "451b57b698a5aa60a0c18192d92e3528a9107ea4bb76a3dd1dbc9352d809d134",
+    "link-cut-mid-look:1000": "3ef9c25fecd431e9a8d7a9a36abd97663714619827670c3936c120f9edcdda29",
+    "link-cut-mid-look:17": "cdc5d7794f7c24172e4e1b9196dafda842596033904e3121664b201a8b0f070b",
+    "low-battery:1": "36b2e0754b1f77d787721dba54794f3b004b9caab1f29f960a09874b14986cda",
+    "low-battery:1000": "9ef025e33e1db90ccbb6ad0315d5c1421a7561d2d4908fde7ee0f0725b10a041",
+    "low-battery:17": "07363d84602c40cb31b21c606f25a5422bdaa5cdd8c8af046d67b615bb96bf95",
+    "stuck-vehicle:1": "9cf02c3dd2fdc9c4a62c7c2fadb480978a5ed7f4ce917b059dec8880811bdd19",
+    "stuck-vehicle:1000": "e2901f59518267bc9b68cbaa73aab0ffe3a76d1b56d67583cf8a8a061949410b",
+    "stuck-vehicle:17": "04e1496bb6480dbf84251d4c55a50dda60b8daf68ef66f35adb20719de7f4bcf",
+    "two-at-once:1": "fdd7d4aa35c1111c5a063feb04c6596c5c008a6948f843cef545bf30445f2e14",
+    "two-at-once:1000": "c59ad5063d561be421b3e0b3b1d21099922d3d58f0c7db403db7782cf655f284",
+    "two-at-once:17": "b102a46617018eef047cb5334a56c2d0a2f2f8de573ced6ccea2968b12fdccbd",
 }
 V1_FIELDS = ("name", "fleet", "contacts", "policy", "at", "duration_s", "ai_start_s", "ready_timeout_s", "orders",
              "playbook", "autoplay", "seed", "events", "contacts_seed", "family", "split", "situation_seed",

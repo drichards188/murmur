@@ -23,7 +23,6 @@ from eval.headless.situations import Calibration, at_unix, run_id
 from eval.headless.v3 import families as F
 from eval.headless.v3 import families_f7_f13 as X
 from eval.headless.v3.labels import episode_labels
-from eval.headless.v3.mission import mission_text
 from eval.headless.v3.settings import DOMAINS, v0
 from eval.world import load_world
 
@@ -74,7 +73,9 @@ def test_every_family_draws_its_elements_in_their_media_and_its_needs_in_time(na
     w = load_world(world)
     for seed in SEEDS:
         e, path = F.generate(name, seed, tmp_path)
-        assert e.brief == mission_text(world) and e.opaque and e.map == world and e.world == "v3"
+        # the brief the run's rules give (decision rules 33, the default: the scenario's ROE card)
+        assert e.brief == F.briefing(e, world)[2] and e.brief.startswith("The circle:")
+        assert e.opaque and e.map == world and e.world == "v3"
         assert run_id(e, 123).startswith("ep-") and e.family == name and e.situation_seed == seed
         assert e.truth["contacts_seed"] == tomllib.loads(path.read_text())["seed"]
         cs = contacts(path)

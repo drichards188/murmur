@@ -25,7 +25,6 @@ from eval.headless.v3 import families as F
 from eval.headless.v3 import families_ops as FO
 from eval.headless.v3 import labels as L
 from eval.headless.v3 import labels_ops as O
-from eval.headless.v3.mission import mission_text
 from eval.headless.v3.settings import v0
 from eval.world import load_world
 
@@ -606,7 +605,7 @@ def test_each_family_draws_its_elements_in_their_medium(name: str, tmp_path: Pat
             assert in_medium(world if world != FO.SCALE else "golden-gate-v3", c), (seed, c["id"])
         opts = getattr(e, "options", None) or {}
         if fam == "f14-space":
-            assert e.brief.startswith(mission_text(world)) and "Tasking." in e.brief
+            assert e.brief.startswith(F.briefing(e, world)[2]) and "Tasking." in e.brief
             (gap,) = e.truth["gap_needs"]
             (cov,) = e.truth["cover_needs"]
             assert F.dist_m(tuple(gap["center"]), v0(world).area.center) > 55_000.0
@@ -615,7 +614,7 @@ def test_each_family_draws_its_elements_in_their_medium(name: str, tmp_path: Pat
             kinds = [s["kind"] for s in e.script]
             assert "probe" in kinds and "flood" in kinds and not opts
         elif fam == "f15-engage":
-            assert e.brief == mission_text(world)
+            assert e.brief == F.briefing(e, world)[2]
             eng = e.truth["engagement"]
             assert eng["target"] == "hostile-1" and len(acts) == 3
             u = FO.uids(e.fleet)

@@ -19,7 +19,6 @@ from eval.headless.situations import Calibration, run_id
 from eval.headless.v3 import families as F
 from eval.headless.v3 import families_ops as FO
 from eval.headless.v3.labels import episode_labels
-from eval.headless.v3.mission import mission_text
 from eval.headless.v3.settings import v0
 
 
@@ -48,7 +47,9 @@ def test_every_family_draws_its_element_in_its_medium_and_into_the_circle(name: 
     w = load_world(world)
     for seed in SEEDS:
         e, path = F.generate(name, seed, tmp_path)
-        assert e.brief == mission_text(world) and e.opaque and e.map == world and e.world == "v3"
+        # the brief the run's rules give (decision rules 33, the default: the scenario's ROE card)
+        assert e.brief == F.briefing(e, world)[2] and e.brief.startswith("The circle:")
+        assert e.opaque and e.map == world and e.world == "v3"
         assert run_id(e, 123).startswith("ep-"), "the run id names no family"
         assert e.family == name and e.situation_seed == seed and e.contacts == path
         cond = e.conditions or {}

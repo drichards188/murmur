@@ -26,7 +26,6 @@ from eval.headless import officer as O
 from eval.headless.v2.record import load
 from eval.headless.v3 import families as F
 from eval.headless.v3 import run as R
-from eval.headless.v3.mission import mission_text
 from eval.model_agent import CostGuardExceeded, Ledger
 
 from .fake_anthropic import FakeAnthropic, last_results, text, tool_use
@@ -95,8 +94,11 @@ def test_a_v3_model_episode_through_the_runner_and_the_report(tmp_path: Path, mo
     monkeypatch.setattr(O, "make_client", lambda: client)  # in place of the Anthropic client
     generate = F.generate
 
+    briefs: list[str] = []
+
     def short(name: str, seed: int, workdir: Path):
         e, path = generate(name, seed, workdir)
+        briefs.append(e.brief)
         e.duration_s = DURATION_S
         return e, path
 
@@ -116,9 +118,10 @@ def test_a_v3_model_episode_through_the_runner_and_the_report(tmp_path: Path, mo
     assert not {"model", "budget_stopped", "model_failed", "leakage_hits"} & set(idx["none"])
     rec = load(m["path"])
     assert rec["scoring"] == "v3" and rec["episode_class"] == "scored" and rec["model"]["totals"] == t
-    # same tasking: the watch officer's prompt with the world's mission as the brief, verbatim
+    # same tasking: the watch officer's prompt with the situation's brief (from decision rules 33,
+    # the default, the scenario's ROE card), verbatim
     head = (REPO / "agents" / "watch" / "prompt.md").read_text().rstrip() + "\n\n## Situation brief\n\n"
-    assert script.system == head + mission_text(world) + "\n"
+    assert briefs and briefs[0].startswith("The circle:") and script.system == head + briefs[0] + "\n"
     # the leakage scan read every input (the prompt, every tool definition, update and tool result)
     lk = rec["v3"]["leakage"]
     assert lk["n_hits"] == 0 and lk["version"] == "2"

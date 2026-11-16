@@ -483,7 +483,18 @@ audit `96a2942d...` (6,099 events: changes after the pair above had moved it); w
 bearing segment bounded by the radar's height (murmur-m4fc) it gives record `97380e7d...` and audit
 `9abb1bdd...` (6,099 events), the same twice. The same events and decisions: only the four logged
 track pictures differ, by millimetres in two aircraft's camera-held tracks (T-0007, T-0024) whose
-history has a 2D radar's segment in it, and the decisions' `tracks_sha256` with them. Compare with
+history has a 2D radar's segment in it, and the decisions' `tracks_sha256` with them. Main's code
+just before rules 33 became the default (a60f598, 2026-11-16) gave record `9c465c64...` and audit
+`d19121bb...` (6,099 events: changes after the pair above had moved it). Decision rules 33 (the
+scenario's settings, docs/SCENARIO-SETTINGS.md stage S7) give record `8dca43c0...` and audit
+`7f073943...` (6,099 events), the same events at the same times: on the physical model the tracker
+no longer calls a contact neutral by its classification before the watch counts it identified, so
+in the four logged pictures 7 tracks are shown unknown where they were neutral (with their
+affiliation confidence), and every decision's `tracks_sha256` moves with them. Run with that rule
+off (a supplement of the scale watch's policy setting `neutral_after_bar = false`), and with
+`run.started`'s rules version (32), policy schema (7) and layers, the logged policy's rules 33 keys
+and the own looks' sensor, level and confidence put back, it hashes to `9c465c64...` and
+`d19121bb...` byte for byte; with the rule on, to `cd20168e...` and `19ac81f6...`. Compare with
 this pair.
 
 **Saturation's size, synthetic** (`tracks::tests::sense_par::sense_par_bench`, release: 3,602 of
