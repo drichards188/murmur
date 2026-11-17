@@ -4234,9 +4234,11 @@ fn proxies(
                 rationale: Some(format!("{track} declared hostile")),
                 platform: platform.clone(),
                 track: track.clone(),
-                radius_m: 75.0,
+                // the policy's default effect radius and window, as a nomination that names neither
+                // gets them (the window stated, as the runner always logged it)
+                radius_m: engine.policy().rules.engage_rules().default_effect_radius(),
                 fallback: Fallback::Return,
-                window_s: Some(600),
+                window_s: Some(engine.policy().rules.engage_rules().default_window_s),
                 accept: Vec::new(),
                 accept_lost: Vec::new(),
                 accept_behaving: Vec::new(),

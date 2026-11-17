@@ -73,10 +73,11 @@ use crate::clock::round;
 const HIT_GAIN: f64 = 0.25;
 /// Existence confidence halves about every 40 s without a detection.
 const CONF_DECAY_S: f64 = 60.0;
-/// A track is `stale` after this long without a detection (also the console's fade): the
-/// standing value, and the one before decision rules 33; from rules 33 the run's `[watch]
-/// stale_s` ([`TrackerWatch::stale_s`]).
-pub const STALE_S: f64 = 10.0;
+/// A track is `stale` after this long without a detection (also the console's fade) under decision
+/// rules below 33: what they meant, the engine's out of view (`murmur_decide::legacy`, where the
+/// reasons are), read here and never copied ([`TrackerWatch::standing`]); from rules 33 the run's
+/// `[watch] stale_s` ([`TrackerWatch::stale_s`]).
+pub use murmur_decide::legacy::OUT_OF_VIEW_S as STALE_S;
 /// A classification at this identity confidence or more is a call the affiliation estimate
 /// makes ([`Track::estimate`]); below it the contact stays unknown, "not yet confident".
 const NEUTRAL_CALL: f64 = 0.3;

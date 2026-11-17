@@ -335,15 +335,21 @@ pub struct Noted {
     pub t: Time,
 }
 
-/// The order's deadline: its dispatch, the time to get there, then its time on station: rules 33,
-/// the policy's `[watch] identify_on_station_s`, before them [`ON_STATION_S`].
-pub fn deadline(dispatched_t: Time, plan: &Plan, cfg: &RulesConfig) -> Time {
-    let on_station = if cfg.identify_criteria() {
+/// An identify order's time on station under `cfg`, s: rules 33, the policy's `[watch]
+/// identify_on_station_s`, before them [`ON_STATION_S`]. The deadline's ([`deadline`]), and the
+/// link predictor's for an identify order (the bridge's `link_coverage`).
+pub fn on_station_s(cfg: &RulesConfig) -> f64 {
+    if cfg.identify_criteria() {
         cfg.watch().identify_on_station_s
     } else {
         crate::legacy::IDENTIFY_ON_STATION_S
-    };
-    dispatched_t.plus_ms(((plan.transit_s + on_station) * 1000.0).round() as i64)
+    }
+}
+
+/// The order's deadline: its dispatch, the time to get there, then its time on station
+/// ([`on_station_s`]).
+pub fn deadline(dispatched_t: Time, plan: &Plan, cfg: &RulesConfig) -> Time {
+    dispatched_t.plus_ms(((plan.transit_s + on_station_s(cfg)) * 1000.0).round() as i64)
 }
 
 /// The kinds an identify goes back to afterwards: the vehicle tasks one vehicle can be sent

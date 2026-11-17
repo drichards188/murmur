@@ -108,6 +108,28 @@ def test_each_domain_has_its_sensor_level_and_grace(domain: str, kind: str, show
     assert n["served"] is served, n
 
 
+@pytest.mark.parametrize("domain, kind, sensors, level, served", [
+    ("ground", "person", ["eo_ir"], None, True),            # no levels kept (before rules 33): the kind alone
+    ("ground", "person", ["eo_ir"], "recognise", False),    # `person` at recognition: the family, not the kind
+    ("ground", "person", ["eo_ir"], "identify", True),
+    ("ground", "person", ["eo_ir"], "absent", False),       # levels kept, none shown
+    ("subsurface", "diver", ["sonar"], "recognise", True),  # recognition is the domain's level: the family will do
+    ("subsurface", "diver", ["sonar"], "detect", False),
+])
+def test_a_kept_identity_level_must_reach_the_domain_s(domain: str, kind: str, sensors: list[str], level: str | None,
+                                                       served: bool):
+    """A record that keeps each sample's identity level (a run of rules 33, v3/record.py) is judged on
+    the level shown as well as the label (bd murmur-u1q4.8); one that keeps none on the label alone."""
+    rec = v3_record(one(kind, domain, ("person", 0.9, None, sensors), 110.0))
+    if level is not None:
+        for T in rec["v3"]["picture"]["tracks"].values():
+            T["level"] = [[0, "detect"], [110, None if level == "absent" else level]]
+    n = need(L.episode_labels(rec), "c")
+    assert n["served"] is served, n
+    # the instrument says which judgement applied: version 4 reads the kept level, 3 the label alone
+    assert n["resolved_by"] == {"name": "v3.identity_resolved", "version": "3" if level is None else "4"}
+
+
 def test_a_conflict_or_a_low_confidence_never_resolves():
     s = one("small_fast_boat", "surface", ("small_fast_boat", 0.9, "AIS says fishing", ["eo_ir"]), 110.0)
     assert not need(labels(s), "c")["served"]
@@ -411,6 +433,7 @@ def test_the_labels_say_their_instrument_and_version():
     lab = labels(one("small_fast_boat", "surface", ("small_fast_boat", 0.9, None, ["eo_ir"]), 120.0))
     assert lab["version"] == "3" and lab["world"] == "golden-gate-v3"
     assert lab["needs"][0]["instrument"] == {"name": "v3.contact_need", "version": "3"}
+    assert lab["needs"][0]["resolved_by"] == {"name": "v3.identity_resolved", "version": "3"}, "no levels kept"
     assert lab["fault_needs"] == [] or lab["fault_needs"][0]["instrument"]["name"] == "v2.fault_need"
 
 

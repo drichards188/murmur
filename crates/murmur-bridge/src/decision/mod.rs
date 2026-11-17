@@ -1589,7 +1589,14 @@ impl Decision {
                 },
             })
             .collect();
-        self.world.coverage().order_answer(&self.world, routes).await
+        // the failsafe's chance over the order's own time on station: an identify order's is the
+        // scenario's (`murmur_decide::identify::on_station_s`, its deadline's); every other kind
+        // keeps the predictor's
+        let on_station_s = match task {
+            Task::Identify { .. } => murmur_decide::identify::on_station_s(&self.rules),
+            _ => murmur_linkemu::coverage::ON_STATION_S,
+        };
+        self.world.coverage().order_answer(&self.world, routes, on_station_s).await
     }
 
     /// [`Self::link_coverage`] for a request as the dry run takes it (a vehicle task or an

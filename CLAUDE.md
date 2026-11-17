@@ -662,6 +662,11 @@ meaningful.
   the Rust guard (`tests/settings_guard.rs`); `tests/rules33.rs`, `tests/scenario_settings.rs`,
   `tests/policy_layers.rs`; scenarios 149-157, tampers `edit_own_confidence`, `drop_loosened`.
   Scenarios whose design it changed (75, 108, 111, 112, 117, 118, 144) say what rules 32 did.
+  Since murmur-u1q4.8 a v3 record of rules 33 keeps each sample's identity level (`v3/record.py`),
+  which the scoring and every ceiling hold to the domain's level (`settings.level_reaches`, the one
+  comparison; `v3.identity_resolved` version 4 on such a record); the keep-out explanation's memory
+  is `TrackerMemory::under(cfg)` (no `Default`); the link predictor gives an identify order its own
+  `identify_on_station_s`. The Rust guard's `FOUND_COPIES` is empty: fix a new copy, never list it.
 - A rules version built in stages before it is the default (as rules 30 and 33 were,
   docs/NODE-LOSS.md section 8): `RULES_NEWEST` (rules.rs) one ahead of `RULES_VERSION` while it is
   built; a run decides under it only when asked (a scenario's `min_rules`, `murmur-scenarios --rules

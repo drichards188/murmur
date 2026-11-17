@@ -31,6 +31,7 @@ from typing import Any
 from ..labels import Truth
 from ..v2.record import Picture
 from .labels import FAMILY
+from .record import shown_level
 from .settings import of_record
 
 LOOK_BEFORE_S = 60.0
@@ -74,11 +75,14 @@ def new_hits(pic: Picture, cid: str, sensors: tuple[str, ...], t1: float, t2: fl
     return out
 
 
-def level_shown(kind: str | None, true_kind: str) -> str:
+def level_shown(kind: str | None, true_kind: str, level: str | None = None) -> str:
+    """What the shown label is of the true kind; `level`, where the record keeps the level shown
+    (record.py, rules 33 on): the true kind's label shown at recognition is its family's (`person`,
+    a family and a kind; bd murmur-u1q4.8)."""
     if kind is None:
         return "none"
     if kind == true_kind:
-        return "identified"
+        return "recognised" if level == "recognise" else "identified"
     if kind == FAMILY.get(true_kind):
         return "recognised"
     if kind in set(FAMILY.values()):
@@ -119,7 +123,7 @@ def cause_of(rec: dict[str, Any], pic: Picture, truth: Truth, n: dict[str, Any],
     tid = pic.track_of(cid, kD)
     idn = pic.identity(tid, kD) if tid else None
     true_kind = str(n.get("kind"))
-    shown = level_shown(idn["kind"] if idn else None, true_kind)
+    shown = level_shown(idn["kind"] if idn else None, true_kind, shown_level(pic, tid, kD)[1] if tid else None)
     if n.get("ais_spoofed") and idn and idn["kind"] != true_kind:
         # the picture still believes the spoofed AIS (or a family of it): no camera identified it
         return f"spoof_believed@{lt}"

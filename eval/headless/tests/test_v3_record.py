@@ -1,6 +1,7 @@
 """Scoring v3's picture record (eval/headless/v3/record.py): each track's looks under the physical
-model (which sensor reached which level, SCORING-V3.md choice 5) round-trip exactly, and a picture
-without looks (the legacy model's, every v1 and v2 record) encodes exactly as v2's encoder does."""
+model (which sensor reached which level, SCORING-V3.md choice 5) and each sample's identity level (a
+run that logged its settings) round-trip exactly, and a picture without looks (the legacy model's,
+every v1 and v2 record) encodes exactly as v2's encoder does."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import random
 from typing import Any
 
 from eval.headless.v2.record import Picture, PictureEncoder
-from eval.headless.v3.record import PictureEncoderV3, looks, reached
+from eval.headless.v3.record import PictureEncoderV3, looks, reached, shown_level
 
 EPOCH = 1_781_431_200.0
 LEVELS = ("detect", "recognise", "identify")
@@ -50,6 +51,23 @@ def test_looks_round_trip_at_every_sample():
     last = len(truth) - 1
     ids = reached(pic, "T-0001", last, "identify")
     assert ids == sorted({key.rsplit(":", 1)[0] for key in truth[last] if key.endswith(":identify")})
+
+
+def test_identity_levels_are_kept_only_when_asked():
+    """Each sample's identity level, as change points, in a record that asks for them (a run that
+    logged its settings: episode.py `v2_part`); none in one that does not, which reads as keeping none."""
+    enc = PictureEncoderV3(EPOCH)
+    seq = [None, "detect", "detect", "recognise", "identify", "identify"]
+    for k, lv in enumerate(seq):
+        tr = track("T-0001", k, None)
+        tr["identity"]["level"] = lv
+        enc.add(sample(k, [tr]))
+    pic = Picture(json.loads(json.dumps(enc.finish(levels=True))))
+    assert pic.tracks["T-0001"]["level"] == [[0, None], [1, "detect"], [3, "recognise"], [4, "identify"]]
+    assert [shown_level(pic, "T-0001", k) for k in range(len(seq))] == [(True, lv) for lv in seq]
+    assert shown_level(pic, "T-0001", len(seq)) == (True, None), "not in the picture then"
+    plain = Picture(enc.finish())
+    assert "level" not in plain.tracks["T-0001"] and shown_level(plain, "T-0001", 3) == (False, None)
 
 
 def test_a_picture_without_looks_encodes_as_v2s():

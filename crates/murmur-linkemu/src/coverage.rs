@@ -48,10 +48,12 @@ pub const DOWN_LOSS: f64 = 0.95;
 /// per 250 m cell: five points a cell).
 pub const ROUTE_STEP_M: f64 = 50.0;
 /// A route answer's time on station: the failsafe's chance is over the way there and this long
-/// on the task path (its laps flown again), s.
+/// on the task path (its laps flown again), s; an order with a time on station of its own (an
+/// identify order: the scenario's `[watch] identify_on_station_s`, which the bridge passes) is
+/// answered on that ([`route_answer_on`]).
 pub const ON_STATION_S: f64 = 300.0;
-/// A route holds when its failsafe's chance (on the way and [`ON_STATION_S`] on station) is at
-/// most this.
+/// A route holds when its failsafe's chance (on the way and its time on station, [`ON_STATION_S`]
+/// or the order's own) is at most this.
 pub const HOLDS_P: f64 = 0.1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -751,8 +753,9 @@ pub struct RouteAnswer {
     pub speed_mps: f64,
     pub failsafe_s: Option<f64>,
     pub heartbeat_s: Option<f64>,
-    /// The chance the failsafe trips on the order's way (its transit, then [`ON_STATION_S`] on
-    /// its task path; an rtl's return leg; [`ON_STATION_S`] where a hold leaves it).
+    /// The chance the failsafe trips on the order's way (its transit, then its time on station,
+    /// `on_station_s`, on its task path; an rtl's return leg; its time on station where a hold
+    /// leaves it).
     pub p_failsafe: Option<f64>,
     /// `p_failsafe` is at most [`HOLDS_P`] (with no failsafe timer: nothing on the way is down).
     pub holds: bool,
@@ -764,6 +767,10 @@ pub struct RouteAnswer {
     /// Where on the way the failsafe has more likely tripped than not (the walk's median), if it
     /// does.
     pub likely_trip: Option<TripAt>,
+    /// The time on station `p_failsafe` counts, s: [`ON_STATION_S`], or the order's own
+    /// ([`route_answer_on`]). Its words say it ([`sentence`]); the JSON is as before.
+    #[serde(skip)]
+    pub on_station_s: f64,
 }
 
 /// Where on a route the failsafe has more likely tripped than not.
@@ -795,8 +802,15 @@ fn on_the_way(legs: &[LegSamples]) -> Vec<&LegSamples> {
     }
 }
 
-/// The answer for a route's legs (in travel order) at `speed_mps`, with the vehicle's failsafe.
+/// The answer for a route's legs (in travel order) at `speed_mps`, with the vehicle's failsafe,
+/// [`ON_STATION_S`] on station.
 pub fn route_answer(legs: &[LegSamples], speed_mps: f64, f: Option<&Failsafe>) -> RouteAnswer {
+    route_answer_on(legs, speed_mps, f, ON_STATION_S)
+}
+
+/// [`route_answer`] with the order's own time on station, `on_station_s` (s): an identify order's
+/// (bd murmur-u1q4.8).
+pub fn route_answer_on(legs: &[LegSamples], speed_mps: f64, f: Option<&Failsafe>, on_station_s: f64) -> RouteAnswer {
     let v = speed_mps.max(0.1);
     let answers: Vec<LegAnswer> = legs.iter().map(|l| leg_answer(l, v, f)).collect();
     let way = on_the_way(legs);
@@ -805,7 +819,7 @@ pub fn route_answer(legs: &[LegSamples], speed_mps: f64, f: Option<&Failsafe>) -
         let mut w = Walk::new(f);
         for leg in &way {
             let seconds = match leg.part {
-                Part::Task | Part::Here => ON_STATION_S,
+                Part::Task | Part::Here => on_station_s,
                 _ => leg.length_m / v,
             };
             if let Some(d) = walk_leg(&mut w, leg, v, f, seconds)
@@ -850,6 +864,17 @@ pub fn route_answer(legs: &[LegSamples], speed_mps: f64, f: Option<&Failsafe>) -
         first_down,
         trip_down,
         likely_trip,
+        on_station_s,
+    }
+}
+
+/// A time on station in words: whole minutes as minutes ("5 minutes"), else seconds ("200 s").
+pub fn on_station_words(s: f64) -> String {
+    let m = s / 60.0;
+    if m >= 1.0 && (m - m.round()).abs() < 1e-9 {
+        format!("{m:.0} minute{}", if m.round() == 1.0 { "" } else { "s" })
+    } else {
+        format!("{s:.0} s")
     }
 }
 
@@ -943,8 +968,8 @@ pub fn sentence(who: &str, a: &RouteAnswer) -> String {
         && let (Some(p), Some(t)) = (a.p_failsafe, fs)
     {
         out.push_str(&format!(
-            " Chance its failsafe ({t:.0} s) trips on the way and in {:.0} minutes on station: {:.0} %.",
-            ON_STATION_S / 60.0,
+            " Chance its failsafe ({t:.0} s) trips on the way and in {} on station: {:.0} %.",
+            on_station_words(a.on_station_s),
             100.0 * p
         ));
     }
@@ -1324,6 +1349,43 @@ mod tests {
                 satcom: None,
             },
         )
+    }
+
+    /// An order's own time on station (an identify order's, the scenario's `identify_on_station_s`)
+    /// is what the failsafe's chance on the task path counts and what the words say; the standing
+    /// 300 s answers as [`route_answer`] does (bd murmur-u1q4.8).
+    #[test]
+    fn the_time_on_station_is_the_order_s_own() {
+        let lap = LegSamples {
+            part: Part::Task,
+            name: "task path".into(),
+            looped: true,
+            length_m: 1257.0,
+            samples: (0..=25)
+                .map(|i| {
+                    let mut s = up_or_down(f64::from(i) * 50.0, false);
+                    s.2.p_loss = 0.3;
+                    s.2.state = State::Degraded;
+                    s
+                })
+                .collect(),
+        };
+        let f = Failsafe {
+            lost_link_s: 5.0,
+            heartbeat_s: 1.0,
+        };
+        let standing = route_answer(std::slice::from_ref(&lap), 20.0, Some(&f));
+        assert_eq!(route_answer_on(std::slice::from_ref(&lap), 20.0, Some(&f), ON_STATION_S), standing);
+        let shorter = route_answer_on(std::slice::from_ref(&lap), 20.0, Some(&f), 200.0);
+        let p300 = standing.p_failsafe.expect("a failsafe");
+        let p200 = shorter.p_failsafe.expect("a failsafe");
+        assert!(p200 < p300 && !shorter.holds && !standing.holds, "{p200} {p300}");
+        assert!(sentence("PUMA 1", &standing).contains("in 5 minutes on station"), "{}", sentence("PUMA 1", &standing));
+        assert!(sentence("PUMA 1", &shorter).contains("in 200 s on station"), "{}", sentence("PUMA 1", &shorter));
+        let json = |a: &RouteAnswer| serde_json::to_value(a).expect("serializes");
+        assert_eq!(json(&standing)["p_failsafe"], serde_json::json!(p300));
+        assert!(json(&shorter).get("on_station_s").is_none(), "the JSON is as before");
+        assert_eq!((on_station_words(60.0), on_station_words(420.0), on_station_words(90.0)), ("1 minute".into(), "7 minutes".into(), "90 s".into()));
     }
 
     /// A transit of 4 km down from 1.2 km to 2.6 km: at 20 m/s that is 70 s down, against a 5 s

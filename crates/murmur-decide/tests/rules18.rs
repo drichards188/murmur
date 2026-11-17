@@ -205,7 +205,7 @@ fn a_dry_run_and_its_explanation_read_the_trackers_velocity_error() {
     assert_eq!(c.outcome, Outcome::Fail, "{}", c.detail);
     assert!(c.detail.contains("T-0007"), "{}", c.detail);
     // the explanation names the region along its course and the velocity's error
-    let ex = keepout::explain(&spec, &w, &cfg18, &keepout::Options::default()).unwrap();
+    let ex = keepout::explain(&spec, &w, &cfg18, &keepout::Options::under(&cfg18)).unwrap();
     let item = ex.items.iter().find(|i| i.id == "T-0007").unwrap();
     assert!(item.blocks);
     let region = item.region.as_ref().unwrap();

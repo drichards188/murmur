@@ -139,6 +139,15 @@ confidence 0.6 or more; no identity conflict; and `supported_by` holding the dom
 resolved sample at or after `t_need`; **t_identified**: when the stretch of resolved samples that
 served it began (v2's).
 
+**The level shown** (`v3.identity_resolved` version 4, bd murmur-u1q4.8). The record of a run that
+logged its settings (decision rules 33 on) keeps each picture sample's identity level, and there the
+level shown must also reach the domain's (identification, or recognition under the water), as the
+watch officer and the engine judge it: a label that is a family as well as a kind (`person`, a diver's
+family and a walker's kind) shown at recognition does not resolve a walker. A need's `resolved_by`
+says version 4 for such a record; a record without levels is judged by the label alone, as above,
+and says version 3. The ceilings and oracles read the level the same way under logged settings
+(choice 46).
+
 **What the picture cannot say** (choice 5). `supported_by` names every sensor whose look agrees with
 the shown identity at any level (a detection's size class, a recognition's family, an
 identification's kind); the picture does not say which sensor reached identification. Air, ground and
@@ -775,8 +784,16 @@ before rules 33 is graded by v0's, the same values frozen (sim/policy-v0-watch.t
     (agents/roe.py), the honest ceiling and these labels all read that one definition from the
     run's settings. Before it there were six (docs/SCENARIO-SETTINGS.md section 1): the engine ended
     an identify order on any first naming and told the model "identified" at 0.11, and a size class
-    at 0.99 passed the engagement check. *Alternative*: each reader keeps its own and the brief
-    names the scoring's. Made by the owner.
+    at 0.99 passed the engagement check. These labels read the level shown only where the record
+    keeps it: a record of rules 33 keeps each picture sample's identity level since bd
+    murmur-u1q4.8, before which the labels took the level from the label, so a ground contact shown
+    `person` (a family and a kind) at recognition counted as identified (one walker sample, beside
+    26,116 that agreed, found by the end-to-end test); a record without levels is judged as before.
+    The judgement with levels is `v3.identity_resolved` version 4, without them version 3 (each
+    need's `resolved_by`; the report's settings line counts the episodes resolved by version 4,
+    2.2), so a report says which applied and a directory before it rescores byte for byte; the
+    ceilings and oracles read the level the same way under logged settings (46).
+    *Alternative*: each reader keeps its own and the brief names the scoring's. Made by the owner.
 43. **Neutral only after the bar.** On the physical sensing model the tracker shows no contact
     neutral by its classification (a fishing vessel, a sailboat, a light aircraft, a helicopter)
     before it is identified as 42 says (`neutral_after_bar`); until then it is unknown, saying what
@@ -804,6 +821,10 @@ before rules 33 is graded by v0's, the same values frozen (sim/policy-v0-watch.t
     surface, a buoy's sonar there no longer does; the bar, the horizon and the reserve with the
     planners' named margins come from the same settings. Measured on dev seeds before and after
     (17.27): no need moved for any agent; the honest ceiling's orders moved in 11 of 140 situations.
+    Since bd murmur-u1q4.8, under logged settings (rules 33 on) the oracle, the ceiling and the
+    honest ceiling also hold the level `get_tracks` shows to the domain's (settings.py
+    `Settings.shown_level_ok`, the labels' comparison `level_reaches`), as version 4 of 2.2 does;
+    under v0's they judge as before, so a run of rules 32 is unchanged (no batch measured it).
     *Alternative*: the ceilings keep EO/IR or sonar in every domain, a ruler the scoring does not
     use. Made by the owner.
 47. **Each record is graded under the values it ran under.** The labels, faults, metrics, report,
@@ -3212,6 +3233,8 @@ The room per family and world (10.1) is unchanged: the floor and the shown ceili
 **For the ruler.** Against the 11-16 baselines, a rules 33 report serves the same needs for the
 floor and both ceilings, with the same room. A reader of one sees more tracks shown unknown for
 longer (an agent that treats unknown as in doubt looks more), the playbook's few extra looks, and
-X10 reserve needs counted as censored. The scoring flaw still open (murmur-u1q4.8: a ground contact
-shown `person` at recognition counted as identified, one walker sample in 26,116 in the end-to-end
-test) is not fixed in these records, which are judged as before.
+X10 reserve needs counted as censored. The last scoring flaw the epic found (a ground contact shown
+`person` at recognition counted as identified, one walker sample in 26,116 in the end-to-end test)
+was fixed after these batches (bd murmur-u1q4.8: `v3.identity_resolved` version 4, 2.2, and the
+ceilings reading the level the same way, choice 46): these records keep no levels and are judged
+as before (version 3), and no batch has measured the ceilings with the level read.

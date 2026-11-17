@@ -2754,7 +2754,8 @@ impl Decision {
             ),
         };
         // murmur-12e: the explanation's words name our vehicles by callsign, and age the
-        // picture with this run's tracker memories
+        // picture with this run's tracker memories (without a tracker, a test's: its memories
+        // under this run's settings)
         let names: BTreeMap<murmur_decide::Uid, String> = fleet
             .iter()
             .filter_map(|(u, c)| {
@@ -2767,7 +2768,10 @@ impl Decision {
             })
             .collect();
         let opts = Arc::new(murmur_decide::keepout::Options {
-            memory: self.tracks.as_ref().map_or_else(Default::default, |t| t.memory()),
+            memory: self
+                .tracks
+                .as_ref()
+                .map_or_else(|| murmur_decide::keepout::TrackerMemory::under(&self.rules), |t| t.memory()),
             names,
         });
         // murmur-8xe: whether the nomination it replaces still waits for its signatures (it may

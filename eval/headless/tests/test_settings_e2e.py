@@ -213,7 +213,8 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace:
     d = tmp_path_factory.mktemp("settings-e2e")
     policy = d / "tailored.toml"
     policy.write_text(TAILORED)
-    #: each picture sample's identity level per track (the record keeps the identity without it)
+    #: each picture sample's identity level per track as the bridge served it, beside the record (which
+    #: keeps it too, a run of rules 33: `test_the_record_keeps_each_sample_s_identity_level`)
     levels: dict[tuple[int, str], str | None] = {}
     add = PictureEncoderV3.add
 
@@ -297,6 +298,19 @@ def test_the_record_keeps_the_logged_settings(run: SimpleNamespace):
     assert kept["loosened"] == {LOOSENED_KEY: LOOSENED_WHY}
     assert kept["policy_layers"][0]["sha256"] == hashlib.sha256(run.policy.read_bytes()).hexdigest()
     assert len(kept["policy_layers"]) == 4
+
+
+def test_the_record_keeps_each_sample_s_identity_level(run: SimpleNamespace):
+    """A run that logged its settings keeps each picture sample's identity level as the bridge served
+    it (eval/headless/v3/record.py; bd murmur-u1q4.8), every level the scoring may meet among them."""
+    from eval.headless.v3 import labels as L
+    from eval.headless.v3.record import shown_level
+
+    pic = L.picture(run.rec)
+    assert run.levels and all("level" in T for T in pic.tracks.values())
+    for (k, tid), level in run.levels.items():
+        assert shown_level(pic, tid, k) == (True, level), (k, tid)
+    assert {"recognise", "identify"} <= set(run.levels.values())
 
 
 # ---- the engine: identify orders and the engagement check ---------------------------------------
@@ -404,6 +418,7 @@ def test_the_needs_carry_the_air_deadline_and_resolve_only_at_the_bar(run: Simpl
     lab = L.episode_labels(rec)
     (need,) = [n for n in lab["needs"] if n["contact"] == DRONE]
     assert need["grace_s"] == 45.0 and need["deadline"] - need["t_need"] == pytest.approx(45.0, abs=1e-3)
+    assert need["resolved_by"] == {"name": "v3.identity_resolved", "version": "4"}, "the record keeps the levels"
     pic = L.picture(rec)
     truth = L.mark_spoofed(rec, Truth(rec))
     meta = truth.meta[DRONE]
@@ -454,25 +469,28 @@ def test_the_report_names_the_settings(run: SimpleNamespace):
     line = next(ln for ln in md.read_text().splitlines() if ln.startswith(f"- Settings in **{WORLD}**"))
     for want in (f"sha256 {st.sha256()[:12]}", "logged by the run", "bar 0.75", "air identify by eo_ir in 45 s",
                  "surface identify by eo_ir/ais in 60 s", "horizon 240 s", "reserve 25 % left after a 900 s task",
-                 f"loosened: {LOOSENED_KEY} ({LOOSENED_WHY})"):
+                 f"loosened: {LOOSENED_KEY} ({LOOSENED_WHY})",
+                 # the record keeps the levels shown: its needs resolved by the instrument's version 4
+                 "(v3.identity_resolved version 4) in 1 of them"):
         assert want in line, (want, line)
     # the line names what the scoring reads; the stale age and the time on station (the bridge's and
     # the engine's, not the scoring's) are in the set its sha256 names
     (cov,) = json.loads(j.read_text())["summary"]["coverage"]["settings"][WORLD].values()
     assert cov["values"]["watch"]["stale_s"] == 12.0 and cov["values"]["watch"]["identify_on_station_s"] == 200.0
     assert cov["values"]["watch"]["bar"] == BAR and cov["values"]["reserve_pct"] == 25.0
+    assert cov["levels_kept"] == 1
 
 
 # ---- the officer and the scoring ----------------------------------------------------------------
 
 
-def family_label_recognised(level: str | None, kind: str | None, rule_level: str) -> bool:
-    """The one difference found (`test_the_officer_and_the_scoring_agree_on_every_shown_sample`): a
-    label that names a family as well as a kind (`person`: the family of a diver and of a person,
+def family_and_kind_recognised(level: str | None, kind: str | None, rule_level: str) -> bool:
+    """A label that names a family as well as a kind (`person`: the family of a diver and of a person,
     crates/murmur-bridge tracks/sensing.rs `family`), shown at the recognition level, for a domain
-    held to identification. The record keeps each sample's identity without its level, so the
-    scoring reads the level from the label (labels.py `shown_ok`: the true kind) and counts it; the
-    officer (agents/roe.py) and the engine's identify criteria read the level and do not."""
+    held to identification: the kind's identification it is not. The scoring read the level from the
+    label until bd murmur-u1q4.8 and counted it (one walker ashore, one sample in this run); the record
+    keeps each sample's level now and the scoring reads it, as the officer (agents/roe.py) and the
+    engine's identify criteria do."""
     from eval.headless.v3 import labels as L
 
     return (level == "recognise" and rule_level == "identify" and kind is not None
@@ -481,14 +499,16 @@ def family_label_recognised(level: str | None, kind: str | None, rule_level: str
 
 def test_the_officer_and_the_scoring_agree_on_every_shown_sample(run: SimpleNamespace):
     """agents/roe.py's `identified`, on each picture sample's track as the record shows it (its level
-    from the same sample), with the truth side the officer cannot see (the shown kind is the true
-    one), is the scoring's `resolved_at`, contact by contact and sample by sample, but where a family
-    label is a kind too (`family_label_recognised`: the scoring counts the family's recognition)."""
+    from the same sample, as the record keeps it), with the truth side the officer cannot see (the
+    shown kind is the true one), is the scoring's `resolved_at`, contact by contact and sample by
+    sample, a family label that is a kind too, shown at recognition, included
+    (`family_and_kind_recognised`: neither counts it)."""
     from roe import Roe
 
     from eval.headless.labels import Truth
     from eval.headless.v3 import labels as L
     from eval.headless.v3 import settings as S
+    from eval.headless.v3.record import shown_level
 
     rec = run.rec
     st = S.of_record(rec)
@@ -497,30 +517,33 @@ def test_the_officer_and_the_scoring_agree_on_every_shown_sample(run: SimpleName
     assert (officer.bar, officer.horizon_s, officer.stale_s) == (BAR, 240.0, 12.0)
     pic = L.picture(rec)
     truth = L.mark_spoofed(rec, Truth(rec))
-    agree = under_bar = 0
-    differ, family = [], []
+    agree = under_bar = family = 0
+    differ = []
     for cid, m in sorted(truth.meta.items()):
         for k in range(len(pic.times)):
             tid = pic.track_of(cid, k)
             idn = pic.identity(tid, k) if tid is not None else None
             if idn is None:
                 continue
-            level = run.levels.get((k, tid))
+            kept, level = shown_level(pic, tid, k)
+            assert kept, (k, tid)
             track = {"id": tid, "domain": pic.tracks[tid]["domain"], "identity": {**idn, "level": level}}
             says = officer.identified(track) and L.shown_ok(idn["kind"], m, st)
             scored = L.resolved_at(pic, k, cid, m, st)
-            if says == scored:
-                agree += 1
-                c = idn["confidence"]
-                under_bar += int(not says and level == "identify" and L.shown_ok(idn["kind"], m, st)
-                                 and c is not None and WINDOW[0] <= c < WINDOW[1])
-            elif scored and family_label_recognised(level, idn["kind"], st.rule(m.get("domain")).level):
-                family.append((pic.time(k), cid, idn["kind"]))
-            else:
+            if says != scored:
                 differ.append((pic.time(k), cid, tid, track["domain"], m.get("domain"), level, idn, says, scored))
+                continue
+            agree += 1
+            c = idn["confidence"]
+            under_bar += int(not says and level == "identify" and L.shown_ok(idn["kind"], m, st)
+                             and c is not None and WINDOW[0] <= c < WINDOW[1])
+            family += int(family_and_kind_recognised(level, idn["kind"], st.rule(m.get("domain")).level)
+                          and L.shown_ok(idn["kind"], m, st) and c is not None and c >= BAR
+                          and L.supported(idn, m, st) and not idn["conflict"])
     assert not differ, differ[:10]
     # the agreement covers the bar: samples showing the true kind by the standing bar, not by 0.75,
     # that neither counts
     assert agree > 0 and under_bar > 0
-    # the family-label samples are few and brief (one sample in this run, a walker ashore)
-    assert len(family) <= 5, family
+    # and the walker: its true kind shown at the bar by its domain's sensor, at recognition, which
+    # neither counts (the scoring did before the record kept the level)
+    assert family >= 1

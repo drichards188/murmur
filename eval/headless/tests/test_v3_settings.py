@@ -147,7 +147,8 @@ def test_a_saved_record_keeps_the_settings_its_run_logged():
 
 def test_the_recorder_keeps_settings_only_when_the_run_logged_a_watch():
     """episode.py's v3 part: `settings` from the audit log's run.started when it holds a [watch],
-    no key at all otherwise."""
+    no key at all otherwise; and the picture's identity levels with them (v3/record.py), never
+    without."""
     from types import SimpleNamespace
 
     from eval.headless.episode import Episode
@@ -158,13 +159,15 @@ def test_the_recorder_keeps_settings_only_when_the_run_logged_a_watch():
         ep.operator = None
         ep.e = SimpleNamespace(policy="sim/situations/policies/golden-gate-v3-watch.toml")
         ep.sim_epoch = 0.0
-        ep.picture_enc = SimpleNamespace(finish=lambda: {"times": []})
+        ep.picture_enc = SimpleNamespace(finish=lambda levels=False: {"times": [], "levels_asked": levels})
         text = json.dumps({"seq": 1, "t": 0, "type": "run.started", "rules_version": 33, "policy": policy}) + "\n"
         return ep.v2_part(text, "v3")
 
-    assert "settings" not in part({"rules": {}})
+    old = part({"rules": {}})
+    assert "settings" not in old and not old["v3"]["picture"]["levels_asked"]
     got = part({"watch": _watch(), "rules": {"reserve_pct": 20.0, "task_duration_s": 900}})
     assert got["settings"]["watch"] == _watch() and got["settings"]["rules_version"] == 33
+    assert got["v3"]["picture"]["levels_asked"]
 
 
 def test_policy_file_show_returns_the_effective_watch():

@@ -394,6 +394,8 @@ class OracleV3(SessionAgent):
             idn = (tr or {}).get("identity") or {}
             kind = idn.get("kind")
             ok = kind == n.kind or (n.rule.level == "recognise" and kind == FAMILY.get(n.kind))
+            # under logged settings the level shown too, as the labels judge it (bd murmur-u1q4.8)
+            ok = ok and self.settings.shown_level_ok(idn, n.rule.level)
             sb = set(idn.get("supported_by") or [])
             if tr and ok and not idn.get("conflict") and float(idn.get("confidence") or 0.0) >= self.settings.bar \
                     and sb & set(n.rule.sensors):

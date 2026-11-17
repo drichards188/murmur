@@ -14,7 +14,12 @@ their runs, fault needs, the reserve, the precedence); what changes is written h
   level. A need is **resolved at t** when the track the tracker associates with the contact shows,
   in the picture sample at t, the contact's true kind (or, where the domain's level is recognition,
   its true family) at the bar or more (v0's 0.6), without an identity conflict, and `supported_by`
-  holds the domain's sensor (or AIS, for a surface contact that truly broadcasts it).
+  holds the domain's sensor (or AIS, for a surface contact that truly broadcasts it). Where the
+  record keeps each sample's identity level (a run of decision rules 33 on, record.py), the level
+  shown must reach the domain's too, as the officer (agents/roe.py) and the engine read it: a label
+  that is a family as well as a kind (`person`) shown at recognition is not the kind's
+  identification (bd murmur-u1q4.8; `v3.identity_resolved` version 4, each need's `resolved_by`).
+  A record without levels is judged on the kind alone, as before (version 3).
 - **Sensing error** (2.1): every vehicle of the fleet carrying a sensor that could resolve the
   contact has its wrong-call draw set at the deciding level (the physical model's draw: per observer,
   sensor, contact and level, crates/murmur-bridge tracks/physical/mod.rs `label_at`, ported in
@@ -67,7 +72,8 @@ from ..v2.record import Picture, carry
 from . import labels_ops as OPS
 from .faults import fault_needs as fault_needs_v3
 from .faults import open_faults
-from .settings import Settings, of_record
+from .record import keeps_levels, shown_level
+from .settings import Settings, level_reaches, of_record
 
 #: scoring v3 (the labels' format); each instrument carries its own version (`INSTRUMENT_VERSIONS`)
 VERSION = "3"
@@ -111,6 +117,11 @@ INSTRUMENTS = {
 #: version 3) takes an aircraft shown with no velocity to come straight in at the threat speed; and
 #: `cleared_doubt` is new
 INSTRUMENT_VERSIONS = {"action": "4", "supported": "4", "cleared": "4"}
+#: `v3.identity_resolved`'s version on a record that keeps each picture sample's identity level
+#: (record.py: a run of decision rules 33 on, since bd murmur-u1q4.8), where the level shown must
+#: reach the domain's as well (`level_reached`); a record without levels is judged as before, under
+#: the instrument's version before it (`resolved_by`)
+RESOLVED_WITH_LEVELS_VERSION = "4"
 #: the labels of an order that served no need (2.5 item 6), and why one is justified (`justified_by`):
 #: the picture supported it (`supported_on_picture`), it cleared a doubt (`cleared_doubt`), or the
 #: stated tasking supported it (a collect or a cover, labels_ops.py `no_need`; a hold or an rtl of
@@ -123,6 +134,14 @@ def instrument(name: str) -> dict[str, str]:
     if INSTRUMENTS[name].startswith("v2."):
         return _v2_instrument(name)
     return {"name": INSTRUMENTS[name], "version": INSTRUMENT_VERSIONS.get(name, VERSION)}
+
+
+def resolved_by(pic: Picture) -> dict[str, str]:
+    """The instrument a record's needs are resolved by (2.2): `v3.identity_resolved` at
+    `RESOLVED_WITH_LEVELS_VERSION` when the record keeps the levels shown, else at its version
+    before them, so a label and a report say which judgement applied."""
+    i = instrument("identity_resolved")
+    return {**i, "version": RESOLVED_WITH_LEVELS_VERSION} if keeps_levels(pic) else i
 
 
 def picture(rec: dict[str, Any]) -> Picture:
@@ -255,14 +274,24 @@ def supported(idn: dict[str, Any], meta: dict[str, Any], s: Settings) -> bool:
     return bool(sb & set(r.sensors)) or (r.ais_counts and "ais" in sb and ais_true(meta))
 
 
+def level_reached(pic: Picture, tid: str, k: int | None, meta: dict[str, Any], s: Settings) -> bool:
+    """The identity level track `tid` showed at sample `k` reaches the contact's domain's (the
+    settings'), where the record keeps the level (record.py: a run of decision rules 33 on); a
+    record that keeps none is judged on the shown kind alone (True), as every record was before
+    bd murmur-u1q4.8."""
+    kept, level = shown_level(pic, tid, k)
+    return not kept or level_reaches(level, s.rule(meta.get("domain")).level)
+
+
 def resolved_at(pic: Picture, k: int | None, cid: str, meta: dict[str, Any], s: Settings) -> bool:
     """2.2 (v3): the associated track shows the true kind (or family, by the domain's level) at the
-    bar or more, without a conflict, supported by the domain's sensor."""
+    bar or more, without a conflict, supported by the domain's sensor; and, where the record keeps
+    the level shown, at the domain's level or above (`level_reached`)."""
     tid = pic.track_of(cid, k)
     if tid is None:
         return False
     idn = pic.identity(tid, k)
-    if not idn or not shown_ok(idn["kind"], meta, s):
+    if not idn or not shown_ok(idn["kind"], meta, s) or not level_reached(pic, tid, k, meta, s):
         return False
     # a spoofed AIS against the true identification is the spoof exposed, not a doubt (choice 30)
     if idn["conflict"] and not (ais_spoofed(meta) and str(idn["conflict"]).startswith(AIS_CONFLICT)):
@@ -327,7 +356,7 @@ def contact_needs(rec: dict[str, Any], pic: Picture, truth: Truth, p: Params,
             "t_identified": round(t_identified, 3) if t_identified is not None else None,
             "served_late": t_served is not None and t_served <= t_need + late_s + 1e-9,
             "time_to_serve": round(min(t_served - t_need, grace), 3) if served and t_served is not None else None,
-            "instrument": instrument("contact_need"), "resolved_by": instrument("identity_resolved"),
+            "instrument": instrument("contact_need"), "resolved_by": resolved_by(pic),
         })
     return out
 

@@ -169,7 +169,7 @@ fn strict_cfg(margin: f64) -> RulesConfig {
 }
 
 fn opts() -> Options {
-    Options::default()
+    Options::under(&cfg())
 }
 
 /// A random picture around a target holding (or under way) west of the bridge: the platform
@@ -702,7 +702,7 @@ fn a_circling_tour_boat_blocks_by_its_manoeuvre_reach_and_the_explanation_says_h
     // the words call our vehicles by their callsigns when told them
     let named = Options {
         names: [(uid("viper-1"), "VIPER 1".to_string())].into_iter().collect(),
-        ..Options::default()
+        ..Options::under(&cfg())
     };
     let ex = keepout::explain(&spec, &w, &cfg(), &named).unwrap();
     assert_eq!(ex.platform_name.as_deref(), Some("VIPER 1"));

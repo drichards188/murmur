@@ -94,10 +94,12 @@ def entry(row: tuple[Any, ...]) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 class OnePicture:
-    """The one track `resolved_at` reads, as the record's picture gives it."""
+    """The one track `resolved_at` reads, as the record's picture gives it: a record of v0's, which
+    keeps no identity levels (eval/headless/v3/record.py; a run of rules 33 keeps them)."""
 
     def __init__(self, track: dict[str, Any]):
         self.t = track
+        self.tracks: dict[str, dict[str, Any]] = {"T-1": {}}
 
     def track_of(self, cid: str, k: int | None) -> str:
         return "T-1"

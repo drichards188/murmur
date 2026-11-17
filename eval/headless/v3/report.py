@@ -43,7 +43,7 @@ from .causes import cause_of, light, new_hits, single_cause
 from .faults import lost_vehicles
 from .families import WORLDS, family_domain, parse
 from ..v2.labels import Params
-from .labels import episode_labels, mark_spoofed, picture, pointed_at, sensing_errors
+from .labels import episode_labels, mark_spoofed, picture, pointed_at, resolved_by, sensing_errors
 from .metrics import episode_metrics
 from .room import CEILING, FORESIGHT, room
 from .settings import Settings, describe, from_dict, of_record, v0
@@ -88,6 +88,11 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
     if not st.is_v0:
         # a logged run's settings (a v0 row keeps none: its world says which)
         extra["settings"] = st.as_dict()
+    rb = resolved_by(pic)
+    if rb["version"] == "4":
+        # its needs resolved on the level shown too (the record keeps it: labels.py `resolved_by`); a
+        # row of a record without levels is as it was
+        extra["resolved_by"] = rb
     if meta["agent"] == "none":
         # the types the sensing model says could answer each need: once a situation, on its `none`
         for row, types in zip(needs, (able(rec, lab["needs"]) or {}).values()):
@@ -237,13 +242,16 @@ def row_settings(s: dict[str, Any]) -> Settings:
 
 def settings_coverage(scored: list[dict[str, Any]]) -> dict[str, Any]:
     """Per world, each settings set its episodes were labelled under (by sha256): where they came
-    from, its values and how many episodes."""
+    from, its values and how many episodes; and how many of them had their needs resolved on the
+    level shown too (`levels_kept`: `v3.identity_resolved` version 4), only when some had."""
     out: dict[str, Any] = {}
     for s in scored:
         st = row_settings(s)
         w = out.setdefault(parse(s["family"])[1], {})
         row = w.setdefault(st.sha256(), {"source": st.source, "values": st.values(), "episodes": 0, "line": describe(st)})
         row["episodes"] += 1
+        if s.get("resolved_by"):
+            row["levels_kept"] = row.get("levels_kept", 0) + 1
     return out
 
 
@@ -558,7 +566,11 @@ def settings_markdown(cov: dict[str, Any]) -> list[str]:
     out = []
     for w, sets in sorted(cov.items()):
         for _, x in sorted(sets.items()):
-            out.append(f"- Settings in **{w}** ({x['episodes']} episodes): {x['line']}")
+            line = f"- Settings in **{w}** ({x['episodes']} episodes): {x['line']}"
+            if x.get("levels_kept"):
+                line += (f" Needs resolved on the identity level shown as well (v3.identity_resolved version 4) in "
+                         f"{x['levels_kept']} of them.")
+            out.append(line)
     return out
 
 

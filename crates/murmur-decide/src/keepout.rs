@@ -109,8 +109,8 @@ pub const MANOEUVRING_NOW_S: f64 = 30.0;
 /// before it has an average velocity, over how long that average is taken, how long a
 /// manoeuvre is remembered, after how long without a detection a track is stale (not in
 /// view: it is no longer carried forward as seen) and after how long the tracker drops it.
-/// The bridge passes its tracker's own; the defaults are them (`tracks/model.rs`:
-/// `MEAN_MIN_S`, `MEAN_WINDOW_S`, `MANOEUVRE_MEMORY_S`, `STALE_S`; `MURMUR_TRACK_DROP_S`).
+/// The bridge passes its tracker's own (`tracks/model.rs` `memory`); [`TrackerMemory::under`] is
+/// them for a run without a tracker at hand (a test, [`behaving_at`]).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct TrackerMemory {
     pub mean_min_s: f64,
@@ -120,27 +120,39 @@ pub struct TrackerMemory {
     pub drop_after_s: f64,
 }
 
-impl Default for TrackerMemory {
-    fn default() -> Self {
+impl TrackerMemory {
+    /// The bridge tracker's memories under the rules and settings `cfg` decides by: its own
+    /// constants (`tracks/model.rs`: `MEAN_MIN_S`, `MEAN_WINDOW_S`, `MANOEUVRE_MEMORY_S`), the
+    /// run's stale age (the policy's `[watch] stale_s` from rules 33, what older rules meant
+    /// before: [`RulesConfig::watch`], the one the tracker reads, `TrackerWatch::of`), and its
+    /// default drop age ([`crate::scenario::TRACK_DROP_S`], never under the stale age, as the
+    /// bridge's `drop_floor` keeps it). Never a stale age of its own (bd murmur-u1q4.8).
+    pub fn under(cfg: &RulesConfig) -> TrackerMemory {
+        let stale = cfg.watch().stale_s;
         TrackerMemory {
             mean_min_s: 45.0,
             mean_window_s: 60.0,
             manoeuvre_memory_s: 300.0,
-            stale_after_s: 10.0,
-            drop_after_s: 180.0,
+            stale_after_s: stale,
+            drop_after_s: crate::scenario::TRACK_DROP_S.max(stale),
         }
     }
 }
 
 /// What [`explain`] is told besides the picture: the tracker's memories, and what to call our
 /// vehicles in its words (callsigns by uid; else "vehicle <uid>").
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Options {
     pub memory: TrackerMemory,
     pub names: BTreeMap<Uid, String>,
 }
 
 impl Options {
+    /// The tracker's memories under `cfg` ([`TrackerMemory::under`]), no callsigns.
+    pub fn under(cfg: &RulesConfig) -> Options {
+        Options { memory: TrackerMemory::under(cfg), names: BTreeMap::new() }
+    }
+
     fn name(&self, uid: &Uid) -> String {
         self.names.get(uid).cloned().unwrap_or_else(|| format!("vehicle {uid}"))
     }
@@ -798,7 +810,9 @@ pub fn behaving_at(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, 
         .tracks
         .get(track_id)
         .ok_or_else(|| format!("track {track_id} is not in the picture"))?;
-    let opts = Options::default();
+    // the run's memories, though nothing here reads them (no scan ages the picture): the context
+    // asks for some
+    let opts = Options::under(cfg);
     let ctx = Ctx {
         spec,
         world,

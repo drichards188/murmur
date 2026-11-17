@@ -703,6 +703,8 @@ class Ceiling(SessionAgent):
             idn = (tr or {}).get("identity") or {}
             kind = idn.get("kind")
             ok = kind == n.kind or (n.rule.level == "recognise" and kind == FAMILY.get(n.kind))
+            # under logged settings the level shown too, as the labels judge it (bd murmur-u1q4.8)
+            ok = ok and self.st.shown_level_ok(idn, n.rule.level)
             sb = set(idn.get("supported_by") or [])
             if tr and ok and not idn.get("conflict") and float(idn.get("confidence") or 0.0) >= self.st.bar \
                     and sb & set(n.rule.sensors):
@@ -1256,17 +1258,21 @@ KIND_DOMAIN = {"small_craft": "surface", "large_vessel": "surface", "aircraft": 
 #: the kinds a family names (a recognition's family) stands for, for the model
 FAMILY_KIND = {"small_craft": "small_fast_boat", "large_vessel": "cargo_ship", "aircraft": "light_aircraft",
                "small_uas": "small_drone", "ground_vehicle": "vehicle", "person": "diver", "submerged": "uuv"}
-def at_level(shown: str | None, domain: str, st: Settings) -> bool:
+def at_level(identity: dict[str, Any], domain: str, st: Settings) -> bool:
     """Whether a shown identity is at the domain's level (the settings'): a kind (an
     identification), or where the level is recognition (v0's under the water) a class (a
     recognition's family) or better. A detection's
     size class (`small_air`) or, above the water, a family (`small_uas`) is not, whatever its
     confidence: the picture's identity names them in the same field, at the detection's or the
     recognition's confidence (SCORING-V3.md 15: before this the honest ceiling took 256 of its 533
-    resolutions on one, 18 of its 35 losses on F2, F3 and F6 among them)."""
-    if shown in FAMILY:
-        return True
-    return st.rule(domain).level == "recognise" and shown in set(FAMILY.values())
+    resolutions on one, 18 of its 35 losses on F2, F3 and F6 among them). Under logged settings the
+    level shown must reach the domain's too (`Settings.shown_level_ok`, as the labels judge it): a
+    label that is a family as well as a kind (`person`) says by its level which it is (bd
+    murmur-u1q4.8)."""
+    shown = identity.get("kind")
+    rule = st.rule(domain)
+    named = shown in FAMILY or (rule.level == "recognise" and shown in set(FAMILY.values()))
+    return named and st.shown_level_ok(identity, rule.level)
 
 
 class HonestCeiling(CeilingLinkBlind):
@@ -1448,7 +1454,7 @@ class HonestCeiling(CeilingLinkBlind):
             crit = self.st.domain(dom)
             sensors = set(crit.sensors) if crit is not None else set()
             classified = bool(set(idn.get("supported_by") or []) & sensors) and not idn.get("conflict")
-            settled = classified and conf >= self.st.bar and at_level(idn.get("kind"), dom, self.st)
+            settled = classified and conf >= self.st.bar and at_level(idn, dom, self.st)
             alt = float(tr.get("alt_m") or 0.0)
             if dom == "air" and alt <= 0.0:
                 alt = AIR_DEFAULT_ALT_M

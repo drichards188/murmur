@@ -402,7 +402,91 @@ def test_the_honest_ceiling_resolves_a_need_only_at_the_mission_s_level():
     ide = rec + [{"uid": 3, "sensor": "eo_ir", "level": "identify", "label": "small_drone", "confidence": 0.8}]
     st.picture(12.0, [shown_track("small_drone", 0.8, ide)])
     assert st.needs["T-1"].resolved_t == 12.0
-    assert P.at_level("submerged", "subsurface", ST) and not P.at_level("subsurface", "subsurface", ST)
+    assert P.at_level({"kind": "submerged"}, "subsurface", ST) and not P.at_level({"kind": "subsurface"}, "subsurface", ST)
+
+
+# ---- a label that is a family and a kind: the level shown (bd murmur-u1q4.8) -------------------------
+
+#: v0's values as a run of rules 33 logs them: logged settings, under which the planners read the level
+LOGGED = replace(ST, v0=None, source="logged")
+WALKER = [{"contact_id": "walker-1", "track_id": "T-1"}]
+
+
+def person(level: str | None) -> dict[str, Any]:
+    """`person` (a family and a kind) by EO/IR at 0.9, at `level` (None: an answer without a level)."""
+    idn: dict[str, Any] = {"kind": "person", "confidence": 0.9, "conflict": None, "supported_by": ["eo_ir"]}
+    if level is not None:
+        idn["level"] = level
+    return idn
+
+
+def test_the_level_comparison_is_one_function():
+    from eval.headless.v3.settings import level_reaches
+
+    assert level_reaches("identify", "identify") and level_reaches("identify", "recognise")
+    assert level_reaches("recognise", "recognise") and not level_reaches("recognise", "identify")
+    assert not level_reaches("detect", "recognise") and not level_reaches(None, "recognise")
+    assert ST.shown_level_ok(person("recognise"), "identify"), "v0's settings: the label alone"
+    assert not LOGGED.shown_level_ok(person("recognise"), "identify")
+    assert LOGGED.shown_level_ok(person(None), "identify"), "an answer without a level: the label alone"
+
+
+@pytest.mark.parametrize("st, level, resolved", [
+    (ST, "recognise", True),          # v0's settings (rules 32): the shown kind alone, as before
+    (LOGGED, "recognise", False),     # logged settings: `person` at recognition is the family
+    (LOGGED, "identify", True),
+    (LOGGED, None, True),             # an answer without a level: the shown kind alone
+])
+def test_the_ceiling_resolves_a_person_only_at_the_ground_s_level_under_logged_settings(st, level, resolved):
+    walker = P.NeedV3("walker-1", "person", "ground", Straight("walker-1"), 300.0, 0.0, 1.5, st=st)
+    c = Stub([], [walker], {})
+    c._st = st
+    c._truth = {"contacts": {"contacts": []}, "association": WALKER}
+    c.call = lambda tool, **args: {"tracks": [{"id": "T-1", "domain": "ground", "identity": person(level)}]}
+    c.read_needs(10.0)
+    assert (walker.resolved_t == 10.0) is resolved and (walker.resolved_t is None) is not resolved
+
+
+@pytest.mark.parametrize("st, level, resolved", [
+    (ST, "recognise", True), (LOGGED, "recognise", False), (LOGGED, "identify", True), (LOGGED, None, True),
+])
+def test_the_oracle_resolves_a_person_only_at_the_ground_s_level_under_logged_settings(st, level, resolved):
+    from eval.headless.v3 import oracle as O
+
+    class Oracle(O.OracleV3):
+        def __init__(self) -> None:
+            self._st, self.units, self.lines, self.privileged = st, {}, [], {"truth_reads": 0}
+            self.needs = {"walker-1": O.Need({"kind": "person", "domain": "ground"}, SimpleNamespace(id="walker-1"),
+                                             300.0, st)}
+            truth = {"ours": [], "contacts": {"contacts": []}, "association": WALKER}
+            self.ep = SimpleNamespace(sim=SimpleNamespace(truth=lambda association: truth))
+
+        def clock(self) -> float:
+            return 10.0
+
+        def call(self, tool: str, **args: Any) -> dict[str, Any]:
+            return {"tracks": [{"id": "T-1", "domain": "ground", "identity": person(level)}]} if tool == "get_tracks" else {}
+
+    o = Oracle()
+    o.read(10.0)
+    assert (o.needs["walker-1"].resolved_t == 10.0) is resolved and (o.needs["walker-1"].resolved_t is None) is not resolved
+
+
+def test_the_honest_ceiling_settles_a_person_only_at_the_ground_s_level_under_logged_settings():
+    track = shown_track("person", 0.9, [], domain="ground", supported=("eo_ir",))
+    track["identity"]["level"] = "recognise"
+    assert P.at_level(track["identity"], "ground", ST) and not P.at_level(track["identity"], "ground", LOGGED)
+    # v0's settings: settled on sight, no need; logged: a need, unresolved until it shows the kind
+    old = honest(P.HonestCeiling, [], [], {})
+    old.picture(10.0, [track])
+    assert "T-1" not in old.needs
+    new = honest(P.HonestCeiling, [], [], {})
+    new._st = LOGGED
+    new.picture(10.0, [track])
+    assert new.needs["T-1"].resolved_t is None
+    track["identity"]["level"] = "identify"
+    new.picture(11.0, [track])
+    assert new.needs["T-1"].resolved_t == 11.0
 
 
 def test_an_esm_family_alone_is_planned_as_the_domain_s_smallest_threat():

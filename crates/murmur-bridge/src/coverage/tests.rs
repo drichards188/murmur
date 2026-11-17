@@ -621,7 +621,7 @@ async fn an_orders_satellites_are_looked_at_once_a_class_and_time() {
             .iter()
             .map(|r| VehicleRoute { uid: r.uid, route: r.route.clone() })
             .collect();
-        answers.push(c.order_answer_at(&w, again, SAT_T0).await);
+        answers.push(c.order_answer_at(&w, again, SAT_T0, ON_STATION_S).await);
         sources.push(src);
     }
     let (alone, batched) = (&answers[0], &answers[1]);
@@ -705,7 +705,7 @@ async fn a_saturation_surface_order_timed() {
             .map(|r| VehicleRoute { uid: r.uid, route: r.route.clone() })
             .collect();
         let started = std::time::Instant::now();
-        let a = c.order_answer_at(&w, again, SAT_T0).await;
+        let a = c.order_answer_at(&w, again, SAT_T0, ON_STATION_S).await;
         let took = started.elapsed().as_secs_f64();
         let vs = a["vehicles"].as_array().expect("vehicles");
         assert_eq!(vs.len(), 100);

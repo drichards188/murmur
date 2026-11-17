@@ -87,10 +87,11 @@ stays a later decision.
   constant). Reasons: `range`, `terrain`, `no_sat`, `submerged`, `surfaced`, the link's own
   `loss`. A route's failsafe is walked heartbeat by heartbeat (the bridge's period on that link)
   with the predicted loss where the vehicle then is: the chance it trips on the way and in five
-  minutes on station; `holds` when that is at most 10 %. Checked against the emulator's `Link` at
-  sampled points (a ridge, and a 7 x 7 x 3 lattice on the Golden Gate's grid for both
-  terrain-limited classes: equal to the last bit) and on known shadows (the Marin Headlands and the
-  city's hills at a Puma's 85 m).
+  minutes on station (an identify order: its own time on station, the scenario's `[watch]
+  identify_on_station_s`, since bd murmur-u1q4.8); `holds` when that is at most 10 %. Checked
+  against the emulator's `Link` at sampled points (a ridge, and a 7 x 7 x 3 lattice on the Golden
+  Gate's grid for both terrain-limited classes: equal to the last bit) and on known shadows (the
+  Marin Headlands and the city's hills at a Puma's 85 m).
 - **Bridge**: `crates/murmur-bridge/src/coverage.rs`, outside the decision lock, never logged.
   `GET /api/links/coverage?class=los&alt=85&bbox=w,s,e,n&res=250` (or `uid=`, `point=`,
   `above_surface=1`, `at=`) and `POST` with the same as JSON, a `route`, an `order` or `queries`.

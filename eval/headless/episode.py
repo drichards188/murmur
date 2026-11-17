@@ -786,7 +786,16 @@ class Episode:
             cls = "model_failed"
         else:
             cls = "scored"
-        pic = self.picture_enc.finish()
+        kept = None
+        if scoring == "v3":
+            # the settings the run logged (rules 33's [watch] and the rest, docs/SCENARIO-SETTINGS.md):
+            # a saved record keeps no run.started, so it keeps these; nothing under older rules
+            from .v3.settings import record_settings, run_started
+
+            kept = record_settings(run_started({"audit_text": audit_text}))
+        # a run that logged its settings keeps each picture sample's identity level too (v3/record.py;
+        # the scoring reads it, bd murmur-u1q4.8); an older run's record is as before
+        pic = self.picture_enc.finish(levels=True) if kept is not None else self.picture_enc.finish()
         condition = {"operator": (self.operator.m.mode if self.operator else None),
                      "policy": Path(self.e.policy).name if self.e.policy else None}
         if getattr(self, "latency", None) is not None:  # charged only; no clock reads as paused
@@ -820,14 +829,8 @@ class Episode:
             "replicate": dict(self.opts.replicate) if self.opts.replicate else None,
             scoring: v2,
         }
-        if scoring == "v3":
-            # the settings the run logged (rules 33's [watch] and the rest, docs/SCENARIO-SETTINGS.md):
-            # a saved record keeps no run.started, so it keeps these; nothing under older rules
-            from .v3.settings import record_settings, run_started
-
-            kept = record_settings(run_started({"audit_text": audit_text}))
-            if kept is not None:
-                out["settings"] = kept
+        if kept is not None:
+            out["settings"] = kept
         return out
 
 

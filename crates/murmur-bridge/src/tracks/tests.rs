@@ -912,11 +912,29 @@ fn a_vehicle_silent_past_its_stale_age_senses_nothing() {
 // against new: `tests/calib.rs`.
 
 /// Rules 16: the tracker's stale age is the engine's out-of-view age (a track the console fades
-/// is the one a keep-out counts at its domain's top speed), and the explanation's default.
+/// is the one a keep-out counts at its domain's top speed), and the explanation's memory: before
+/// rules 33 the one constant of what older rules meant, from them the run's `[watch] stale_s`,
+/// tailored or not (bd murmur-u1q4.8: no copy of it in the tracker or the explanation).
 #[test]
 fn stale_is_out_of_view() {
-    assert_eq!(super::model::STALE_S, murmur_decide::engage::OUT_OF_VIEW_S);
-    assert_eq!(murmur_decide::keepout::TrackerMemory::default().stale_after_s, murmur_decide::engage::OUT_OF_VIEW_S);
+    use super::model::TrackerWatch;
+    use murmur_decide::keepout::TrackerMemory;
+
+    assert_eq!(TrackerWatch::standing().stale_s, murmur_decide::engage::OUT_OF_VIEW_S);
+    for version in [murmur_decide::rules::SCENARIO_SETTINGS_SINCE - 1, murmur_decide::rules::SCENARIO_SETTINGS_SINCE] {
+        for stale in [murmur_decide::engage::OUT_OF_VIEW_S, 12.0] {
+            let cfg = murmur_decide::RulesConfig {
+                rules_version: version,
+                watch: murmur_decide::WatchSettings { stale_s: stale, ..Default::default() },
+                ..Default::default()
+            };
+            let out_of_view = cfg.engage_rules().out_of_view_s();
+            let want = if cfg.scenario_settings() { stale } else { murmur_decide::engage::OUT_OF_VIEW_S };
+            assert_eq!(out_of_view, want, "rules {version}, stale {stale}");
+            assert_eq!(TrackerWatch::of(cfg.watch()).stale_s, out_of_view, "rules {version}, stale {stale}");
+            assert_eq!(TrackerMemory::under(&cfg).stale_after_s, out_of_view, "rules {version}, stale {stale}");
+        }
+    }
 }
 
 /// The physical model is the default (WORLD-V3-PLAN section 3: the catalog carries every

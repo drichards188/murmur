@@ -264,7 +264,7 @@ fn the_explanation_says_whether_accepting_a_blocker_as_behaving_now_would_clear_
     let cfg = policy().rules;
     let explain = |a: TrackFacts| {
         let (spec, w) = nomination(a);
-        keepout::explain(&spec, &w, &cfg, &keepout::Options::default()).unwrap()
+        keepout::explain(&spec, &w, &cfg, &keepout::Options::under(&cfg)).unwrap()
     };
     // flying away: it blocks by its reach, and accepting it would clear it
     let ex = explain(aircraft());

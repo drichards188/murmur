@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use murmur_linkemu::config::{Config as LinksConfig, VehicleSpec};
 use murmur_linkemu::coverage::{
     DEGRADED_LOSS, DOWN_LOSS, Failsafe, HOLDS_P, LegSamples, ON_STATION_S, Part, Prediction,
-    Predictor, ROUTE_STEP_M, State, along, route_answer, sentence,
+    Predictor, ROUTE_STEP_M, State, along, on_station_words, route_answer_on, sentence,
 };
 use murmur_linkemu::geo::{GeoPoint, NoTerrain, Terrain};
 use murmur_linkemu::sat::{RealSpace, SatObs, SpaceSource};
@@ -800,7 +800,7 @@ impl Coverage {
         } else {
             legs.push((Part::Transit, "the route".to_string(), false, pts));
         }
-        let mut v = self.answer_legs(&ready, &who, legs, self.at(q)?).await;
+        let mut v = self.answer_legs(&ready, &who, legs, self.at(q)?, ON_STATION_S).await;
         v["sources"] = self.sources(&ready, v["sources"]["satcom"].as_str().map(str::to_string));
         v["note"] = json!(NOTE);
         v["predicted"] = json!(true);
@@ -808,9 +808,11 @@ impl Coverage {
     }
 
     /// The answer for an order: each vehicle's route as the decision engine lays it out, from
-    /// scenario time now.
-    pub async fn order_answer(&self, world: &World, routes: Vec<VehicleRoute>) -> Value {
-        self.order_answer_at(world, routes, self.now_unix()).await
+    /// scenario time now, its failsafe's chance over the way there and `on_station_s` on the task
+    /// path (the order's own time on station: an identify order's `[watch]
+    /// identify_on_station_s`, else [`ON_STATION_S`]; the decision layer's `link_coverage`).
+    pub async fn order_answer(&self, world: &World, routes: Vec<VehicleRoute>, on_station_s: f64) -> Value {
+        self.order_answer_at(world, routes, self.now_unix(), on_station_s).await
     }
 
     /// [`Self::order_answer`] from `t0` (scenario unix s). Every vehicle's points take their
@@ -818,7 +820,7 @@ impl Coverage {
     /// any vehicle is answered, each class and time once however many vehicles share it
     /// ([`Self::satellites_many`]); then each vehicle's terrain is fetched and its answer made,
     /// one after the other as before.
-    async fn order_answer_at(&self, world: &World, routes: Vec<VehicleRoute>, t0: f64) -> Value {
+    async fn order_answer_at(&self, world: &World, routes: Vec<VehicleRoute>, t0: f64, on_station_s: f64) -> Value {
         let ready = match self.ready().await {
             Ok(r) => r,
             Err(e) => return json!({ "predicted": false, "error": e, "note": NOTE }),
@@ -880,7 +882,7 @@ impl Coverage {
             let geo: Vec<GeoPoint> = laid.all.iter().map(|(p, _)| *p).collect();
             self.warm(&ready, &who.profile, &geo).await;
             let predicted = self.predict_with(&ready, &who.profile, &laid.all, &s).map(|p| (p, sc));
-            let v = self.answer(&ready, &who, laid, predicted);
+            let v = self.answer(&ready, &who, laid, predicted, on_station_s);
             if let Some(s) = v["sources"]["satcom"].as_str() {
                 satcom = Some(s.to_string());
             }
@@ -890,8 +892,8 @@ impl Coverage {
             "predicted": true,
             "vehicles": vehicles,
             "holds_when": format!(
-                "the chance its lost-link failsafe trips on the way (the transit, then {:.0} minutes on the task path) is at most {:.0} %",
-                ON_STATION_S / 60.0,
+                "the chance its lost-link failsafe trips on the way (the transit, then {} on the task path) is at most {:.0} %",
+                on_station_words(on_station_s),
                 100.0 * HOLDS_P
             ),
             "sources": self.sources(&ready, satcom),
@@ -899,17 +901,19 @@ impl Coverage {
         })
     }
 
-    /// Legs as polylines of (lon, lat): sampled, predicted and answered for one vehicle.
+    /// Legs as polylines of (lon, lat): sampled, predicted and answered for one vehicle, with
+    /// `on_station_s` on a task path.
     async fn answer_legs(
         &self,
         ready: &Ready,
         who: &Who,
         legs: Vec<Line>,
         t0: f64,
+        on_station_s: f64,
     ) -> Value {
         let laid = self.lay(who, legs, t0).await;
         let predicted = self.predict_all(ready, &who.profile, &laid.all).await;
-        self.answer(ready, who, laid, predicted)
+        self.answer(ready, who, laid, predicted, on_station_s)
     }
 
     /// Legs as polylines of (lon, lat) sampled for one vehicle: each point at its altitude, and
@@ -971,13 +975,14 @@ impl Coverage {
     }
 
     /// One vehicle's answer from its laid-out legs and their predictions (one a point of
-    /// `laid.all`, with what SATCOM was predicted from).
+    /// `laid.all`, with what SATCOM was predicted from), `on_station_s` on a task path.
     fn answer(
         &self,
         ready: &Ready,
         who: &Who,
         laid: Laid,
         predicted: Result<(Vec<Prediction>, Option<String>), String>,
+        on_station_s: f64,
     ) -> Value {
         let Laid { here, shaped, .. } = laid;
         let v = who.speed_mps.max(0.5);
@@ -1007,7 +1012,7 @@ impl Coverage {
             .and_then(|l| l.samples.first())
             .map_or(who.profile.clone(), |s| s.2.profile.clone());
         let fs = self.failsafe(ready, &who.profile, &active);
-        let ans = route_answer(&leg_samples, v, fs.as_ref());
+        let ans = route_answer_on(&leg_samples, v, fs.as_ref(), on_station_s);
         let text = sentence(&who.callsign, &ans);
         let mut out = serde_json::to_value(&ans).unwrap_or(Value::Null);
         if let Some(o) = out.as_object_mut() {

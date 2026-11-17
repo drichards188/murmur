@@ -425,7 +425,7 @@ fn the_explanation_names_its_way_home_and_says_waiting_clears_nothing() {
     let spec = nomination();
     let named = Options {
         names: [(uid("hunter-1"), "HUNTER 1".to_string())].into_iter().collect(),
-        ..Options::default()
+        ..Options::under(&cfg30())
     };
     let ex = keepout::explain(&spec, &w, &cfg30(), &named).unwrap();
     assert!(ex.blocked);
@@ -458,7 +458,7 @@ fn a_vehicle_confirmed_lost_is_left_out_of_the_explanation_as_of_the_check() {
         uid("hunter-1"),
         LostNode { since, by: OperatorId::new("op-2"), t: T0, from: None, lost_on: None, now: None },
     );
-    let ex = keepout::explain(&nomination(), &w, &cfg30(), &Options::default()).unwrap();
+    let ex = keepout::explain(&nomination(), &w, &cfg30(), &Options::under(&cfg30())).unwrap();
     assert!(ex.items.iter().all(|i| i.id != "hunter-1"), "{:?}", ex.items);
 }
 

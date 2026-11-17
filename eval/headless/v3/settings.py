@@ -170,6 +170,16 @@ class Settings:
         (None: judged where it is)."""
         return dict(self.no_velocity_mps).get(str(domain))
 
+    def shown_level_ok(self, identity: dict[str, Any], want: str) -> bool:
+        """A running ceiling's or oracle's reading of an identity MCP `get_tracks` shows (choice 46:
+        they settle a need as the labels do): under logged settings (decision rules 33 on) one that
+        carries its level (`identity.level`) must show `want` or above (`level_reaches`), as the
+        labels judge a record that keeps levels (labels.py `level_reached`); under v0's settings, or
+        for an identity without a level, the label alone decides, as before bd murmur-u1q4.8."""
+        if self.is_v0 or "level" not in identity:
+            return True
+        return level_reaches(identity.get("level"), want)
+
     def watch(self) -> dict[str, Any]:
         """The `[watch]` table in the design's schema (its circle as `area`), as MCP `get_policy`
         serves it: what agents/roe.py reads."""
@@ -209,6 +219,14 @@ class Rule:
     ais_counts: bool
     #: "identify": the shown kind must be the true kind; "recognise": its true family will do
     level: str
+
+
+def level_reaches(level: Any, want: str) -> bool:
+    """Whether an identity shown at `level` (one of `LEVELS`) meets a domain's level `want`: at it
+    or above; no level, or another word, does not. The one comparison of a shown level with the
+    settings' (bd murmur-u1q4.8): the labels' on a record that keeps levels (labels.py
+    `level_reached`) and the ceilings' and oracles' on a running picture (`Settings.shown_level_ok`)."""
+    return level in LEVELS and LEVELS.index(level) >= LEVELS.index(want)
 
 
 def _sha(v: Any) -> str:

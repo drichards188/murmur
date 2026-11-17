@@ -369,3 +369,20 @@ run is part of this work.
   by the settle check itself: its reads, recorded live on 2026-10-09, predate `identity.level`, so
   the 0.99 fast boat shows no level and is not identified, and `isr.investigate` reports no free
   sensor aircraft where it said ready (no proposal changed).
+
+- After S7 (bd murmur-u1q4.8), what the end-to-end test and the Rust guard found. The scoring took a
+  sample's level from its label, so a ground contact shown `person` (a family and a kind) at
+  recognition counted as identified, where the officer and the engine read the level (one walker
+  sample; the other 26,116 agreed): a v3 record of rules 33 now keeps each picture sample's
+  identity level (eval/headless/v3/record.py) and `resolved_at` reads it (`v3.identity_resolved`
+  version 4); a record without levels is judged as before (version 3). The oracle, the ceiling and
+  the honest ceiling read the level `get_tracks` shows the same way under logged settings, by the
+  one comparison (settings.py `level_reaches`); under v0's as before. The guard's three copies read
+  the settings now: the tracker's `STALE_S` is `legacy::OUT_OF_VIEW_S` itself (what older rules
+  meant; from rules 33 the tracker reads the watch's), the keep-out explanation's memory is
+  `keepout::TrackerMemory::under` the run's settings (the bridge passes its tracker's own, as
+  before; `behaving_at` reads no memory, so no output moved), and the scenario runner's proxy
+  nominates at the policy's `default_effect_radius_m` and `default_window_s` (75 m and 600 s in
+  every policy, so no scenario moved). And the link predictor counts an identify order's
+  `identify_on_station_s` on station (`identify::on_station_s`, the deadline's), every other kind
+  its own 300 s: under the standing settings every answer is as before.

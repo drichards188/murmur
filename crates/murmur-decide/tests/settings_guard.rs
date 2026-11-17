@@ -27,8 +27,9 @@
 //! Allowed: watch.rs and legacy.rs whole; the `[rules.engage]` parser's default for its radius
 //! (`PARSER_DEFAULTS`). Listed apart, each with its reason and each required to be still there
 //! (so a list that has gone stale fails too): constants of the same name for another quantity
-//! (`ANOTHER_QUANTITY`), and the copies this guard found when it was written (`FOUND_COPIES`),
-//! reported with stage S7 and left to be fixed (then their entries go).
+//! (`ANOTHER_QUANTITY`), and copies found and not yet fixed (`FOUND_COPIES`: the three this guard
+//! found when it was written, stage S7, were fixed by bd murmur-u1q4.8; an entry goes when its copy
+//! is fixed).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -53,7 +54,7 @@ const ANOTHER_QUANTITY: [(&str, &str, &str); 3] = [
     (
         "crates/murmur-linkemu/src/coverage.rs",
         "const ON_STATION_S",
-        "the link predictor's time on any order's task path for its failsafe chance, not an identify order's time on station",
+        "the link predictor's time on an order's task path for its failsafe chance, but an identify order's, whose own time on station the bridge passes (decision/mod.rs link_coverage)",
     ),
     (
         "crates/murmur-bridge/src/estimate.rs",
@@ -62,31 +63,25 @@ const ANOTHER_QUANTITY: [(&str, &str, &str); 3] = [
     ),
 ];
 
-/// Copies of a setting this guard found when it was written (stage S7), reported and not fixed
-/// here: (file, finding, what it copies). Fixing one fails `every_listed_site_is_still_there`
-/// until its entry goes.
-const FOUND_COPIES: [(&str, &str, &str); 3] = [
-    (
-        "crates/murmur-bridge/src/tracks/model.rs",
-        "const STALE_S",
-        "legacy::OUT_OF_VIEW_S (10 s): the tracker's standing and pre-rules-33 stale age, a second definition held equal by tracks::tests",
-    ),
-    (
-        "crates/murmur-decide/src/keepout.rs",
-        "field stale_after_s",
-        "the stale age (10 s) in TrackerMemory::default, held equal by the bridge's tracks::tests; keepout::behaving_at reads that default",
-    ),
-    (
-        "crates/murmur-decide/src/scenario.rs",
-        "field radius_m 75",
-        "the default effect radius (75 m) in the scenario runner's proxy nomination",
-    ),
-];
+/// Copies of a setting found and not yet fixed: (file, finding, what it copies). Fixing one fails
+/// `every_listed_site_is_still_there` until its entry goes. The three this guard found when it was
+/// written (stage S7) are fixed (bd murmur-u1q4.8), each now a reader in `SITES`: the tracker's
+/// second `STALE_S` (tracks/model.rs, now `legacy::OUT_OF_VIEW_S` itself), the stale age of
+/// `TrackerMemory::default` (keepout.rs, now `TrackerMemory::under` the run's settings) and the
+/// scenario runner's proxy nomination's 75 m (scenario.rs `proxies`, now the policy's default; its
+/// 600 s window, a copy of `[rules.engage] default_window_s` the scan does not look for, too).
+const FOUND_COPIES: [(&str, &str, &str); 0] = [];
 
 /// Each inventory site and what its body reads now: (file, function or `Type::function`, or ""
 /// for the whole file; the text it holds).
-const SITES: [(&str, &str, &[&str]); 12] = [
-    ("crates/murmur-decide/src/identify.rs", "deadline", &["cfg.watch().identify_on_station_s"]),
+const SITES: [(&str, &str, &[&str]); 18] = [
+    ("crates/murmur-decide/src/identify.rs", "on_station_s", &["cfg.watch().identify_on_station_s"]),
+    ("crates/murmur-decide/src/identify.rs", "deadline", &["on_station_s(cfg)"]),
+    ("crates/murmur-decide/src/keepout.rs", "TrackerMemory::under", &["cfg.watch().stale_s"]),
+    ("crates/murmur-decide/src/keepout.rs", "behaving_at", &["Options::under(cfg)"]),
+    ("crates/murmur-decide/src/scenario.rs", "proxies", &["engage_rules().default_effect_radius()", "engage_rules().default_window_s"]),
+    ("crates/murmur-bridge/src/decision/mod.rs", "link_coverage", &["murmur_decide::identify::on_station_s(&self.rules)"]),
+    ("crates/murmur-bridge/src/decision/engage.rs", "", &["TrackerMemory::under(&self.rules)"]),
     ("crates/murmur-decide/src/engage.rs", "EngageRules::out_of_view_s", &["self.stale_s"]),
     ("crates/murmur-decide/src/engage.rs", "out_of_view", &["ec.out_of_view_s()"]),
     ("crates/murmur-decide/src/engage.rs", "EngageRules::default_effect_radius", &["self.default_effect_radius_m"]),
