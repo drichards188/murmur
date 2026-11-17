@@ -3112,3 +3112,106 @@ this tree's smoke episodes had left, did not), and a batch run in parallel fills
 order its workers reach it. The tables above come from the second pair, both batches started from
 one copy of the cache. Worth an issue: why a cached look moves the run, or batches started from a
 pinned cache.
+
+### 17.28 Decision rules 33 on the free agents: what the switch moved and why (2026-11-17; free)
+
+**Coverage.** golden-gate-v3 and san-diego, each with its world's background traffic (the scale
+world not used); Golden Gate v3: 20 vehicles (air 8, ground 3, subsurface 2, surface 7), San Diego:
+24 (air 10, ground 3, subsurface 2, surface 9), 16 types; sensors AIS, EO/IR, ESM, radar and sonar
+under the physical sensing model; contacts in the air, on the ground and on the surface (35 at the
+Golden Gate, 40 in San Diego); conditions drawn per situation (day 52, night 43, fog 15, twilight 10
+of 120); dev seeds 5000-5009, families F2, F6, F8, F9, F12 and F13 on both worlds: 120 situations
+and 480 episodes a batch; agents `none`, `playbook`, `oracle-v3-honest` and `oracle-v3-shown`; the
+approve-all operator, the paused clock, one replicate. Model results only: free, deterministic
+agents, no human data. **Shortcuts, named**: one replicate a situation; ten situations a family and
+world, so a need or two moving is what a reshuffle of timing gives (below), not a measured effect;
+no model agent (the card reaches only a model, and a paid rerun under rules 33 needs its own
+approval and question); F1, F3-F5 and F14-F18 not run under rules 33.
+
+**Three batches, one ruler.** `v3-effective-2026-11-16`, the baseline the plan named, ran on the
+morning of 11-16 before the epic's first commit, under rules 32. Between it and today's batch lie
+S1-S6, S7's switch and a SATCOM look cache that had grown since (murmur-ocml, 17.27). So a control
+was run: `v3-rules32-control-2026-11-17` at 4992fc0 (S1-S6 built, rules 32 still the default) and
+`v3-rules33-2026-11-17` at 232ff8e (rules 33 the default), each started from one copy of the look
+cache taken before either ran. All three were reported by main's code (the scoring at the two
+commits differs in one coverage string). The first pair measures S1-S6 under rules 32 with the
+cache's state; the second, S7 alone. The control's records log no `[watch]` and are graded under
+v0's settings (sim/policy-v0-watch.toml); the rules 33 records log their merged policy
+(golden-gate-v3-watch.toml, sha256 cdab481ab37a; San Diego's b5ee1bc09f05) and are graded under it.
+The two agree in every value but the reserve (v0: 20 % of battery now, the low-reserve need opening
+at 35 %; logged: 20 % left after a 900 s task).
+
+**S1-S6 under rules 32 (11-16 to the control).** No need moved for any agent. `none`, the playbook
+and the shown ceiling ran the same episodes, truth and picture, in all 120 each. The honest
+ceiling's moved in 12 (orders 297.73 to 296.27 an hour): S6's change to the tracks it settles
+(choice 46, 17.27) or the cache's state, not separated here.
+
+**S7 (the control to rules 33): needs served** (served over eligible, pooled over both worlds):
+
+| agent | rules 32 | rules 33 | episodes whose truth moved | needs moved |
+|---|---|---|---|---|
+| none | 47/120 | 47/120 | 0 | 0 |
+| oracle-v3-shown | 82/120 | 82/120 | 0 | 0 |
+| oracle-v3-honest | 61/120 | 61/120 | 8 (all San Diego) | 0 |
+| playbook | 52/120 | 53/120 | 76 | 5 |
+
+The room per family and world (10.1) is unchanged: the floor and the shown ceiling did not move.
+
+**What moved, and why.**
+
+1. *The picture: neutral after the bar.* Every episode's picture differs from the control's, and
+   only in the affiliation calls. In the `none` agent's 120 episodes, 14,474 one-second samples on
+   634 track-episodes moved from neutral to unknown, none the other way, and no other field of the
+   picture moved. Under rules 32 the physical tracker called a track neutral by classification from
+   about 0.3 (here 0.24 to 0.80, median 0.41); under rules 33 it calls nothing neutral before the
+   identity meets the bar, 0.6, and its domain's criteria. The 2,941 samples above the bar are all
+   on the surface: tracks shown only as a size class (`small_surface`) from sonar and ESM, which the
+   surface's criteria (EO/IR or AIS, at the identify level) never count.
+2. *The floor and the shown ceiling* ran the same truth in all 120 episodes each: `none` orders
+   nothing, and the shown ceiling's orders did not move.
+3. *The playbook* sees two changes, which these batches do not separate: the picture's call (1), and
+   its own settle check, moved in S7 from an identity of 0.6 at any level to `Roe.identified` (its
+   domain's level and sensors, the bar, no conflict; docs/SCENARIO-SETTINGS.md, "S7 as built"). It
+   now looks at traffic it used to pass over as neutral. Its proposals over the 120 episodes:
+   investigate 769 to 854, release 440 to 517, recentre 1,050 to 915, stuck 89 to 94, low reserve 20
+   and 20, link cover 1 to 2. Per situation-hour: orders 77.30 to 78.25, cards 59.79 to 58.25,
+   justified 38.07 to 37.17, not justified 27.45 to 29.16, harmful 0.03 to 0.07 (one order to two,
+   each a vehicle taken off a need it was sensing, harm (b)), fault response 4.79 to 5.46 (point 5).
+   Each of the five needs that moved was served within 35 s of its deadline in one batch or the
+   other: three served in time that were late (F12 San Diego 5007, the boat at 266 s against 356 s,
+   deadline 299 s; F6 San Diego 5003, the vehicle at 332 s against 465 s, deadline 337 s; F9 Golden
+   Gate 5003, the truck at 446 s against 472 s, deadline 471 s) and two late that were in time (F2
+   San Diego 5000, the drone at 407 s against 360 s, deadline 367 s; F9 Golden Gate 5000, the
+   vehicle at 618 s against 447 s, deadline 449 s). Traced in F2 San Diego 5000: at 166.8 s the
+   playbook sends PUMA 4 to T-0009, a light aircraft classified at 0.41, which the control's picture
+   showed neutral at 0.32 and rules 33 shows unknown ("not called neutral until identified"); PUMA
+   4's look identifies it (1.00, neutral 0.80) and the playbook releases it at 175.8 s. Under rules
+   32 PUMA 4 went at 166.8 s to a person (T-0020, 0.53, unknown in both); under rules 33 it reaches
+   that person 61 s later, PUMA 1's looks at the drone come about 5 s later, and the drone's
+   identification falls after its deadline. So the net +1 is a reshuffle of timing near deadlines;
+   what the playbook spends more on is looks at traffic it can no longer dismiss on a classification
+   below the bar.
+4. *The honest ceiling* ran other episodes in 8 of 120, all in San Diego (five of them F9); orders
+   296.27 to 294.77 an hour, not justified 96.95 to 96.12, harmful 0.57 and 0.57; no need moved. In
+   the two traced (F9 San Diego 5001, F12 San Diego 5000) the first difference is the same need on
+   the same track raised about 4 s apart, its deadline 3 s apart, and a different vehicle chosen
+   from there.
+5. *The low-reserve need, version 2.* A logged run's low-reserve fault need opens when the engine
+   would refuse a further task for reserves (`reserve_pct` plus one `task_duration_s` at the catalog
+   endurance) and is unmet at `reserve_pct` (docs/SCENARIO-SETTINGS.md section 3); v0's opened at 35
+   % of battery. Every met and unmet count is unchanged for every agent (met over judged: `none` 0
+   of 20, the honest ceiling 5 of 19, the shown ceiling 7 of 20, the playbook 10 of 20). The switch
+   adds censored needs only, every one an X10's (`none` 8, the shown ceiling 8, the honest ceiling
+   14, the playbook 15; all in F13 but one each, two for the playbook, in F8 San Diego): a 900 s
+   task is a large share of an X10's endurance, so its need opens early and the episode ends before
+   it can be met or missed. Censored needs are reported apart and enter no share. They do change
+   labels: an order of a recovery kind while a fault need is open is a fault response (labels.py),
+   so more open needs give more such labels, while the playbook's own low-reserve proposals stayed
+   at 20.
+
+**For the ruler.** Against the 11-16 baselines, a rules 33 report serves the same needs for the
+floor and both ceilings, with the same room. A reader of one sees more tracks shown unknown for
+longer (an agent that treats unknown as in doubt looks more), the playbook's few extra looks, and
+X10 reserve needs counted as censored. The scoring flaw still open (murmur-u1q4.8: a ground contact
+shown `person` at recognition counted as identified, one walker sample in 26,116 in the end-to-end
+test) is not fixed in these records, which are judged as before.

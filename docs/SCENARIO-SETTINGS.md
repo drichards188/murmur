@@ -228,8 +228,9 @@ Each lands green on main by itself; bd tracks each under the epic.
 | S6 | harness: ROE card, settings by record, labels, metrics, report, ceiling and oracles held to the mission's sensors (measured before and after on dev seeds), live runner; the guard and end-to-end tests | none |
 | S7 | adoption: `RULES_VERSION` 33; v1/v2 legacy policy; playbook to `roe`; fixtures; golden, paused and scale-watch digests re-taken with each cause proved; docs (CLAUDE.md, crates/murmur-decide/README.md, agents/README.md, sim/situations/README.md, SCORING-V3 section 9 choices 42-47) | 33 default (built; section 7) |
 
-After S7: free baselines on dev seeds, then SCORING-V3 records what moved. No paid run is part
-of this work.
+After S7: free baselines on dev seeds, then SCORING-V3 records what moved (17.28: no need moved
+for the floor or either ceiling; the playbook's moved in 5 of 120 episodes, by timing). No paid
+run is part of this work.
 
 ## 7. Risks and open points
 
