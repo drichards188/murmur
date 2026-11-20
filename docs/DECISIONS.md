@@ -3862,3 +3862,74 @@ Where the build departs from the draft, and why:
   through `Engine::dispatch_group`), and its dry run samples the group's own task, not the
   members'. A member requeued after a delivery that found its vehicle not running it goes to a
   person, as any order does (it may be running).
+
+## 2026-11-20: Group orders re-form, and fly as logged: stages 4 and 5 (rules 34, murmur-4nik, murmur-3kqi, murmur-4jlq)
+
+docs/SWARMS.md section 13's stages 4 and 5 for the ordinary tasks, still behind `RULES_NEWEST =
+34` (rules 33 decides and flies exactly as before; no fixture or digest moves). Built:
+
+- **Stage 4, re-form**: `Engine::step_groups` on the tick steps every group in force (dispatched or
+  done, re-forming, not suspended). A member on the layout drops when its member order ends other
+  than done, it is presumed or confirmed lost, or it stays silent 20 s past its stale limit; a
+  member a re-form left out is back once heard 30 s running. On material, settled drops and
+  returns, at most once a minute, the group re-forms inside its envelope and tier
+  (`group.reformed`), moving only the gaps' neighbours on healthy links; else nothing moves
+  (`group.reform_refused`); below its minimum once settled it is suspended (`group.suspended`) and
+  never resumes on its own (decision 4). Replay recomputes each. Scenarios 166 to 169, tampers
+  `forge_reform` and `reform_outside_envelope`.
+- **Stage 5, the bridge**: group orders go out as their member orders, the tick steps the groups,
+  each member's share is flown as logged (its altitude, where it enters its ring or route) with no
+  slot arithmetic of the task layer's own, terrain along the members' shares is fetched outside
+  the decision lock (a group's submission and dry run; each re-form due, laid out beside the
+  tick), and `/api/swarms` and the inbox show each group's strength, fold its members' routine
+  alerts from the first and raise `under_strength` and `reform_refused`. murmur-3kqi's faults 1
+  (the altitude stack) and 2 (one lane, one shared loiter) hold live under rules 34.
+- **murmur-4jlq**: a member order whose delivery found its vehicle not running it goes back to the
+  queue under its group's approval, its next delivery a whole one after its re-check, never to a
+  person on its own.
+
+Where the build departs from the draft, and why:
+
+- **Drops are ends, losses and silence; "off its share" by position is not built.** The header
+  note settles that drift alone never re-forms; a member whose failsafe takes it home while its
+  link holds leaves its mission's mode, which fails its member order (a drop). One whose orbit was
+  already done is no longer watched by the task layer, and counts on its share until it falls
+  silent: a gap left open, never an act nobody approved.
+- **A moved member whose new share fails refuses the whole re-form** (the draft: it keeps its old
+  share). Keeping it would make the logged layout another function than `group::reform`; a refusal
+  asks the person, as an envelope breach should. A member back whose share fails is left out for
+  good (`left_out`, logged), so it never blocks the rest; the person re-forms.
+- **A return's "30 s running" is the engine's own tracking.** The facts of one instant cannot show
+  how long a vehicle was heard; the re-form logs each return's time, and replay checks it is after
+  the re-form that left the member out, 30 s before, and that the member is heard then.
+- **A refusal is not retried on the same cause** (the same members dropped and back): the next
+  attempt needs a new drop or return, then the rate. Suspension waits for the drops to settle but
+  not for the rate.
+- **A member an engagement holds keeps its slot in a re-form**, as one on an unhealthy link does:
+  a re-form never sends it an order, so never stops an engagement (decision 6).
+- **Stage 2's re-form window was mended**: a gap with a pinned member on its edge stopped every
+  gap from closing; the pinned member now anchors the window and the gap closes from its other
+  side (scenario 166).
+- **A re-form's member orders go `under` a group that is dispatched or done**, not only approved:
+  replay binds each to the re-form that laid it out, as a dispatch's are bound to the group's check.
+- **A fixed wing in a group orbit flies a 12-point waypoint ring** entered at its phase, the
+  draft's "a waypoint ring no tighter than its turn" (the radius still widened to 1.1 turns).
+- **The bridge's facts carry the group figures under rules 34 only** (`Catalog::formed`, as the
+  scenario runner's), so older runs' facts and logs are as before.
+- **Group alerts are swarm cards**: `under_strength` and `reform_refused` go in the inbox's
+  `swarm_alerts`, named by the order's `swarm` label, else the swarm most members are in, and reach
+  the inbox even when the manifest names no swarm. Under rules 34 the routine kinds fold from the
+  first member and the rest never fold; rules 33 folds as before.
+- **Left for stage 6**: the dry run fetches the members' terrain but its answer shows the group's
+  checks only (no layout on the map yet), and its predicted routes and link coverage are the
+  group's task's, not each member's; MCP carries `get_swarms`' new `groups` but no group spec in
+  `propose_intent`.
+
+Checked live (sim/fleets/group-ring-100.toml, sim/link-events/group-ring-100.toml): a hundred X10
+stand-ins under rules 34, one agent's group orbit auto-approved and dispatched as a hundred member
+orders (all on station two minutes later); ten links cut both ways for 150 s: the ten dropped 30 s
+after their last report, one re-form 15 s later (15 neighbours moved, the largest gap 30.8 m
+against an even 20.9), one lost_link card in the inbox for the ten; heard again, the ten were back
+after 30 s and a second re-form 15 s after that brought them back (15 moved, the largest gap 25.7
+m against 18.9), every member order of both re-forms ended done on station (the second's 65 s
+after it); the log replays under `--rules 34` and matches its anchors.

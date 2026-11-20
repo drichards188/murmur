@@ -1,0 +1,27 @@
+# A live check of group orders (decision rules 34, docs/SWARMS.md section 13 stage 5; bd
+# murmur-4nik): one swarm of 100 X10 stand-ins on the field at Crissy Field (Saturation's
+# PICKET-1 block), for one group orbit over the water just north of it, and the link event that
+# cuts ten of their links for two and a half minutes (sim/link-events/group-ring-100.toml): the
+# group re-forms round the ninety left, then brings the ten back once they are heard again.
+#
+#   MURMUR_RULES=34 make goldengate GG_FLEET=group-ring-100 CONTACTS= \
+#     EVENTS=sim/link-events/group-ring-100.toml
+#
+# then a group orbit of RING-1 at [-122.4650, 37.8135], radius 300 m (one layer, 19 m apart),
+# from an agent (the policy's default tier sends an unarmed orbit inside the approved area).
+title = "Group ring: 100 X10s at Crissy Field"
+
+[[swarm]]
+id = "RING-1"
+name = "Crissy Field ring"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"
+center = { lat = 37.80594, lon = -122.46730 }
+columns = 10
+spacing_m = 8
+alt_m = 2

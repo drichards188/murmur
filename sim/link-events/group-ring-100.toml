@@ -1,0 +1,11 @@
+# The live check of a group's re-form (sim/fleets/group-ring-100.toml): ten of RING-1's hundred
+# X10s, scattered through the swarm, lose their links both ways from minute 5 for two and a half
+# minutes. Each drops 30 s after its last report (its stale limit and 20 s more); 15 s after the
+# last drop the group re-forms round the ninety left. Heard again, each is back after 30 s, and
+# the next re-form (a minute after the first at the soonest) brings the ten back.
+[[event]]
+name = "ten of RING-1 cut off"
+at_s = 300
+duration_s = 150
+uids = [5, 15, 25, 35, 45, 55, 65, 75, 85, 95]
+cut = true
