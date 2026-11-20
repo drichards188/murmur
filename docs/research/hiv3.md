@@ -85,6 +85,10 @@ tubes and a frame; rides on a UGV of 750 kg payload, part 4).
 
 ## 3. The drones and terminal guidance
 
+> Murmur does not use this part's warhead, guidance or hit figures: the HIV3 round's effect is
+> abstract (docs/SALVO.md decision 6, the owner 2026-11-20). It is kept as a record of what is
+> public.
+
 ### 3.1 Drone figures (comparables; the Army gave none for the HIV3 drone)
 
 | item | figure | source |

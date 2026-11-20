@@ -39,33 +39,39 @@ Decided (the owner, 2026-11-20):
 4. **A spent one-way striker leaves the world live**, as it does headless (section 7). Rules 30
    presumes it lost on its own effect and a person confirms, as decided (DECISIONS.md D6).
 5. **Build order:** this spec, then stage 0 at once; stages 1 and 2 after the owner's read.
+6. **The HIV3 round's effect is abstract** (the owner, 2026-11-20, after a build agent's work on
+   hit and kill figures and terminal-guidance factors was stopped by a safety classifier). The
+   round carries kinematics only (count, speed, range, a flight, an effect radius) and no hit or
+   damage figures, so a strike flags every contact inside its circle out of play, the effect
+   Murmur had before its damage model (`crates/murmur-contacts/src/effect.rs:227`), as the
+   opponent's weapon was first modelled (DECISIONS.md, 10-29: "in a way that safeguards dont
+   trip"). The question here is how many human decisions a strike takes, which needs no hit
+   chance. "Autonomous terminal guidance" is a label in the brief, not a figure.
 
 Open, each with a recommendation:
 
-6. **Is a ceiling above 1 a loosening?** Recommended: **yes.** The standing value is 1; a scenario
+7. **Is a ceiling above 1 a loosening?** Recommended: **yes.** The standing value is 1; a scenario
    that raises it says why under `loosened` (rules 33), and the card, the record and the report
    state it. It multiplies the effects one human decision releases, which is what the CCW draft's
    "number of engagements" limit is about [23]. Alternative: a standing value above 1 (6, one
    volley [E]), unremarked. Guns are unchanged either way: rules 26's bursts are bounded by the
    magazine and the window, as decided.
-7. **Rounds in flight are committed.** Recommended for route A: a launched round cannot be
+8. **Rounds in flight are committed.** Recommended for route A: a launched round cannot be
    recalled (as a missile today); Cease stops further launches only. A stated shortcut: a real FPV
    can be waved off before its terminal lock. Route B (stage 3) revisits it.
-8. **A round whose checks fail at its launch is held, not the plan voided.** Recommended, as a
+9. **A round whose checks fail at its launch is held, not the plan voided.** Recommended, as a
    gun's unseen target holds fire (rules 26): the fire waits, logged with the reason, and goes on
    when the round's checks pass, until the window closes, the ceiling is reached or someone ceases.
    Alternative: the first failing round ends the fire.
-9. **The smoke is display, plus an optional camera cue**, from the marker drone's own `mark` order
+10. **The smoke is display, plus an optional camera cue**, from the marker drone's own `mark` order
    (stage 2); no hit factor, since no public figure supports one [5]. Never a timeline claim of
    smoke (the owner's rule: situations give orders, never effects).
-10. **Autonomous terminal guidance changes hit figures only**, never authority: a new `guidance`
-    string with its own figures and night, fog and speed factors on the truth side (section 3.3).
 11. **The range target is declared by an operator**, the existing path (DECISIONS.md: any operator
     may declare any track): the person live, a scripted `declare` step on autoplay. A destroyed
     target leaves play, so rounds still in flight then miss: honest overkill, shown on the card.
-12. **Hand-flown and remotely operated are guidance figures only.** Murmur flies every platform by
-    autopilot and releases on the signed plan; the demo's hand-flown FPV is today's `[fpv]` with
-    `operator_video_day`, the Javelin today's `[ugv_armed]`. A stated shortcut.
+12. **Hand-flown and remotely operated are not modelled.** Murmur flies every platform by
+    autopilot and releases on the signed plan; the demo's hand-flown FPV is today's `[fpv]` and the
+    Javelin today's `[ugv_armed]`, each as the catalog has it. A stated shortcut.
 13. **Three targets at least 300 m apart** (the 275 m keep-out: 75 m radius plus 200 m), one for
     the salvo, one for the hand-flown FPV, one for the Javelin, so no strike blocks another.
 
@@ -75,7 +81,7 @@ Open, each with a recommendation:
 |---|---|---|
 | launcher vehicle | R3NEGADE UGV, out of a 20-ft container [1, 2]; no public figures | R3NEGADE-class: about 1.5 t, 6 m/s road, 3 m/s off road [E from THeMIS-class, 4.1]; spawns at the container's door (stage 0), drives out by `transit` (stage 2) |
 | launcher | HIV3, "six-tube" (a caption, unverified) | 6 tubes x 3 = 18 rounds [E]; one launch every 2 s [E: China's Swarm-2 at 3 s the only public interval]; no reload in the scenario (20 min by hand [E]) |
-| drones | FPV; count 18 (Stars and Stripes only; the Army gives none) [2] | 10-inch-class tube-launched quad: cruise 20 m/s, dash 35 m/s, 10 km, 1 kg warhead [E, 3.1]; autonomous terminal lock from about 500 m [3.2] |
+| drones | FPV; count 18 (Stars and Stripes only; the Army gives none) [2] | rounds of the launcher at 20 m/s to 10 km [E, 3.1]; the effect abstract (decision 6) |
 | marking | TRV-150 dropped smoke on the target [1]; "to mark the target" in one outlet only [5] | TRV-150-class: 68 kg payload, 30 m/s, 36 min [4.2]; a smoke marker by its own `mark` order (stage 2); display, optional cue |
 | target | "a designated target"; type and distance not public | three static trucks [E], 2 to 4 km from the launcher [E], at least 300 m apart |
 | beside it | a hand-flown FPV strike (173rd Airborne); a second UGV with a remotely operated Javelin (fired or not: reports differ) | `[fpv]` and `[ugv_armed]` as they are |
@@ -87,13 +93,14 @@ War Thunder level: each figure is a rounded public number, or a public comparabl
 with no more precision than its source supports, and no attempt to model a real system's
 engineering. Murmur models the decision, not the weapon: what matters is that the figures put the
 person in a recognizable situation (how long a salvo takes, how far it flies, what can go wrong),
-not that a hit chance is right to the percent. Where the Army gave nothing (the launcher, the
+not that a hit chance is right to the percent; the HIV3 round has none at all (decision 6).
+Where the Army gave nothing (the launcher, the
 drones, the target), the replica says what it assumed, in the brief and in the catalog's notes.
 
 ## 3. The replica on today's engine (stage 0)
 
 No rules change, no decision moves. It runs the demo end to end honestly, every effect a weapon a
-platform carries, released by the engine on a plan two people signed, drawn on the truth side.
+platform carries, released by the engine on a plan two people signed, applied on the truth side.
 
 ### 3.1 Platforms (sim/platforms.toml)
 
@@ -102,10 +109,9 @@ platform carries, released by the engine on a plan two people signed, drawn on t
   [E] able to identify a truck at the range's distances (the FPV's own camera reaches a small ground
   target only at 130 m and identifies nothing in time), link `mesh` [E]. Loadout: **"HIV3-class
   launcher"**, `kind = "missile"` [a stated shortcut until stage 1 decides whether a `drone` kind
-  is needed], count 18, `min_range_m` 300 [E], `max_range_m` 10,000, `speed_mps` 20, `profile =
-  "dive"`, guidance `autonomous_terminal_eo`, warhead 1 kg [E], targets ground and surface, effects
-  by kind (3.3). Rules 28 gives it a firing position: where it stands when the target is within its
-  band.
+  is needed], count 18, `min_range_m` 300 [E], `max_range_m` 10,000, `speed_mps` 20, targets
+  ground and surface, and **no effects** (decision 6). Rules 28 gives it a firing position: where
+  it stands when the target is within its band.
 - **`trv150`, "Heavy-lift drone (TRV-150-class)"**: unarmed copter stand-in, 30 m/s, 36 min, a
   small camera [E] (no public figure; it navigates by one), link `mesh`. Its marker is stage 2's.
 - `physical_reach_m` regenerated for both (`write_physical_reaches`).
@@ -124,20 +130,16 @@ platform carries, released by the engine on a plan two people signed, drawn on t
   every weapon here], no traffic on the range, the contacts' seed chosen for the default run's
   intent numbers (hit draws are seeded by it).
 
-### 3.3 Autonomous terminal guidance
+### 3.3 Effects
 
-A new guidance string, `autonomous_terminal_eo` [E], on the HIV3 round. Figures in
-docs/research/weapons.md as a 10.3 column and 10.5 rows: p_hit against a truck or car about 0.55
-[E: between the one field report of about 50 % in 20 uses and the vendors' "2 to 4 times" a
-hand-flown FPV's 20 to 40 %, 3.2], night x0.5 (a day camera; x1.0 with thermal), fog x0.5, the
-speed bands as the FPV's. The truth side's three factor tables (`crates/murmur-contacts/src/
-damage.rs:249-285`) must learn the string: an unknown string falls through to factor 1.0 and gets
-no penalty at all (a finding: a test that every catalog guidance string is in all three tables).
+The HIV3 round's effect is abstract (decision 6): at its impact every contact inside the effect
+circle is flagged out of play, unless its scenario says it `persists`. No hit or damage figures, no
+new guidance string. The hand-flown FPV and the Javelin keep their catalog entries as they are.
 
 ### 3.4 The situation (`sim/situations/hiv3-range.toml`)
 
-- Fleet: the launcher UGV, `ugv_armed` (Javelin), `fpv` (hand-flown, `operator_video_day`), the
-  TRV-150; all forced stand-ins.
+- Fleet: the launcher UGV, `ugv_armed` (Javelin), `fpv` (the hand-flown one, as the catalog has
+  it), the TRV-150; all forced stand-ins.
 - Opening: the brief names the container and the range; the TRV-150 flies over the salvo's
   target and clears to at least 300 m [E] before the first strike (an orbit or patrol stand-in
   for stage 2's mark; it must be outside the keep-out at every strike, or the strike holds).
@@ -156,7 +158,8 @@ no penalty at all (a finding: a test that every catalog guidance string is in al
 
 `make check`, then one autoplay run of the situation (`make situation NAME=hiv3-range
 OPERATOR=autoplay AI=playbook`) read from its summary and audit log: every nomination signed by
-two, each release a weapon round in the ledger, each strike drawn, nothing scripted.
+two, each release a weapon round in the ledger, each strike applied at its impact, nothing
+scripted.
 
 ## 4. The salvo (stage 1, decision rules 34)
 
@@ -172,7 +175,7 @@ burst". The salvo extends it to rounds that fly. Gate `SALVO_SINCE` (34), built 
 - The weapon's catalog entry gains `launch_interval_s` (2 for the HIV3 [E]); a weapon without it
   cannot salvo (`rounds` > 1 refused, saying why).
 - The policy: `[rules.engage] max_rounds_per_plan`, standing 1, floor 1; a scenario raising it
-  lists it under `loosened` (decision 6). A nomination asking more is refused, naming the ceiling.
+  lists it under `loosened` (decision 7). A nomination asking more is refused, naming the ceiling.
 - The preview gives the plan's launch times (release, then every interval) and each round's
   strike time (launch plus its flight from the firing position, rules 20 and 28); the frozen plan
   and the picture token carry `rounds`, the interval and the ceiling, so a signer signs exactly
@@ -186,22 +189,23 @@ burst". The salvo extends it to rounds that fly. Gate `SALVO_SINCE` (34), built 
   its own strike time: target declared, identity at the bar, the plan's circle, deviation from the
   frozen plan, keep-outs at its strike (ours, protected tracks, lost contacts, silent vehicles'
   regions), the link, navigation, rounds left, the preload read back. A failing round is held,
-  logged with its reason (decision 8).
+  logged with its reason (decision 9).
 - **Each round has its own flight** (`Engagement.munition` becomes a list; the effect order and
-  the console's munition layer too), its own draw stream on the truth side (`effect:<intent>:
-  r<n>` [E: the name]), its own collateral draws within its blast radius, ours included.
+  the console's munition layer too) and its own effect at its impact on the truth side (abstract
+  for the HIV3 round; a weapon with figures would draw each round on its own stream,
+  `effect:<intent>:r<n>` [E: the name]).
 - **The fire ends** when the rounds asked for are out, the ledger is empty, the window closes,
   someone ceases, or the assessment says ceased or unknown (4.3). `engage.fire_ended` with the
   reason, as a gun's.
 - **Cease** is the gun's stop: any operator, at once, from the card, REST or the inbox; it stops
-  further launches. Rounds in flight go on (decision 7) and are drawn and assessed.
+  further launches. Rounds in flight go on (decision 8), strike and are assessed.
 
 ### 4.3 Assessment
 
 Observed from the **last impact**, not the last launch (a gun's runs from its last burst: its
 bursts have no flight). While rounds are in flight a target seen again is not a verdict. A target
-destroyed by round k leaves play; rounds k+1 and on strike where it was and draw against what is
-there (a miss; collateral as drawn): the card shows them as rounds that had nothing to strike.
+out of play after round k leaves the picture; rounds k+1 and on strike where it was and find
+nothing: the card shows them as rounds that had nothing to strike.
 
 ### 4.4 Audit, replay, tampers, scenarios
 
@@ -306,7 +310,7 @@ follow from these; the evaluation (section 8) is what Murmur adds.
 
 | stage | what | moves decisions | size [E] |
 |---|---|---|---|
-| 0 | catalog (`ugv_launcher`, `trv150`), the guidance string and its factors, weapons.md, spent strikers leave the world live, the `hiv3-range` situation (fleet, contacts, areas, links, policy, timeline, autoplay) | no | M |
+| 0 | catalog (`ugv_launcher` with an abstract round, `trv150`), spent strikers leave the world live, the `hiv3-range` situation (fleet, contacts, areas, links, policy, timeline, autoplay) | no | M |
 | 1 | the salvo: `rounds`, the policy ceiling, per-round releases and flights, holds, Cease, assessment from the last impact; audit, replay, tampers, scenarios, runner, console, MCP; the situation re-taken as one plan | rules 34 | L |
 | 2 | `transit` and `mark`; policy schema 9; the situation's drive-out and smoke | rules 34, flipped with stage 1 | M |
 | 3 | carried drones and a swarm strike: its own spec on docs/SWARMS.md | 35 or later | XL |
