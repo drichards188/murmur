@@ -2680,7 +2680,7 @@ async fn an_old_manifest_has_no_swarms_anywhere() {
     assert!(inbox.get("swarm_alerts").is_none(), "{inbox}");
     assert!(inbox["counts"].get("swarm_alerts").is_none());
     let alerts: Vec<_> = (1..=6).map(lost).collect();
-    assert!(crate::swarms::inbox_view(&r.world, &alerts).is_none());
+    assert!(crate::swarms::inbox_view(&r.world, &alerts, &[], false).is_none());
     let api = get_json(&r, "/api/swarms").await;
     assert_eq!(api["swarms"], json!([]));
     let tool = r.ok(&planner(), "get_swarms", json!({})).await;
@@ -2745,7 +2745,7 @@ async fn a_swarm_manifest_names_members_and_folds_their_alerts() {
     // three of PICKET-1's four lose their link (the threshold is 3), RELAY-1's one and the
     // vehicle in no swarm too: one swarm alert, and those three alerts point at it
     let alerts: Vec<_> = [1, 2, 3, 5, 6].into_iter().map(lost).collect();
-    let (list, folds) = crate::swarms::inbox_view(&r.world, &alerts).expect("swarms");
+    let (list, folds) = crate::swarms::inbox_view(&r.world, &alerts, &[], false).expect("swarms");
     assert_eq!(folds.len(), 1, "{folds:?}");
     assert_eq!(folds[0].id, "swarm:PICKET-1:lost_link");
     assert_eq!((folds[0].count, folds[0].of), (3, 4));

@@ -65,7 +65,7 @@ pub mod blocking;
 mod civil;
 pub mod engage;
 mod failsafe;
-mod groups;
+pub mod groups;
 pub mod ident;
 pub mod identify;
 mod message;
@@ -3075,7 +3075,8 @@ impl Decision {
         // swarms (murmur-z07i): many members' alerts of one kind fold into one card, a view
         // only (each member's alert stays, marked `folded_into`); a manifest without swarms
         // leaves the inbox as it was
-        let (alerts, swarm_alerts) = match crate::swarms::inbox_view(&self.world, &alerts) {
+        let groups = self.group_views();
+        let (alerts, swarm_alerts) = match crate::swarms::inbox_view(&self.world, &alerts, &groups, self.rules.group_orders()) {
             Some((list, folds)) => (json!(list), Some(folds)),
             None => (json!(alerts), None),
         };

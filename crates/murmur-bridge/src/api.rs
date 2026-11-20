@@ -559,7 +559,7 @@ async fn inbox(State(app): State<App>) -> Response {
 /// readiness, lost links, low batteries, centroid, hull and tasks (`crate::swarms`), made at
 /// most once a second. Read-only, never logged.
 async fn swarms(State(app): State<App>) -> Response {
-    let v = crate::swarms::api_json(&app.world, app.decision.reserve_pct());
+    let v = crate::swarms::api_json(&app.world, app.decision.reserve_pct(), || app.decision.group_views());
     Json(v.as_ref().clone()).into_response()
 }
 

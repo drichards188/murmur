@@ -468,7 +468,7 @@ pub fn nominations(mcp: &Mcp, agent: &AgentId, mine: bool, state: Option<&str>) 
 /// `get_swarms` (murmur-z07i): `/api/swarms`'s summary, narrowed to `ids`, members' uids and
 /// hulls only when asked for.
 pub fn swarms(mcp: &Mcp, ids: Option<&[String]>, members: bool, hull: bool) -> Value {
-    let all = crate::swarms::api_json(&mcp.world, mcp.decision.reserve_pct());
+    let all = crate::swarms::api_json(&mcp.world, mcp.decision.reserve_pct(), || mcp.decision.group_views());
     let t_ms = all["t"].as_f64().unwrap_or(0.0);
     let list: Vec<Value> = all["swarms"]
         .as_array()

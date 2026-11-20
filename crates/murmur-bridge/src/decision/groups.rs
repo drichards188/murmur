@@ -11,10 +11,57 @@
 //! Beside the tick, the shares a re-form due would move members to are laid out outside the
 //! decision lock and their terrain fetched ([`Decision::prefetch_groups`]), so the tick's step
 //! judges them from the cache.
+//!
+//! The console's view of each group in force (`/api/swarms`' `groups`, [`GroupView`]) and its two
+//! alerts, `under_strength` and `reform_refused` (`crate::swarms::group_alerts`), are display
+//! only: never logged, never read by a decision.
 
-use murmur_decide::{Clock, IntentId, Order, Routed, Task, Uid as DUid, WorldSnapshot};
+use std::collections::BTreeMap;
 
+use murmur_decide::{Clock, IntentId, Order, Routed, State, Task, Uid as DUid, WorldSnapshot};
+use serde::Serialize;
+
+use super::snapshot::bridge_uid;
 use super::{Core, Decision, DecisionError, engine_err};
+use crate::vehicle::Uid;
+
+/// One group order in force as the console shows it (display only).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GroupView {
+    pub intent: u64,
+    pub kind: &'static str,
+    /// The proposal's label (`group.swarm`), if it gave one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swarm: Option<String>,
+    pub state: State,
+    /// The vehicles the order named.
+    pub selection: usize,
+    /// The members it sent (each with a member order).
+    pub members: Vec<Uid>,
+    pub on_share: usize,
+    /// Members on its layout that dropped, and why.
+    pub dropped: BTreeMap<Uid, String>,
+    /// Members a re-form left out that are back, waiting to rejoin at the next re-form.
+    pub back: Vec<Uid>,
+    /// Members a newer order took.
+    pub taken: usize,
+    /// On their shares and back, against the minimum (its own less those taken).
+    pub strength: usize,
+    pub min: u32,
+    pub reforming: bool,
+    pub reforms: u32,
+    pub suspended: bool,
+    /// When it last re-formed, was refused a re-form or was suspended (wall clock, seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_t: Option<f64>,
+    /// Why its last re-form was refused, while that stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+}
+
+fn kind_name(t: &Task) -> &'static str {
+    t.kind().as_str()
+}
 
 impl Decision {
     /// Rules 34: an approved group order out as its member orders (the engine creates each under
@@ -114,5 +161,49 @@ impl Decision {
                 }
             }
         }
+    }
+
+    /// Rules 34: each group order in force as the console shows it (display only: `/api/swarms`'
+    /// `groups` and the inbox's group alerts); none under older rules.
+    pub fn group_views(&self) -> Vec<GroupView> {
+        if !self.rules.group_orders() {
+            return Vec::new();
+        }
+        let core = self.lock();
+        if core.engine.forces().is_empty() {
+            return Vec::new();
+        }
+        let world = self.snapshot();
+        let mut out = Vec::new();
+        for (gid, force) in core.engine.forces() {
+            let Some(g) = core.engine.intent(*gid) else { continue };
+            let Some(gs) = g.spec().group() else { continue };
+            let Some((st, cause)) = core.engine.group_standing(*gid, &world) else { continue };
+            let bu = |u: &DUid| bridge_uid(u);
+            let mut members: Vec<Uid> = force.members.keys().filter_map(bu).collect();
+            members.sort_unstable();
+            let mut back: Vec<Uid> = cause.back.keys().filter_map(bu).collect();
+            back.sort_unstable();
+            out.push(GroupView {
+                intent: gid.0,
+                kind: kind_name(&g.spec().task),
+                swarm: gs.swarm.clone(),
+                state: g.state(),
+                selection: g.spec().uids.len(),
+                members,
+                on_share: st.on_share.len(),
+                dropped: st.dropped.iter().filter_map(|(u, d)| Some((bu(u)?, d.why.clone()))).collect(),
+                back,
+                taken: st.taken.len(),
+                strength: st.on_share.len() + cause.back.len(),
+                min: murmur_decide::group::min_in_force(gs, st.taken.len()),
+                reforming: gs.reform == Some(true),
+                reforms: force.seq,
+                suspended: force.suspended,
+                last_t: force.last_attempt.map(|t| t.0 as f64 / 1000.0),
+                refused: force.refused_why.clone(),
+            });
+        }
+        out
     }
 }

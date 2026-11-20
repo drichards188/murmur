@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::decision::alerts::{Alert, Severity};
+pub use crate::decision::groups::GroupView;
 use crate::tasks::{OpSnapshot, OpState};
 use crate::vehicle::Uid;
 use crate::world::World;
@@ -29,6 +30,11 @@ pub const FOLD_MIN: usize = 3;
 pub const FOLD_SHARE: f64 = 0.05;
 /// Role of a swarm the manifest's `swarms` list does not declare (only its members name it).
 const UNDECLARED_ROLE: &str = "other";
+/// Rules 34 (docs/SWARMS.md decision 5): the alert kinds that ask nothing about one vehicle, folded
+/// into its swarm's card from the first member; every other kind keeps its own card (struck,
+/// damaged, may be running, restore pending, a way home across land or a minefield, identify
+/// outcomes, a loss).
+pub const ROUTINE: &[&str] = &["lost_link", "left_task", "not_moving", "task_failed", "low_battery"];
 
 /// One swarm as the manifest declares it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -189,8 +195,10 @@ fn on_task(op: &OpSnapshot) -> bool {
     !matches!(op.state, OpState::Failed | OpState::Superseded | OpState::Requeued | OpState::Unconfirmed)
 }
 
-/// Every swarm's summary, in the manifest's order, with its members and hull.
-pub fn summary(sw: &Swarms, members: &HashMap<Uid, Member>, ops: &[OpSnapshot], reserve_pct: f64) -> Vec<Value> {
+/// Every swarm's summary, in the manifest's order, with its members and hull; rules 34: and the
+/// group orders in force over its members (`groups`, only when there is one), each with its
+/// strength against its minimum.
+pub fn summary(sw: &Swarms, members: &HashMap<Uid, Member>, ops: &[OpSnapshot], reserve_pct: f64, groups: &[GroupView]) -> Vec<Value> {
     let op_of: HashMap<Uid, &OpSnapshot> = ops.iter().filter(|o| on_task(o)).map(|o| (o.uid, o)).collect();
     sw.defs
         .iter()
@@ -228,7 +236,27 @@ pub fn summary(sw: &Swarms, members: &HashMap<Uid, Member>, ops: &[OpSnapshot], 
             let hull: Vec<[f64; 2]> = hull(&pts).into_iter().map(|[x, y]| [round6(x), round6(y)]).collect();
             let mut tasks: Vec<((u64, &str), usize)> = tasks.into_iter().collect();
             tasks.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            json!({
+            let in_swarm: Vec<Value> = groups
+                .iter()
+                .filter_map(|g| {
+                    let here = g.members.iter().filter(|u| sw.of.get(u).is_some_and(|s| *s == d.id)).count();
+                    (here > 0).then(|| {
+                        json!({
+                            "intent": g.intent,
+                            "kind": g.kind,
+                            "members_here": here,
+                            "strength": g.strength,
+                            "min": g.min,
+                            "dropped": g.dropped.len(),
+                            "back": g.back.len(),
+                            "reforms": g.reforms,
+                            "suspended": g.suspended,
+                            "refused": g.refused,
+                        })
+                    })
+                })
+                .collect();
+            let mut v = json!({
                 "id": d.id,
                 "name": d.name,
                 "role": d.role,
@@ -245,7 +273,11 @@ pub fn summary(sw: &Swarms, members: &HashMap<Uid, Member>, ops: &[OpSnapshot], 
                     .into_iter()
                     .map(|((intent, kind), count)| json!({ "intent": intent, "kind": kind, "count": count }))
                     .collect::<Vec<_>>(),
-            })
+            });
+            if !in_swarm.is_empty() {
+                v["groups"] = json!(in_swarm);
+            }
+            v
         })
         .collect()
 }
@@ -273,21 +305,30 @@ impl Cache {
 /// [...]}`, at most once a second. `low_battery` counts members below the policy's reserve
 /// (`[rules] reserve_pct`); `ready` members heard, not lost and navigation-ready; `unheard`
 /// members never heard; `tasks` the latest order of each member on one (intent and kind).
-pub fn api_json(world: &World, reserve_pct: f64) -> Arc<Value> {
+///
+/// Rules 34: `groups`, each group order in force ([`GroupView`]: its members on their shares,
+/// dropped and back, its strength against its minimum, its re-forms, whether it is suspended or
+/// its last re-form refused), only when there is one; and each swarm's own (`summary`).
+pub fn api_json(world: &World, reserve_pct: f64, groups: impl FnOnce() -> Vec<GroupView>) -> Arc<Value> {
     world.swarm_cache.get(|| {
         crate::perf::time("swarms", || {
             let sw = world.manifest().swarms.clone();
+            let groups = groups();
             let list = if sw.any() {
-                summary(&sw, &members_now(world), &world.tasks.current_ops(), reserve_pct)
+                summary(&sw, &members_now(world), &world.tasks.current_ops(), reserve_pct, &groups)
             } else {
                 Vec::new()
             };
-            json!({
+            let mut v = json!({
                 "t": (crate::clock::wall() * 1000.0).round() as i64,
                 "hull_closed": false,
                 "low_battery_below_pct": reserve_pct,
                 "swarms": list,
-            })
+            });
+            if !groups.is_empty() {
+                v["groups"] = json!(groups);
+            }
+            v
         })
     })
 }
@@ -320,9 +361,20 @@ pub fn fold_threshold(of: usize) -> usize {
     FOLD_MIN.max((of as f64 * FOLD_SHARE).ceil() as usize)
 }
 
+/// Members a swarm of `of` needs holding an alert of `kind` before they fold; None: never folded.
+/// Rules 34 (`group_orders`, decision 5): a routine kind from the first member, any other never;
+/// before, every kind at [`fold_threshold`].
+pub fn fold_need(kind: &str, of: usize, group_orders: bool) -> Option<usize> {
+    if !group_orders {
+        return Some(fold_threshold(of));
+    }
+    ROUTINE.contains(&kind).then_some(1)
+}
+
 /// The swarm alerts for `alerts` and, for each alert in order, the swarm alert it folds into.
-/// `cause` names a lost link's cause (the emulator's), if known.
-pub fn fold(alerts: &[Alert], sw: &Swarms, cause: &dyn Fn(Uid) -> Option<String>) -> (Vec<SwarmAlert>, Vec<Option<String>>) {
+/// `cause` names a lost link's cause (the emulator's), if known; `group_orders`: a run under rules
+/// 34, which folds by [`fold_need`].
+pub fn fold(alerts: &[Alert], sw: &Swarms, cause: &dyn Fn(Uid) -> Option<String>, group_orders: bool) -> (Vec<SwarmAlert>, Vec<Option<String>>) {
     // (swarm, kind) -> uid -> (earliest since_t, most severe)
     type ByMember = BTreeMap<Uid, (f64, Severity)>;
     let mut groups: BTreeMap<(&str, &'static str), ByMember> = BTreeMap::new();
@@ -335,7 +387,7 @@ pub fn fold(alerts: &[Alert], sw: &Swarms, cause: &dyn Fn(Uid) -> Option<String>
     let mut out = Vec::new();
     for ((swarm, kind), by) in groups {
         let of = sw.count(swarm);
-        let need = fold_threshold(of);
+        let Some(need) = fold_need(kind, of, group_orders) else { continue };
         if by.len() < need {
             continue;
         }
@@ -381,18 +433,86 @@ pub fn fold(alerts: &[Alert], sw: &Swarms, cause: &dyn Fn(Uid) -> Option<String>
     (out, folded)
 }
 
+/// Rules 34 (decision 5): the two group alerts, one per group order in force at most, high, display
+/// only: `under_strength` (suspended below its minimum: it re-forms no more; the person re-forms
+/// it or orders anew) and `reform_refused` (its last re-form would have left the envelope or
+/// raised the tier: nothing moved). Each card is the group's (`group:<intent>:<kind>`), named by
+/// its label, else the swarm most of its members are in, else the order.
+pub fn group_alerts(groups: &[GroupView], sw: &Swarms) -> Vec<SwarmAlert> {
+    let mut out = Vec::new();
+    for g in groups {
+        let name = g.swarm.clone().unwrap_or_else(|| {
+            let mut n: BTreeMap<&str, usize> = BTreeMap::new();
+            for u in &g.members {
+                if let Some(s) = sw.of.get(u) {
+                    *n.entry(s.as_str()).or_default() += 1;
+                }
+            }
+            n.into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+                .map_or_else(|| format!("group {}", g.intent), |(s, _)| s.to_string())
+        });
+        let mut causes: BTreeMap<String, usize> = BTreeMap::new();
+        for why in g.dropped.values() {
+            *causes.entry(why.split(':').next().unwrap_or("").to_string()).or_default() += 1;
+        }
+        let dropped: Vec<Uid> = g.dropped.keys().copied().collect();
+        let since_t = g.last_t.unwrap_or(0.0);
+        let why = causes.iter().map(|(c, n)| format!("{n} {c}")).collect::<Vec<_>>().join(", ");
+        if g.suspended {
+            out.push(SwarmAlert {
+                id: format!("group:{}:under_strength", g.intent),
+                swarm: name.clone(),
+                kind: "under_strength",
+                severity: Severity::High,
+                count: dropped.len(),
+                of: g.selection,
+                uids: dropped.clone(),
+                causes: causes.clone(),
+                since_t,
+                detail: format!(
+                    "{name} ({} order {}): below its minimum, {} of {} on their shares or back ({} dropped: {why}); it re-forms no more: re-form it or order anew",
+                    g.kind, g.intent, g.strength, g.min, dropped.len()
+                ),
+            });
+        } else if let Some(r) = &g.refused {
+            out.push(SwarmAlert {
+                id: format!("group:{}:reform_refused", g.intent),
+                swarm: name.clone(),
+                kind: "reform_refused",
+                severity: Severity::High,
+                count: dropped.len(),
+                of: g.selection,
+                uids: dropped,
+                causes,
+                since_t,
+                detail: format!("{name} ({} order {}): re-form refused, nothing moved: {r}", g.kind, g.intent),
+            });
+        }
+    }
+    out
+}
+
 /// The inbox's alerts with each folded member's `folded_into`, and the swarm alerts; None when
-/// the manifest has no swarms (the inbox then is as it was).
-pub fn inbox_view(world: &World, alerts: &[Alert]) -> Option<(Vec<Value>, Vec<SwarmAlert>)> {
+/// the manifest has no swarms and no group order raises an alert (the inbox then is as it was).
+/// Rules 34 (`groups`, `group_orders`): folded by [`fold_need`], the groups' alerts first.
+pub fn inbox_view(world: &World, alerts: &[Alert], groups: &[GroupView], group_orders: bool) -> Option<(Vec<Value>, Vec<SwarmAlert>)> {
     let sw = world.manifest().swarms.clone();
+    let mut group = group_alerts(groups, &sw);
     if !sw.any() {
-        return None;
+        if group.is_empty() {
+            return None;
+        }
+        let list = alerts.iter().map(|a| serde_json::to_value(a).unwrap_or(Value::Null)).collect();
+        return Some((list, group));
     }
     let cells: HashMap<Uid, Arc<crate::vehicle::VehicleCell>> =
         world.vehicles().into_iter().map(|c| (c.uid, c)).collect();
     let mono = crate::clock::mono();
     let cause = |uid: Uid| cells.get(&uid).and_then(|c| c.link_snapshot(mono).emu.and_then(|e| e.cause));
-    let (swarm_alerts, folded) = fold(alerts, &sw, &cause);
+    let (swarm_alerts, folded) = fold(alerts, &sw, &cause, group_orders);
+    group.extend(swarm_alerts);
+    let swarm_alerts = group;
     let list = alerts
         .iter()
         .zip(folded)
@@ -493,7 +613,7 @@ mod tests {
             op(104, 9, TaskKind::Patrol, OpState::Failed),
             op(5, 7, TaskKind::Orbit, OpState::Active), // PICKET-1's
         ];
-        let all = summary(&sw, &members, &ops, 20.0);
+        let all = summary(&sw, &members, &ops, 20.0, &[]);
         let relay = all.iter().find(|s| s["id"] == "RELAY-1").expect("relay");
         assert_eq!(relay["count"], 10);
         assert_eq!(relay["members"], json!((101..=110).collect::<Vec<u64>>()));
@@ -534,6 +654,72 @@ mod tests {
         }
     }
 
+    /// Rules 34 (docs/SWARMS.md decision 5): a routine kind folds into its swarm's card from the
+    /// first member; a kind that asks for an act on one vehicle never folds; under rules 33 every
+    /// kind folds at three or 5 % as before.
+    #[test]
+    fn under_rules_34_routine_kinds_fold_from_the_first_member_and_the_rest_never() {
+        let sw = Swarms::parse(&manifest());
+        let alerts = vec![
+            alert(1, "lost_link", Severity::Medium, 10.0),
+            alert(2, "struck", Severity::High, 11.0),
+            alert(3, "struck", Severity::High, 12.0),
+            alert(4, "struck", Severity::High, 13.0),
+            alert(5, "struck", Severity::High, 14.0),
+            alert(6, "struck", Severity::High, 15.0),
+        ];
+        let (folds, into) = fold(&alerts, &sw, &|_| None, true);
+        assert_eq!(folds.len(), 1, "{folds:?}");
+        assert_eq!((folds[0].kind, folds[0].count), ("lost_link", 1));
+        assert_eq!(into[0].as_deref(), Some("swarm:PICKET-1:lost_link"));
+        assert!(into[1..].iter().all(Option::is_none), "a struck member keeps its own card");
+        assert_eq!(fold_need("may_be_running", 100, true), None);
+        assert_eq!(fold_need("task_failed", 100, true), Some(1));
+        let (folds, _) = fold(&alerts, &sw, &|_| None, false);
+        assert_eq!(folds.iter().map(|f| f.kind).collect::<Vec<_>>(), ["struck"], "rules 33: five struck fold, one lost link does not");
+    }
+
+    fn group(suspended: bool, refused: Option<&str>) -> GroupView {
+        GroupView {
+            intent: 7,
+            kind: "orbit",
+            swarm: None,
+            state: murmur_decide::State::Done,
+            selection: 20,
+            members: (1..=20).collect(),
+            on_share: 8,
+            dropped: (9..=20).map(|u| (u, "silent: no position for 31 s".to_string())).collect(),
+            back: Vec::new(),
+            taken: 0,
+            strength: 8,
+            min: 16,
+            reforming: true,
+            reforms: 0,
+            suspended,
+            last_t: Some(100.0),
+            refused: refused.map(str::to_string),
+        }
+    }
+
+    /// Rules 34: one card per group at most, high: under strength once suspended (it re-forms no
+    /// more), a refused re-form while that stands; named by the swarm most members are in.
+    #[test]
+    fn a_group_raises_under_strength_or_a_refused_re_form_once() {
+        let sw = Swarms::parse(&manifest());
+        let a = group_alerts(&[group(true, None)], &sw);
+        assert_eq!(a.len(), 1);
+        assert_eq!((a[0].id.as_str(), a[0].kind, a[0].severity, a[0].count, a[0].of), ("group:7:under_strength", "under_strength", Severity::High, 12, 20));
+        assert_eq!(a[0].swarm, "PICKET-1");
+        assert!(a[0].detail.contains("8 of 16") && a[0].detail.contains("12 silent"), "{}", a[0].detail);
+        let a = group_alerts(&[group(false, Some("sky-5: would raise the tier"))], &sw);
+        assert_eq!((a.len(), a[0].kind), (1, "reform_refused"));
+        assert!(a[0].detail.ends_with("sky-5: would raise the tier"), "{}", a[0].detail);
+        assert!(group_alerts(&[group(false, None)], &sw).is_empty(), "nothing to ask");
+        // no swarm in the manifest: the group's own name
+        let a = group_alerts(&[group(true, None)], &Swarms::default());
+        assert_eq!(a[0].swarm, "group 7");
+    }
+
     #[test]
     fn the_threshold_is_three_or_five_percent() {
         assert_eq!(fold_threshold(2), 3);
@@ -554,7 +740,7 @@ mod tests {
         alerts.extend((101..=103).map(|u| alert(u, "not_moving", if u == 102 { Severity::High } else { Severity::Medium }, 10.0 * u as f64)));
         alerts.push(alert(120, "lost_link", Severity::High, 1.0));
         let cause = |u: Uid| (u <= 3).then(|| "jam".to_string());
-        let (folds, into) = fold(&alerts, &sw, &cause);
+        let (folds, into) = fold(&alerts, &sw, &cause, false);
         assert_eq!(folds.len(), 2, "{folds:?}");
         let lost = folds.iter().find(|f| f.kind == "lost_link").expect("lost");
         assert_eq!(lost.id, "swarm:PICKET-1:lost_link");
@@ -582,7 +768,7 @@ mod tests {
         // one member's two alerts of one kind count once
         let mut twice = alerts[..2].to_vec();
         twice.push(alert(1, "lost_link", Severity::High, 0.0));
-        let (folds, into) = fold(&twice, &sw, &cause);
+        let (folds, into) = fold(&twice, &sw, &cause, false);
         assert!(folds.is_empty() && into.iter().all(Option::is_none));
     }
 
@@ -590,7 +776,7 @@ mod tests {
     fn without_swarms_nothing_folds() {
         let sw = Swarms::default();
         let alerts: Vec<Alert> = (1..=50).map(|u| alert(u, "lost_link", Severity::High, 1.0)).collect();
-        let (folds, into) = fold(&alerts, &sw, &|_| None);
+        let (folds, into) = fold(&alerts, &sw, &|_| None, false);
         assert!(folds.is_empty());
         assert!(into.iter().all(Option::is_none));
     }
