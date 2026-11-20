@@ -10,7 +10,8 @@
 //!   MURMUR_CONTACTS_SEED     overrides the scenario's seed
 //!   MURMUR_SIM_TOKEN         the stack's simulation-channel token (up.sh and the evaluation's
 //!                            runner generate one per stack): the bridge refuses truth without it
-//!   MURMUR_DAMAGE_FILE       where a strike's damage to our vehicles goes for the stand-ins
+//!   MURMUR_DAMAGE_FILE       where a strike's damage to our vehicles goes for the stand-ins,
+//!                            and a platform spent by its own effect, as destroyed
 //!                            (default $MURMUR_ROOT/sim/run/damage-<MURMUR_HTTP_PORT>.jsonl;
 //!                            murmur_standins::damage), emptied at the start
 //!   MURMUR_CONTACTS_PORT     this process's own API on 127.0.0.1 (orders to the nodes, what
@@ -371,10 +372,8 @@ async fn run() -> Result<(), String> {
 /// Our vehicles a strike hurt, to the stand-ins (murmur_standins::damage): one line each.
 fn hand_over(hurt: &[OursDamaged], t: f64, out: &mut File) {
     for h in hurt {
-        let Some(state) = murmur_standins::damage::State::parse(h.state.as_str()) else { continue };
-        let Ok(uid) = h.uid.parse::<u64>() else { continue };
-        let order = murmur_standins::damage::Order { uid, state, t, cause: h.cause.clone() };
-        println!("damage: our vehicle {uid} {} ({})", h.state.as_str(), h.cause);
+        let Some(order) = effect::damage_order(h, t) else { continue };
+        println!("damage: our vehicle {} {} ({})", order.uid, h.state.as_str(), h.cause);
         if let Ok(line) = serde_json::to_string(&order) {
             let _ = writeln!(out, "{line}");
             let _ = out.flush();
@@ -398,6 +397,12 @@ fn land(e: &EffectNotice, movers: &mut [Mover], now: f64, ctx: &DamageCtx, out: 
         );
     }
     hand_over(&r.ours_damaged, now, out);
+    // a one-way platform is the weapon: it leaves the world at its effect, hit or miss, as a
+    // destroyed vehicle of ours does (the stand-ins go silent, SITL's watcher stops its process),
+    // at the moment the headless simulator takes it out (bd murmur-ritd)
+    if let Some(spent) = effect::spent_platform(e) {
+        hand_over(std::slice::from_ref(&spent), now, out);
+    }
     println!(
         "effect (intent {}): {} contact(s) inside {:.0} m, intended {} {}, collateral {} contact(s) and {} of ours",
         r.intent,

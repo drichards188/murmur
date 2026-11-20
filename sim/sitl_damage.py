@@ -19,7 +19,9 @@ starts, so they act out the same records as far as ArduPilot SITL allows:
 - **destroyed**: silent. The SITL process is stopped (SIGSTOP), so it neither steps, sends nor
   answers, as a destroyed stand-in; its sockets stay open, so the link emulator and the bridge
   meet silence and no error (a killed process would refuse the emulator's datagrams and drop the
-  tidewater driver's TCP link), and sim/swarm.py continues it at shutdown so it can exit.
+  tidewater driver's TCP link), and sim/swarm.py continues it at shutdown so it can exit. A
+  platform spent by its own effect (a Switchblade or a Magura flown in SITL) comes as destroyed at
+  its effect, hit or miss (bd murmur-ritd), and goes silent the same way.
 
 A damaged vehicle that can still talk says so in the stand-in's words, a STATUSTEXT `DAMAGE
 mobility: propulsion lost` or `DAMAGE firepower: weapons out of action` (severity CRITICAL), at

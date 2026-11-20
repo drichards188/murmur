@@ -1023,7 +1023,10 @@ scenario says `persists`); a miss touches nothing inside the radius. A platform 
 says `expended_by_effect` (Switchblade, FPV) leaves the world at the effect with
 `spend_expended` (default true): its stand-in stops stepping, sends nothing and answers nothing,
 so its link goes silent; with `survives_miss` one whose effect missed flies on, and the bridge's
-rules 15 alert (spent, still heard) follows once the engagement is over. Every effect, its draw,
+rules 15 alert (spent, still heard) follows once the engagement is over. Live runs do the same at
+the same moment, hit or miss (bd murmur-ritd: the bridge's effect says `expended_by_effect`, and
+the contacts process hands the platform to the stand-ins or SITL's watcher as destroyed); live has
+no `survives_miss`. Every effect, its draw,
 whether it hit and whether the platform left are in truth's `effects` and the record's
 `effects.applied` (evaluation only: nothing of it reaches the bridge's API or the MCP tools).
 Without `effects` an effect is applied as the contacts process applies it and the platform

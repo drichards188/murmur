@@ -28,6 +28,12 @@
 //! Rules 20 (a munition in flight): an effect may come with its impact time (`impact_t`, on this
 //! process's scenario clock); it is held ([`InFlight`]) and applied at the effect point once
 //! that time has come, to whatever is inside the radius then. Without one it applies at once.
+//!
+//! A platform spent by its own effect (bd murmur-ritd; docs/SALVO.md section 7): when the bridge
+//! says the engaging platform is its own weapon (`expended_by_effect`), the contacts process hands
+//! it to the vehicle simulation as destroyed when it applies the effect, hit or miss
+//! ([`spent_platform`]), so it leaves the world there as it does headless. Nothing here, nor in
+//! the truth log's record, changes with it.
 
 use murmur_standins::geo::distance_m;
 use serde::{Deserialize, Serialize};
@@ -131,6 +137,12 @@ pub struct EffectNotice {
     /// (`effect:<intent>:<burst>`). None for any other weapon (`effect:<intent>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst: Option<u32>,
+    /// The engaging platform is spent by its own effect (its catalog's `expended_by_effect`, as
+    /// the bridge's release picture has it: an FPV, a Switchblade, a Magura): it is the weapon,
+    /// and the live vehicle simulation takes it out of the world at the effect
+    /// ([`spent_platform`]), as the headless simulator does (bd murmur-ritd).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expended_by_effect: bool,
 }
 
 impl EffectNotice {
@@ -222,6 +234,35 @@ pub struct EffectApplied {
     /// Rules 26: a gun's burst it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst: Option<u32>,
+}
+
+/// The engaging platform of `e`, when it is spent by its own effect
+/// ([`EffectNotice::expended_by_effect`]), as one of ours destroyed by it: what the contacts
+/// process hands the vehicle simulation through the damage file at the effect, hit or miss, so
+/// its stand-in goes silent and its SITL process stops, as a destroyed vehicle of ours does
+/// (murmur_standins::damage, sim/sitl_damage.py). The headless simulator takes the same platform
+/// out of its fleet at the same moment (crates/murmur-headless `sim/contacts.rs`, its effects'
+/// default `spend_expended`). From the C2's seat it is then silent, and decision rules 30 presume
+/// it lost on its spent mark until a person confirms it. A platform that survives its own effect
+/// (`magura_pre_loadout`) is not spent by it: none.
+pub fn spent_platform(e: &EffectNotice) -> Option<OursDamaged> {
+    if !e.expended_by_effect {
+        return None;
+    }
+    Some(OursDamaged {
+        uid: e.platform.clone()?,
+        state: DamageState::Destroyed,
+        cause: format!("spent by its own effect (intent {})", e.intent),
+    })
+}
+
+/// One of ours hurt at scenario time `t` (unix s) as the line the contacts process appends to the
+/// damage file for the vehicle simulation (murmur_standins::damage): none for a state that
+/// changes nothing (`undamaged`) or a uid that is not a vehicle's number.
+pub fn damage_order(h: &OursDamaged, t: f64) -> Option<murmur_standins::damage::Order> {
+    let state = murmur_standins::damage::State::parse(h.state.as_str())?;
+    let uid = h.uid.parse::<u64>().ok()?;
+    Some(murmur_standins::damage::Order { uid, state, t, cause: h.cause.clone() })
 }
 
 /// Apply one effect at scenario time `now` (unix s), abstractly: every contact inside the radius
@@ -533,6 +574,7 @@ mod tests {
             munition: None,
             weapon: None,
             burst: None,
+            expended_by_effect: false,
         };
         let r = apply(&e, &mut movers, 101.0);
         assert!(r.target_inside);
@@ -565,6 +607,7 @@ mod tests {
             munition: None,
             weapon: None,
             burst: None,
+            expended_by_effect: false,
         }
     }
 
@@ -905,5 +948,53 @@ mod tests {
         for k in ["damage", "weapon", "ours_damaged"] {
             assert!(!json.contains(k), "{k} in {json}");
         }
+    }
+
+    /// bd murmur-ritd (docs/SALVO.md 7): an FPV's strike, as the bridge sends it, says the FPV is
+    /// spent by it; the contacts process hands the FPV to the vehicle simulation as destroyed, hit
+    /// or miss, in the damage file's line, which the stand-ins read as silence. The FPV is still
+    /// never its own collateral, and the truth record is the same with the flag as without. A
+    /// platform that survives its own effect (no flag: `magura_pre_loadout`) stays in the world.
+    #[test]
+    fn a_platform_spent_by_its_own_effect_leaves_the_world_at_it() {
+        let fpv = |boat: serde_json::Value| -> EffectNotice {
+            serde_json::from_value(serde_json::json!({
+                "intent": 2, "track": "T-0001", "target_contact": "boat", "t": 100.0,
+                "point": [-122.4950, 37.8120], "radius_m": 75.0, "platform": "2",
+                "ours": [{ "uid": "1", "lon": -122.4850, "lat": 37.8130 }],
+                "weapon": { "name": "PG-7VL warhead (FPV)", "kind": "self", "guidance": "operator_video_day",
+                            "warhead": { "class": "heat", "mass_kg": 2.6 }, "max_range_m": 10000.0,
+                            "effects": { "small_fast_boat": boat } },
+                "expended_by_effect": true,
+            }))
+            .expect("the bridge's notice")
+        };
+        for (figs, hit) in [(serde_json::json!({ "p_hit": 1.0, "p_kill": 1.0 }), true), (serde_json::json!({ "p_hit": 0.0 }), false)] {
+            let e = fpv(figs);
+            let mut movers = scene();
+            let r = apply_with(&e, &mut movers, 101.0, Some(&CTX));
+            assert_eq!(target(&r).hit, hit);
+            assert!(r.ours_damaged.iter().all(|o| o.uid != "2"), "never its own collateral: {r:?}");
+            let spent = spent_platform(&e).expect("spent, hit or miss");
+            assert_eq!((spent.uid.as_str(), spent.state), ("2", DamageState::Destroyed));
+            assert_eq!(spent.cause, "spent by its own effect (intent 2)");
+            // the line the contacts process appends, as the stand-ins read it: silent from now on
+            let order = damage_order(&spent, 101.0).expect("a line");
+            let line = format!("{}\n", serde_json::to_string(&order).expect("json"));
+            let board = murmur_standins::damage::Board::default();
+            murmur_standins::damage::read_into(&board, &line, 0);
+            assert_eq!(board.of(2), vec![murmur_standins::damage::State::Destroyed]);
+            // the truth log's record is the same with the flag as without it
+            let mut again = scene();
+            let plain = apply_with(&EffectNotice { expended_by_effect: false, ..e.clone() }, &mut again, 101.0, Some(&CTX));
+            assert_eq!(serde_json::to_string(&r).expect("json"), serde_json::to_string(&plain).expect("json"));
+        }
+        // without the flag (a platform that survives its effect, or no platform named): nothing
+        let e = fpv(serde_json::json!({ "p_hit": 1.0 }));
+        assert!(spent_platform(&EffectNotice { expended_by_effect: false, ..e.clone() }).is_none());
+        assert!(spent_platform(&EffectNotice { platform: None, ..e.clone() }).is_none());
+        // and a notice without it reads as before (the bridge's older answers, every other weapon)
+        let json = serde_json::to_string(&EffectNotice { expended_by_effect: false, ..e }).expect("json");
+        assert!(!json.contains("expended_by_effect"), "{json}");
     }
 }

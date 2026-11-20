@@ -1843,8 +1843,10 @@ impl Tracks {
         lock(&self.inner).tracks.contains_key(id)
     }
 
-    /// An engagement's abstract effect, for the contacts process (see the module docs).
-    pub fn queue_effect(&self, e: &murmur_decide::EffectOrder, ours: Vec<Value>) {
+    /// An engagement's abstract effect, for the contacts process (see the module docs);
+    /// `expended_by_effect`: its platform is spent by it (the catalog's `expended_by_effect`), so
+    /// the truth side takes the platform out of the world at the effect (bd murmur-ritd).
+    pub fn queue_effect(&self, e: &murmur_decide::EffectOrder, ours: Vec<Value>, expended_by_effect: bool) {
         let mut inner = lock(&self.inner);
         let contact = inner
             .by_contact
@@ -1874,6 +1876,11 @@ impl Tracks {
         // rules 26: a gun's burst, drawn on its own stream
         if let Some(b) = e.burst {
             effect["burst"] = json!(b);
+        }
+        // a one-way platform is the weapon: the truth side takes it out of the world at the
+        // effect, as the headless simulator does (crates/murmur-contacts `effect::spent_platform`)
+        if expended_by_effect {
+            effect["expended_by_effect"] = json!(true);
         }
         inner.effects.push(effect);
     }

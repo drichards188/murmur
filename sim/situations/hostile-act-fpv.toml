@@ -74,7 +74,12 @@ WASP 1 is dispatched, takes off to 120 m, flies the 2.3 km to the point and is r
 m of it, some 2 minutes after the dispatch; the contacts' seed 108504 makes the strike a hit that
 destroys the boat for any intent from 1 to 6 (on the default run the nomination is intent 2); the
 boat leaves the picture and the assessment reads "ceased" some 15 s later, HUNTER 1 covering the
-point; WASP 1 is spent: the engine takes no order or nomination for it again.
+point; WASP 1 is spent: the engine takes no order or nomination for it again. It leaves the world
+at its strike, hit or miss (the contacts process hands its stand-in over as destroyed, as headless
+takes it out; bd murmur-ritd): silent, it is presumed lost on its spent mark some 12 s later and
+op-2 confirms it on autoplay (live: you, with engagement authority, in the Review list); until then
+it counts in the keep-outs where a drift could take it. (Live, 2026-11-20: released at 4:37, last
+heard 1 s later, presumed lost at 4:49, confirmed at 4:51, "ceased" at 4:53, HUNTER 1 covering.)
 What should not: a nomination before the declaration is confirmed (refused by target_declared), a
 signature by the proposer or by an agent, or an effect released with a neutral or one of ours
 inside the keep-out (the yacht, the container ship and the trawler from the wharf stay a kilometre
@@ -179,8 +184,8 @@ text = "An engagement names its weapon from the platform's loadout, or the engin
 [[watch]]
 at_s = 190
 headline = "After two signatures: takeoff, run in, strike, assessment"
-bullets = ["WASP 1 takes off and flies to the point; it is released only there, the picture still holding", "A hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors", "WASP 1 is spent by its own strike"]
-text = "After the second signature WASP 1 is dispatched: it takes off, climbs to 120 m and flies to the point. The engine releases the effect only when it is there and the picture still holds, every keep-out included. The hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors: our coverage of the point decides the assessment, ceased, persists or unknown. WASP 1 is spent by its own strike."
+bullets = ["WASP 1 takes off and flies to the point; it is released only there, the picture still holding", "A hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors", "WASP 1 is spent by its own strike: it goes silent, and a person with engagement authority confirms it lost"]
+text = "After the second signature WASP 1 is dispatched: it takes off, climbs to 120 m and flies to the point. The engine releases the effect only when it is there and the picture still holds, every keep-out included. The hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors: our coverage of the point decides the assessment, ceased, persists or unknown. WASP 1 is spent by its own strike: it goes silent, the engine presumes it lost, and an operator with engagement authority confirms that in the Review list (on autoplay op-2, scripted)."
 
 [[watch]]
 at_s = 600

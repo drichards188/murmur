@@ -18,6 +18,11 @@
 //! {"uid": 3, "state": "mobility", "t": 1781463600.0, "cause": "struck by ATGM-class missile (act-2)"}
 //! ```
 //!
+//! A platform spent by its own effect (an FPV, a Switchblade, a Magura: the catalog's
+//! `expended_by_effect`) comes through the same file as destroyed, at its effect, hit or miss
+//! (crates/murmur-contacts `effect::spent_platform`, bd murmur-ritd): it leaves the world there,
+//! as the headless simulator takes it out of its fleet.
+//!
 //! SITL vehicles act out the same file through `sim/sitl_damage.py` (docs/AUTONOMOUS-NODES.md
 //! section 10); the headless simulator acts it out in process.
 

@@ -3776,3 +3776,37 @@ docs/SCENARIO-SETTINGS.md. Chosen:
   every report states them.
 - Built as decision rules 33 in seven stages; v1 and v2 keep their meaning through a legacy
   supplement.
+
+## 2026-11-20: A spent one-way striker leaves the world live, as headless (murmur-ritd, murmur-4nik.1)
+
+The owner's decision 4 in docs/SALVO.md (section 7). Live, a platform spent by its own effect (an
+FPV, a Switchblade, a Magura: the catalog's `expended_by_effect`) kept reporting after its strike,
+because the effect excludes its platform and the vehicle simulation acted out only the damage the
+truth side handed it; the headless simulator took it out of its fleet at the effect. So a live run
+showed a munition flying on, its camera counted in the assessment for as long as the assessment
+looked ("2:eo_ir 97 m" on the FPV run of 2026-11-03), and the SPENT, STILL HEARD alert offered an
+un-spend of a wreck. Chosen:
+
+- **The world, not the rules, changes.** The bridge's effect on the simulation channel says
+  `expended_by_effect` (the release picture's platform facts, the source of the engine's spent
+  mark), and the contacts process, when it applies the effect, hands the platform to the vehicle
+  simulation through the damage file as destroyed, hit or miss: the stand-ins go silent and SITL's
+  watcher stops the process, the path a destroyed vehicle of ours already took. That is the moment
+  and the outcome headless has by default (`spend_expended`; live has no `survives_miss`). No
+  decision rule, policy, logged event or headless digest changes; the truth log's record is the
+  same bytes.
+- **The C2 learns only the silence.** Decision rules 30 then presume it lost on its spent mark
+  (decision D6: spent and lost stay separate) and a person with engagement authority confirms it
+  (op-2 on autoplay where `confirm_node_losses` is set); until then it counts in the keep-outs as a
+  drift region. Its camera covers an assessment only while its last position is fresh
+  (`max_fact_age_s`), as headless: dropping a spent platform from the cover at once would be a
+  rules change, left as a follow-up.
+- **A platform that survives its own effect stays**: `magura_pre_loadout` (no
+  `expended_by_effect`), which the scenarios name for that. Rules 15's un-spend and its alert stay
+  for a spent platform heard again, which is now a restart's fresh vehicle under a carried mark.
+
+Checked: a contacts unit test (the notice as the bridge sends it, hit and miss, to the damage
+file's line and the stand-ins' board), the bridge's engagement test (the FPV's effect says so),
+and a live autoplay run of hostile-act-fpv (2026-11-20): released at 4:37, WASP 1 last heard 1 s
+later, `node.presumed` on its spent mark at 4:49, op-2's `node.lost` at 4:51, "ceased" at 4:53 on
+HUNTER 1's camera (WASP 1's counted in the first 10 s of cover, as headless).

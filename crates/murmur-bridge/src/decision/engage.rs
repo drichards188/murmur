@@ -1997,8 +1997,16 @@ impl Decision {
     /// The abstract effect to the contacts process, on the simulation channel: the point,
     /// the radius, the time, the engaging platform, and (for the evaluation truth log only)
     /// where our other vehicles reported themselves (none for one that never has: the truth
-    /// log lists it as unknown, not as clear).
+    /// log lists it as unknown, not as clear). A platform spent by its own effect (its catalog's
+    /// `expended_by_effect` in the release picture, as the engine's spent mark reads it) is
+    /// said to be: the truth side takes it out of the world at the effect (bd murmur-ritd), and
+    /// the C2 learns only its silence.
     fn send_effect(&self, e: &EffectOrder, world: &murmur_decide::WorldSnapshot) {
+        let expended = world
+            .vehicles
+            .get(&e.uid)
+            .and_then(|v| v.platform.as_ref())
+            .is_some_and(|p| p.expended_by_effect);
         let ours: Vec<Value> = world
             .vehicles
             .iter()
@@ -2022,7 +2030,7 @@ impl Decision {
             })
             .collect();
         if let Some(t) = self.tracks() {
-            t.queue_effect(e, ours);
+            t.queue_effect(e, ours, expended);
         }
     }
 

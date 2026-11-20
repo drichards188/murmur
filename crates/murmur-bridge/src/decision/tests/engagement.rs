@@ -392,6 +392,9 @@ async fn an_engagement_through_the_bridge_releases_an_abstract_effect() {
         effects[0]["ours"].as_array().expect("ours").iter().all(|o| o["uid"] != "1"),
         "{effects:?}"
     );
+    // the FPV is spent by its own effect: the truth side is told so, and takes it out of the
+    // world at the effect (bd murmur-ritd)
+    assert_eq!(effects[0]["expended_by_effect"], true, "{effects:?}");
     // the console's view: who signed, the engagement record
     let msg: serde_json::Value = serde_json::from_str(&e.r.d.message()).expect("json");
     assert_eq!(msg["spent"], json!([1]), "spent munition must leave the live console");

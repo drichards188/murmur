@@ -983,8 +983,8 @@ fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
         impact_alt_m: 0.0,
         tof_s: 18.4,
     };
-    tracks.queue_effect(&order(1, Some(flight.clone())), Vec::new());
-    tracks.queue_effect(&order(2, None), Vec::new());
+    tracks.queue_effect(&order(1, Some(flight.clone())), Vec::new(), false);
+    tracks.queue_effect(&order(2, None), Vec::new(), true);
     // the bridge reads the truth at 1_781_000_025.0 (its clock); the contacts' message says
     // 1_781_200_000.0 (MURMUR_AT elsewhere): the impact is 17.4 s on, on theirs
     let sent = tracks.take_effects_at(1_781_200_000.0, 1_781_000_025.0);
@@ -994,13 +994,17 @@ fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
     assert_eq!(sent[0]["munition"]["name"], "Hellfire-class missile");
     assert_eq!(sent[0]["munition"]["impact_t"], 1_781_000_042_400_i64);
     assert!(sent[1].get("impact_t").is_none() && sent[1].get("munition").is_none(), "{}", sent[1]);
+    // a platform spent by its own effect is said to be (the truth side takes it out of the
+    // world, bd murmur-ritd); any other effect's notice is as before, without the key
+    assert_eq!(sent[1]["expended_by_effect"], true, "{}", sent[1]);
+    assert!(sent[0].get("expended_by_effect").is_none(), "{}", sent[0]);
     assert!(tracks.take_effects_at(1_781_200_001.0, 1_781_000_026.0).is_empty(), "each once");
     // handed over after the impact (a late truth message): at once
-    tracks.queue_effect(&order(3, Some(flight)), Vec::new());
+    tracks.queue_effect(&order(3, Some(flight)), Vec::new(), false);
     let late = tracks.take_effects_at(1_781_200_050.0, 1_781_000_045.0);
     assert_eq!(late[0]["impact_t"].as_f64(), Some(1_781_200_050.0));
     // rules 26: a gun's burst goes with its number (the truth side draws it on its own stream)
-    tracks.queue_effect(&EffectOrder { burst: Some(3), burst_rounds: Some(6), ..order(4, None) }, Vec::new());
+    tracks.queue_effect(&EffectOrder { burst: Some(3), burst_rounds: Some(6), ..order(4, None) }, Vec::new(), false);
     let b = tracks.take_effects_at(1_781_200_051.0, 1_781_000_046.0);
     assert_eq!((b[0]["burst"].as_u64(), b[0].get("impact_t")), (Some(3), None), "{}", b[0]);
 }
