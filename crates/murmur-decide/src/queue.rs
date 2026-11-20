@@ -739,7 +739,7 @@ fn assess_member(basis: &Basis, results: &[CheckResult], passed: bool, decision:
 
 /// Rules 34: what a member's own policy decision adds to its group's, which its group's approval
 /// does not cover.
-fn raised(member: &PolicyDecision, group: &PolicyDecision) -> Vec<String> {
+pub fn raised(member: &PolicyDecision, group: &PolicyDecision) -> Vec<String> {
     let mut v = Vec::new();
     if !member.facts.armed.is_empty() && group.facts.armed.is_empty() {
         v.push("would raise the tier: armed, under a group order approved unarmed".to_string());

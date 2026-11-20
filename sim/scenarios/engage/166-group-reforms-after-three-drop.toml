@@ -1,0 +1,197 @@
+# Rules 34, stage 4 (docs/SWARMS.md section 4.3; bd murmur-4nik): a group re-forms itself when
+# members drop. Twenty quadcopters orbit a 150 m ring together on op-1's order (the minimum
+# sixteen). Three fall silent ten seconds apart (SKY 4, SKY 11, SKY 17): each drops once its
+# position has been stale twenty seconds past its link's limit, and once no member has dropped for
+# fifteen seconds the group re-forms itself, once, under the same approval: only a neighbour of
+# each gap moves (SKY 2, SKY 8, SKY 18), each on a member order of its own, and the rest keep the
+# shares they fly. SKY 5, on the far side of SKY 4's gap, reports only every ten seconds by then
+# (its link too slow for a mission upload): it keeps its slot, and SKY 2 closes that gap from its
+# side alone. The log is then attacked: the drops' facts made fresh in the re-form's inputs, as if
+# the group re-formed with nobody gone; replay, which recomputes every drop from the logged facts,
+# must catch it.
+title = "A ring of twenty re-forms once after three drop, moving only the gaps' neighbours"
+invariant = "group_order"
+attack = "a re-form whose facts show no drop (forge_reform)"
+expect = "dispatched"
+tamper = "forge_reform"
+end_s = 90
+min_rules = 34
+expect_groups = ['re-formed 1: moved ["sky-18", "sky-2", "sky-8"]']
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-5"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-6"
+platform = "x10"
+at = [-122.4460, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-7"
+platform = "x10"
+at = [-122.4456, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-8"
+platform = "x10"
+at = [-122.4452, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-9"
+platform = "x10"
+at = [-122.4448, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-10"
+platform = "x10"
+at = [-122.4444, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-11"
+platform = "x10"
+at = [-122.4460, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-12"
+platform = "x10"
+at = [-122.4456, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-13"
+platform = "x10"
+at = [-122.4452, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-14"
+platform = "x10"
+at = [-122.4448, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-15"
+platform = "x10"
+at = [-122.4444, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-16"
+platform = "x10"
+at = [-122.4460, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-17"
+platform = "x10"
+at = [-122.4456, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-18"
+platform = "x10"
+at = [-122.4452, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-19"
+platform = "x10"
+at = [-122.4448, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-20"
+platform = "x10"
+at = [-122.4444, 37.8080]
+alt_m = 30
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5", "sky-6", "sky-7", "sky-8", "sky-9", "sky-10", "sky-11", "sky-12", "sky-13", "sky-14", "sky-15", "sky-16", "sky-17", "sky-18", "sky-19", "sky-20"]
+center = [-122.4700, 37.8150]
+radius_m = 150
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+detail = "20 of 20 can take it (20 sent); the minimum is 16"
+detail_rule = "strength"
+
+[[step]]
+at_s = 10
+action = "vehicle"
+uid = "sky-4"
+silent = true
+
+[[step]]
+at_s = 20
+action = "vehicle"
+uid = "sky-11"
+silent = true
+
+[[step]]
+at_s = 30
+action = "vehicle"
+uid = "sky-17"
+silent = true
+
+[[step]]
+at_s = 60
+action = "vehicle"
+uid = "sky-5"
+report_interval_ms = 10000
+
+[[step]]
+at_s = 70
+action = "expect"
+reforms = 0
+
+[[step]]
+at_s = 80
+action = "expect"
+task_state = "dispatched"
+reforms = 1
+moved = ["sky-18", "sky-2", "sky-8"]
+reform_refused = ""
+suspended = false
+member_states = { "sky-2" = "dispatched", "sky-5" = "dispatched", "sky-4" = "dispatched" }

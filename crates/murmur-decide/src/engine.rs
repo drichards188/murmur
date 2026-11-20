@@ -612,6 +612,11 @@ pub struct Engine {
     /// spent marks, the presumptions and the losses in force), stepped with every event written,
     /// as replay steps it with every event read ([`crate::nodes`]).
     nodes: crate::nodes::NodeLedger,
+    /// Rules 34: each group order dispatched, as it stays in force (its layout, its member orders,
+    /// its re-forms; [`crate::group::Force`]), and since when the engine has heard each member a
+    /// re-form left out (its own tracking: a re-form logs the times, which replay bounds).
+    forces: BTreeMap<IntentId, crate::group::Force>,
+    heard: BTreeMap<IntentId, BTreeMap<Uid, Time>>,
 }
 
 /// Rules 10: a passkey as the engine follows it: whose, its public key, the last counter
@@ -803,6 +808,8 @@ impl Engine {
             used_nonces: BTreeSet::new(),
             lost: crate::lost::LostLedger::default(),
             nodes: crate::nodes::NodeLedger::default(),
+            forces: BTreeMap::new(),
+            heard: BTreeMap::new(),
         };
         let policy = e.policy.clone();
         let keys = roster.passkeys.as_ref().map(|p| p.keys.clone()).unwrap_or_default();
@@ -5722,7 +5729,7 @@ impl Engine {
             members.insert(uid, mid);
         }
         let excluded = spec.uids.len() - members.len();
-        self.emit(EventBody::GroupDispatched {
+        let dispatched_t = self.emit(EventBody::GroupDispatched {
             intent: id,
             members: members.clone(),
         })?;
@@ -5733,6 +5740,8 @@ impl Engine {
         )?;
         self.get_mut(id)?.set_members(members.clone());
         self.get_mut(id)?.mark_dispatched();
+        // rules 34, stage 4: in force on its layout, for re-forms
+        self.forces.insert(id, crate::group::Force::new(eval.layout.clone(), members.clone(), dispatched_t));
         let mut out = Vec::new();
         for mid in members.values() {
             out.push((*mid, self.dispatch_or_queue(*mid, world)?));
@@ -7144,6 +7153,304 @@ impl Engine {
         Ok(state)
     }
 
+    /// Rules 34 ([`crate::rules::GROUP_ORDER_SINCE`], docs/SWARMS.md section 4.3): step every
+    /// group order in force on `world` (the bridge's picture now), once a tick. Each one's members
+    /// as the facts show them ([`crate::group::standing`]): a member on its layout drops when its
+    /// member order ends other than done, it is presumed or confirmed lost, or it stays silent
+    /// [`crate::group::DROP_AFTER_S`] past its stale limit (drift alone never drops one); one a
+    /// re-form left out is back once heard [`crate::group::BACK_AFTER_S`] running. Below its
+    /// minimum once settled the group is suspended (`group.suspended`, and it re-forms no more);
+    /// on material, settled drops and returns, at most once a minute, it re-forms inside its
+    /// envelope and tier (`group.reformed`): only the gaps' neighbours move, a member on a link
+    /// not healthy now or held by an engagement keeps its slot, each moved member's new share
+    /// passes every vehicle rule (a member back whose share fails is left out for good) and raises
+    /// nothing its group's approval does not cover; else nothing moves (`group.reform_refused`).
+    /// Each moved or returning member gets a member order under the group's approval, dispatched
+    /// or queued on its own (returned for the bridge to run). Nothing before rules 34.
+    pub fn step_groups(&mut self, world: &WorldSnapshot, terrain: &dyn TerrainOracle) -> Result<GroupStep, EngineError> {
+        let mut out = GroupStep::default();
+        if !self.policy.rules.group_orders() {
+            return Ok(out);
+        }
+        let gids: Vec<IntentId> = self.forces.keys().copied().collect();
+        for gid in gids {
+            let Some(g) = self.intents.get(&gid) else { continue };
+            if !matches!(g.state(), State::Dispatched | State::Done) {
+                continue;
+            }
+            let spec = g.spec().clone();
+            let Some(gs) = spec.group().cloned() else { continue };
+            let Some(force) = self.forces.get(&gid).cloned() else { continue };
+            if force.suspended || gs.reform != Some(true) {
+                continue;
+            }
+            let views = self.member_views(gid, &force);
+            let st = crate::group::standing(&force, &views, world, &self.nodes, &self.policy.rules);
+            if st.on_share.is_empty() && st.dropped.is_empty() && st.heard.is_empty() {
+                continue;
+            }
+            // the engine's own tracking of each member left out that is heard again, since when
+            let heard = self.heard.entry(gid).or_default();
+            heard.retain(|u, _| st.heard.contains(u));
+            for u in &st.heard {
+                heard.entry(u.clone()).or_insert(world.t);
+            }
+            let back: BTreeMap<Uid, Time> = heard
+                .iter()
+                .filter(|(_, t)| world.t.ms_since(**t) >= crate::group::BACK_AFTER_S * 1000)
+                .map(|(u, t)| (u.clone(), *t))
+                .collect();
+            let cause = crate::group::Cause {
+                dropped: st.dropped.clone(),
+                back,
+            };
+            match crate::group::due(&force, &gs, &cause, st.on_share.len(), st.taken.len(), spec.uids.len(), world.t) {
+                crate::group::Due::Nothing => {}
+                crate::group::Due::Suspend { strength, min } => {
+                    let inputs = self.group_inputs(&spec, world);
+                    let logged = self.log_inputs(&inputs)?;
+                    self.emit(EventBody::GroupSuspended {
+                        intent: gid,
+                        inputs: logged,
+                        cause,
+                        strength,
+                        min,
+                    })?;
+                    if let Some(f) = self.forces.get_mut(&gid) {
+                        f.suspended = true;
+                        f.last_attempt = Some(world.t);
+                    }
+                    out.suspended.push(gid);
+                }
+                crate::group::Due::Reform => self.reform_group(gid, &spec, &gs, &force, &st, cause, world, terrain, &mut out)?,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Rules 34: the facts a group step reads: every vehicle of its selection (and what the engine
+    /// fills for them: engagements, waiting orders, spent and lost), no terrain yet.
+    fn group_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot) -> WorldSnapshot {
+        let mut inputs = world.for_intent_plan(spec, &NoTerrain, &self.policy.rules, None);
+        self.fill_engine_facts(spec, &mut inputs);
+        inputs.terrain = crate::world::TerrainInputs::NotNeeded;
+        inputs.route_plans.clear();
+        inputs
+    }
+
+    /// Rules 34: each member order in force of a group, as its step reads it.
+    fn member_views(&self, gid: IntentId, force: &crate::group::Force) -> BTreeMap<Uid, crate::group::MemberView> {
+        force
+            .members
+            .iter()
+            .filter_map(|(u, mid)| {
+                let m = self.intents.get(mid)?;
+                let ended_t = if m.state().is_terminal() { m.history().last().map(|h| h.t) } else { None };
+                let taken = self
+                    .newest_on
+                    .get(u)
+                    .is_some_and(|n| n > mid && self.intents.get(n).and_then(|i| i.spec().parent()) != Some(gid));
+                Some((
+                    u.clone(),
+                    crate::group::MemberView {
+                        state: m.state(),
+                        ended_t,
+                        taken,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Rules 34: a group order dispatched, as it stays in force (its layout, member orders and
+    /// re-forms).
+    pub fn force(&self, gid: IntentId) -> Option<&crate::group::Force> {
+        self.forces.get(&gid)
+    }
+
+    /// Rules 34: every group order dispatched, as each stays in force.
+    pub fn forces(&self) -> &BTreeMap<IntentId, crate::group::Force> {
+        &self.forces
+    }
+
+    /// Rules 34: a group order in force's members as the facts at `world` show them, and what its
+    /// step would act on now (its drops, and its members back by the engine's own tracking as of
+    /// its last step); None for a group order not in force. Read-only: the console's view of a
+    /// group's strength, and the bridge's prefetch of a re-form's shares.
+    pub fn group_standing(&self, gid: IntentId, world: &WorldSnapshot) -> Option<(crate::group::Standing, crate::group::Cause)> {
+        let g = self.intents.get(&gid)?;
+        if !matches!(g.state(), State::Dispatched | State::Done) {
+            return None;
+        }
+        let force = self.forces.get(&gid)?;
+        let views = self.member_views(gid, force);
+        let st = crate::group::standing(force, &views, world, &self.nodes, &self.policy.rules);
+        let heard = self.heard.get(&gid);
+        let back = st
+            .heard
+            .iter()
+            .filter_map(|u| {
+                let t = *heard?.get(u)?;
+                (world.t.ms_since(t) >= crate::group::BACK_AFTER_S * 1000).then(|| (u.clone(), t))
+            })
+            .collect();
+        let cause = crate::group::Cause {
+            dropped: st.dropped.clone(),
+            back,
+        };
+        Some((st, cause))
+    }
+
+    /// Rules 34: each group order a re-form is due for on `world` (its spec, its force, its
+    /// members on their shares and its cause), for the bridge to lay out outside its lock and
+    /// fetch the terrain along the shares it would move members to; the tick's step decides.
+    pub fn reforms_due(&self, world: &WorldSnapshot) -> Vec<(IntentSpec, crate::group::Force, BTreeSet<Uid>, crate::group::Cause)> {
+        if !self.policy.rules.group_orders() {
+            return Vec::new();
+        }
+        self.forces
+            .iter()
+            .filter_map(|(gid, force)| {
+                let spec = self.intents.get(gid)?.spec().clone();
+                let gs = spec.group()?.clone();
+                let (st, cause) = self.group_standing(*gid, world)?;
+                let due = crate::group::due(force, &gs, &cause, st.on_share.len(), st.taken.len(), spec.uids.len(), world.t);
+                (due == crate::group::Due::Reform).then(|| (spec, force.clone(), st.on_share, cause))
+            })
+            .collect()
+    }
+
+    /// Rules 34: who approved a group order, for its member orders' `under`.
+    fn group_approved_by(intent: &Intent) -> String {
+        match intent.approval() {
+            Some(a) if a.at_submission => format!("authorized at submission by {}", a.by),
+            Some(a) => format!("approved by {}", a.by),
+            None => format!(
+                "auto-approved by the policy's {} tier",
+                intent.policy().map_or("", |d| d.rule.as_str())
+            ),
+        }
+    }
+
+    /// Rules 34: one re-form due ([`Engine::step_groups`]).
+    #[allow(clippy::too_many_arguments)]
+    fn reform_group(
+        &mut self,
+        gid: IntentId,
+        spec: &IntentSpec,
+        gs: &crate::group::GroupSpec,
+        force: &crate::group::Force,
+        st: &crate::group::Standing,
+        cause: crate::group::Cause,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+        out: &mut GroupStep,
+    ) -> Result<(), EngineError> {
+        let mut inputs = self.group_inputs(spec, world);
+        let decision = self.get(gid)?.policy().cloned();
+        let plan = crate::group::plan_reform(spec, gs, force, &st.on_share, &cause, &mut inputs, Some((world, terrain)), &self.policy, decision.as_ref());
+        let refuse = |e: &mut Engine, inputs: &WorldSnapshot, cause: crate::group::Cause, why: String| -> Result<(), EngineError> {
+            let logged = e.log_inputs(inputs)?;
+            let uids = cause.uids();
+            let why_logged = why.clone();
+            e.emit(EventBody::GroupReformRefused {
+                intent: gid,
+                inputs: logged,
+                cause,
+                why,
+            })?;
+            if let Some(f) = e.forces.get_mut(&gid) {
+                f.last_attempt = Some(inputs.t);
+                f.refused = Some(uids);
+                f.refused_why = Some(why_logged);
+            }
+            Ok(())
+        };
+        let plan = match plan {
+            Err(why) => {
+                out.refused.push((gid, why.clone()));
+                return refuse(self, &inputs, cause, why);
+            }
+            Ok(p) => p,
+        };
+        let seq = force.seq + 1;
+        let moved: BTreeMap<Uid, IntentId> = plan
+            .specs
+            .iter()
+            .enumerate()
+            .filter_map(|(k, ms)| Some((ms.uids.first()?.clone(), IntentId(self.next_intent + k as u64))))
+            .collect();
+        let logged = self.log_inputs(&inputs)?;
+        self.emit(EventBody::GroupReformed {
+            intent: gid,
+            reform: seq,
+            inputs: logged,
+            cause: cause.clone(),
+            layout: Box::new(plan.reform.layout.clone()),
+            moved: moved.clone(),
+            left_out: plan.left_out.clone(),
+            results: plan.results.clone(),
+            largest_gap_m: plan.reform.largest_gap_m,
+            even_spacing_m: plan.reform.even_spacing_m,
+        })?;
+        let group = self.get(gid)?;
+        let who = Self::group_approved_by(group);
+        let basis = group.basis().cloned().unwrap_or_else(|| no_basis(self.now()));
+        let decision = group.policy().cloned();
+        for ms in &plan.specs {
+            let Some(uid) = ms.uids.first().cloned() else { continue };
+            let Some(mid) = moved.get(&uid).copied() else { continue };
+            let mut ms = ms.clone();
+            ms.id = mid;
+            ms.created_t = self.now();
+            self.emit(EventBody::IntentCreated {
+                intent: ms.clone(),
+                session: None,
+            })?;
+            self.next_intent = self.next_intent.max(mid.0 + 1);
+            let mut member = Intent::new(ms);
+            if let Some(p) = inputs.route_plans.get(&uid) {
+                member.set_route_plans(BTreeMap::from([(uid.clone(), p.clone())]));
+            }
+            self.intents.insert(mid, member);
+            let why = if cause.back.contains_key(&uid) { "back" } else { "moved" };
+            self.transition(mid, Transition::Under, format!("approved under group order {gid} ({who}); its re-form {seq}: {why}"))?;
+            self.get_mut(mid)?.set_basis(crate::group::member_basis(&basis, decision.as_ref()));
+        }
+        // the group in force on its new layout and member orders
+        if let Some(f) = self.forces.get_mut(&gid) {
+            f.layout = plan.reform.layout.clone();
+            f.seq = seq;
+            f.last_attempt = Some(inputs.t);
+            f.refused = None;
+            f.refused_why = None;
+            for (u, m) in &moved {
+                f.members.insert(u.clone(), *m);
+                f.left.remove(u);
+            }
+            for u in plan.left_out.keys() {
+                f.out.insert(u.clone());
+            }
+            for u in cause.dropped.keys() {
+                f.left.insert(u.clone(), inputs.t);
+            }
+        }
+        if let Some(h) = self.heard.get_mut(&gid) {
+            for u in moved.keys().chain(plan.left_out.keys()) {
+                h.remove(u);
+            }
+        }
+        let mut members = self.get(gid)?.members().clone();
+        members.extend(moved.clone());
+        self.get_mut(gid)?.set_members(members);
+        let mut routed = Vec::new();
+        for mid in moved.values() {
+            routed.push((*mid, self.dispatch_or_queue(*mid, world)?));
+        }
+        out.reformed.push((gid, routed));
+        Ok(())
+    }
+
     /// Rules 34: a dispatched group order ends once every member order it sent has ended: done
     /// if at least its minimum reached their shares (a member a newer order took counts neither
     /// way, the minimum less one for each), else failed, the reason counting each end
@@ -7917,6 +8224,16 @@ pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String>
 /// Rules 30 ([`crate::rules::NODE_LOSS_SINCE`]): what [`Engine::step_nodes`] did on one tick: our
 /// vehicles presumed lost, the presumptions cleared and the losses revoked (each heard again), by
 /// uid.
+/// What [`Engine::step_groups`] did this step: each group re-formed with its new member orders
+/// and what became of each (for the bridge to run, as a group's dispatch), each refused (and
+/// why), each suspended.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupStep {
+    pub reformed: Vec<(IntentId, Vec<(IntentId, Routed)>)>,
+    pub refused: Vec<(IntentId, String)>,
+    pub suspended: Vec<IntentId>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NodeStep {
     pub presumed: Vec<Uid>,

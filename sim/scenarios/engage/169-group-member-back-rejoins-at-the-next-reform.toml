@@ -1,0 +1,132 @@
+# Rules 34, stage 4 (docs/SWARMS.md section 4.3; bd murmur-4nik): a member back after a drop
+# rejoins at the next re-form, never by itself. Ten quadcopters orbit a 150 m ring on op-1's
+# order (the minimum eight). SKY 3 and SKY 8 fall silent; their drops settle and the group
+# re-forms round the eight left. Then both are heard again: back once heard thirty seconds
+# running, they wait for the next re-form (at most one a minute, once their return has settled),
+# which places each in a gap on a member order of its own. The log is then attacked: the first
+# re-form's first moved member's altitude raised 200 m, out of its band, in the re-form, its
+# member order and its dispatch alike; replay, which lays every re-form out again from its facts,
+# must catch it.
+title = "Two members back after a drop rejoin at the next re-form, not before"
+invariant = "group_order"
+attack = "a re-formed share outside the band (reform_outside_envelope)"
+expect = "dispatched"
+tamper = "reform_outside_envelope"
+end_s = 125
+min_rules = 34
+expect_groups = ['re-formed 1: moved ["sky-10", "sky-6"]', 're-formed 2: moved ["sky-3", "sky-8"]']
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-5"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-6"
+platform = "x10"
+at = [-122.4460, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-7"
+platform = "x10"
+at = [-122.4456, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-8"
+platform = "x10"
+at = [-122.4452, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-9"
+platform = "x10"
+at = [-122.4448, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-10"
+platform = "x10"
+at = [-122.4444, 37.8072]
+alt_m = 30
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5", "sky-6", "sky-7", "sky-8", "sky-9", "sky-10"]
+center = [-122.4700, 37.8150]
+radius_m = 150
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-3"
+silent = true
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-8"
+silent = true
+
+[[step]]
+at_s = 55
+action = "expect"
+reforms = 1
+moved = ["sky-10", "sky-6"]
+
+[[step]]
+at_s = 60
+action = "vehicle"
+uid = "sky-3"
+silent = false
+
+[[step]]
+at_s = 60
+action = "vehicle"
+uid = "sky-8"
+silent = false
+
+[[step]]
+at_s = 100
+action = "expect"
+reforms = 1
+member_states = { "sky-3" = "dispatched" }
+
+[[step]]
+at_s = 120
+action = "expect"
+task_state = "dispatched"
+reforms = 2
+moved = ["sky-3", "sky-8"]

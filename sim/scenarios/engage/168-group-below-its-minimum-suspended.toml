@@ -1,0 +1,308 @@
+# Rules 34, stage 4 (docs/SWARMS.md decision 4 and section 4.3; bd murmur-4nik): below its
+# minimum a group stops and asks. Twenty quadcopters orbit a 150 m ring on op-1's order (the
+# minimum sixteen); twelve fall silent, six and then six more ten seconds later, as a jammer would
+# take them. Once the drops have settled the eight left are under the minimum: the group is
+# suspended (`group.suspended`, eight of a minimum of sixteen), never re-formed, and when the
+# twelve are heard again it does not resume on its own: re-forming it is the person's to do.
+title = "Twelve of twenty drop: suspended below the minimum, no re-form, no resume"
+invariant = "group_order"
+attack = "a re-form or a resume past the minimum the person set for being asked"
+expect = "dispatched"
+end_s = 130
+min_rules = 34
+expect_groups = ["i1 suspended"]
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-5"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-6"
+platform = "x10"
+at = [-122.4460, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-7"
+platform = "x10"
+at = [-122.4456, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-8"
+platform = "x10"
+at = [-122.4452, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-9"
+platform = "x10"
+at = [-122.4448, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-10"
+platform = "x10"
+at = [-122.4444, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-11"
+platform = "x10"
+at = [-122.4460, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-12"
+platform = "x10"
+at = [-122.4456, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-13"
+platform = "x10"
+at = [-122.4452, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-14"
+platform = "x10"
+at = [-122.4448, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-15"
+platform = "x10"
+at = [-122.4444, 37.8076]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-16"
+platform = "x10"
+at = [-122.4460, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-17"
+platform = "x10"
+at = [-122.4456, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-18"
+platform = "x10"
+at = [-122.4452, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-19"
+platform = "x10"
+at = [-122.4448, 37.8080]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-20"
+platform = "x10"
+at = [-122.4444, 37.8080]
+alt_m = 30
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5", "sky-6", "sky-7", "sky-8", "sky-9", "sky-10", "sky-11", "sky-12", "sky-13", "sky-14", "sky-15", "sky-16", "sky-17", "sky-18", "sky-19", "sky-20"]
+center = [-122.4700, 37.8150]
+radius_m = 150
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-1"
+silent = true
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-3"
+silent = true
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-5"
+silent = true
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-7"
+silent = true
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-9"
+silent = true
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "sky-11"
+silent = true
+
+[[step]]
+at_s = 15
+action = "vehicle"
+uid = "sky-13"
+silent = true
+
+[[step]]
+at_s = 15
+action = "vehicle"
+uid = "sky-15"
+silent = true
+
+[[step]]
+at_s = 15
+action = "vehicle"
+uid = "sky-17"
+silent = true
+
+[[step]]
+at_s = 15
+action = "vehicle"
+uid = "sky-19"
+silent = true
+
+[[step]]
+at_s = 15
+action = "vehicle"
+uid = "sky-2"
+silent = true
+
+[[step]]
+at_s = 15
+action = "vehicle"
+uid = "sky-4"
+silent = true
+
+[[step]]
+at_s = 50
+action = "expect"
+suspended = false
+reforms = 0
+
+[[step]]
+at_s = 62
+action = "expect"
+suspended = true
+reforms = 0
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-1"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-3"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-5"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-7"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-9"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-11"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-13"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-15"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-17"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-19"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-2"
+silent = false
+
+[[step]]
+at_s = 70
+action = "vehicle"
+uid = "sky-4"
+silent = false
+
+[[step]]
+at_s = 128
+action = "expect"
+task_state = "dispatched"
+suspended = true
+reforms = 0

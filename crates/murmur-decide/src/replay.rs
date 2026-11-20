@@ -1903,6 +1903,11 @@ struct Tracked {
     members_created: BTreeMap<Uid, IntentId>,
     /// Rules 34, a group order: its member orders once dispatched (`group.dispatched`).
     group_members: BTreeMap<Uid, IntentId>,
+    /// Rules 34, a group order: the member orders its last re-form makes, each with its spec and
+    /// the routes the re-form planned for it, until each is created.
+    reform_pending: BTreeMap<Uid, (IntentSpec, Option<Vec<crate::plan::PlannedLeg>>)>,
+    /// Rules 34, a member order: made by its group's re-form (approved under the group in force).
+    by_reform: bool,
 }
 
 impl Tracked {
@@ -1993,6 +1998,8 @@ impl Tracked {
             group_eval: None,
             members_created: BTreeMap::new(),
             group_members: BTreeMap::new(),
+            reform_pending: BTreeMap::new(),
+            by_reform: false,
             preload: None,
             preload_set: None,
             restore_confirmed: false,
@@ -2307,6 +2314,9 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::GROUP_ORDER_SINCE, "\"share\":{", "a member order's share"),
     (rules::GROUP_ORDER_SINCE, "\"layout\":{", "a group order's layout"),
     (rules::GROUP_ORDER_SINCE, "\"type\":\"group.dispatched\"", "a group order dispatched as its member orders"),
+    (rules::GROUP_ORDER_SINCE, "\"type\":\"group.reformed\"", "a group order re-formed"),
+    (rules::GROUP_ORDER_SINCE, "\"type\":\"group.reform_refused\"", "a group order's re-form refused"),
+    (rules::GROUP_ORDER_SINCE, "\"type\":\"group.suspended\"", "a group order suspended below its minimum"),
     (rules::GROUP_ORDER_SINCE, "\"transition\":\"under\"", "a member order approved under its group's approval"),
     (rules::GROUP_ORDER_SINCE, "\"member\":\"", "a group member's class on its failing check"),
 ];
@@ -2753,6 +2763,8 @@ fn replay_inner<S: AsRef<str>>(
     let mut last_queued: Option<IntentId> = None;
     let mut step: Option<(IntentId, u64)> = None;
     let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
+    // rules 34: each group order dispatched, as it stays in force (layout, member orders, re-forms)
+    let mut forces: BTreeMap<IntentId, crate::group::Force> = BTreeMap::new();
     // intents carried over from a previous run, checked against it after the loop
     let mut resumed: Vec<ResumedEvent> = Vec::new();
     // rules 29: the orders the fleet handed over (seq, vehicle, task) and the fleet file they
@@ -3075,6 +3087,31 @@ fn replay_inner<S: AsRef<str>>(
                 // rules 34: a member order is made by its group's dispatch, under the group's
                 // approval, never by a session: it is bound to its group's check instead
                 if intent.parent().is_some() || intent.share().is_some() {
+                    // rules 34, stage 4: one its group's last re-form makes
+                    let pending = intent.parent().zip(intent.uids.first()).and_then(|(p, u)| {
+                        let g = intents.get_mut(&p)?;
+                        let (want, plans) = g.reform_pending.remove(u)?;
+                        Some((want, plans))
+                    });
+                    if let Some((want, plans)) = pending {
+                        if session.is_some() || want.id != intent.id || want.task != intent.task || want.share() != intent.share() || want.uids != intent.uids
+                            || want.source != intent.source || want.constraints != intent.constraints || want.rationale != intent.rationale
+                        {
+                            bad(&mut r, e, Some(intent.id), "a re-form's member order is not the one its re-form laid out", json(&(&intent.task, intent.share())), json(&(&want.task, want.share())));
+                        }
+                        if let Some(g) = intent.parent().and_then(|p| intents.get_mut(&p))
+                            && let Some(u) = intent.uids.first()
+                        {
+                            g.members_created.insert(u.clone(), intent.id);
+                        }
+                        let mut tr = Tracked::new(intent.clone(), State::Proposed);
+                        tr.by_reform = true;
+                        if let (Some(p), Some(u)) = (plans, intent.uids.first()) {
+                            tr.route_plans = BTreeMap::from([(u.clone(), p)]);
+                        }
+                        intents.insert(intent.id, tr);
+                        continue;
+                    }
                     if let Some(why) = member_created_mismatch(intent, session.is_some(), &intents, policy.as_ref()) {
                         bad(&mut r, e, Some(intent.id), why, json(&(intent.parent(), &intent.uids, &intent.task, intent.share())), String::new());
                     }
@@ -3917,9 +3954,16 @@ fn replay_inner<S: AsRef<str>>(
                 let member_basis = match (*transition, intents.get(intent)) {
                     (Transition::Under, Some(tr)) => {
                         let parent = tr.spec.parent().and_then(|p| intents.get(&p));
+                        let in_force = |g: &Tracked| {
+                            if tr.by_reform {
+                                matches!(g.state, State::Dispatched | State::Done)
+                            } else {
+                                matches!(g.state, State::Approved | State::AutoApproved)
+                            }
+                        };
                         match parent {
                             Some(g)
-                                if matches!(g.state, State::Approved | State::AutoApproved)
+                                if in_force(g)
                                     && tr.spec.uids.first().is_some_and(|u| g.members_created.get(u) == Some(intent)) =>
                             {
                                 Some(crate::group::member_basis(
@@ -6875,6 +6919,134 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 tr.group_members = members.clone();
                 tr.dispatch_logged = Some(e.seq);
+                // rules 34, stage 4: in force on its layout, for re-forms
+                if let Some(g) = tr.group_eval.as_ref() {
+                    forces.insert(*intent, crate::group::Force::new(g.layout.clone(), members.clone(), e.t));
+                }
+            }
+            EventBody::GroupReformed {
+                intent,
+                reform: seq,
+                inputs,
+                cause,
+                layout,
+                moved,
+                left_out,
+                results,
+                largest_gap_m,
+                even_spacing_m,
+            } => {
+                let Some(world) = group_step_world(&mut r, e, *intent, inputs, &areas, &answers, &intents, &forces, policy.as_ref()) else {
+                    continue;
+                };
+                let (Some(pol), Some(g), Some(force)) = (policy.as_ref(), intents.get(intent), forces.get(intent)) else { continue };
+                let (gspec, gs) = (g.spec.clone(), g.spec.group().cloned().unwrap_or_default());
+                if *seq != force.seq + 1 {
+                    bad(&mut r, e, Some(*intent), "a re-form out of sequence", json(seq), json(&(force.seq + 1)));
+                }
+                let Some(st) = group_cause_check(&mut r, e, *intent, &world, cause, force, &intents, &newest_on, &nodes, pol) else {
+                    continue;
+                };
+                let due = crate::group::due(force, &gs, cause, st.on_share.len(), st.taken.len(), gspec.uids.len(), world.t);
+                if due != crate::group::Due::Reform {
+                    bad(&mut r, e, Some(*intent), "a re-form that was not due (its drops and returns not material or not settled, within a minute of the last, or the cause last refused)", json(cause), json(&due_name(&due)));
+                }
+                let mut w = world.clone();
+                let decision = g.decision.clone();
+                match crate::group::plan_reform(&gspec, &gs, force, &st.on_share, cause, &mut w, None, pol, decision.as_ref()) {
+                    Err(why) => {
+                        bad(&mut r, e, Some(*intent), "a re-form its facts refuse", json(layout), why);
+                        continue;
+                    }
+                    Ok(p) => {
+                        let ids: Vec<&Uid> = p.specs.iter().filter_map(|m| m.uids.first()).collect();
+                        if p.reform.layout != **layout
+                            || moved.keys().collect::<Vec<_>>() != ids
+                            || p.left_out.keys().collect::<Vec<_>>() != left_out.keys().collect::<Vec<_>>()
+                            || p.reform.largest_gap_m != *largest_gap_m
+                            || p.reform.even_spacing_m != *even_spacing_m
+                        {
+                            bad(&mut r, e, Some(*intent), "a re-form's layout differs from the one its facts give", json(&(layout, moved, left_out)), json(&(&p.reform.layout, &ids, &p.left_out)));
+                        }
+                        if p.results != *results {
+                            bad(&mut r, e, Some(*intent), "a re-form's checks differ from the ones its facts give", json(results), json(&p.results));
+                        }
+                        // the member orders it makes next, each its share
+                        let pending: BTreeMap<Uid, (IntentSpec, Option<Vec<crate::plan::PlannedLeg>>)> = p
+                            .specs
+                            .iter()
+                            .filter_map(|ms| {
+                                let u = ms.uids.first()?.clone();
+                                let mut ms = ms.clone();
+                                ms.id = *moved.get(&u)?;
+                                let plans = world.route_plans.get(&u).cloned();
+                                Some((u, (ms, plans)))
+                            })
+                            .collect();
+                        if let Some(f) = forces.get_mut(intent) {
+                            f.layout = (**layout).clone();
+                            f.seq = *seq;
+                            f.last_attempt = Some(world.t);
+                            f.refused = None;
+                            f.refused_why = None;
+                            for (u, m) in moved {
+                                f.members.insert(u.clone(), *m);
+                                f.left.remove(u);
+                            }
+                            f.out.extend(left_out.keys().cloned());
+                            for u in cause.dropped.keys() {
+                                f.left.insert(u.clone(), world.t);
+                            }
+                        }
+                        if let Some(g) = intents.get_mut(intent) {
+                            g.reform_pending = pending;
+                            g.group_members.extend(moved.clone());
+                        }
+                    }
+                }
+            }
+            EventBody::GroupReformRefused { intent, inputs, cause, why } => {
+                let Some(world) = group_step_world(&mut r, e, *intent, inputs, &areas, &answers, &intents, &forces, policy.as_ref()) else {
+                    continue;
+                };
+                let (Some(pol), Some(g), Some(force)) = (policy.as_ref(), intents.get(intent), forces.get(intent)) else { continue };
+                let (gspec, gs) = (g.spec.clone(), g.spec.group().cloned().unwrap_or_default());
+                let Some(st) = group_cause_check(&mut r, e, *intent, &world, cause, force, &intents, &newest_on, &nodes, pol) else {
+                    continue;
+                };
+                let due = crate::group::due(force, &gs, cause, st.on_share.len(), st.taken.len(), gspec.uids.len(), world.t);
+                if due != crate::group::Due::Reform {
+                    bad(&mut r, e, Some(*intent), "a re-form refused that was not due", json(cause), json(&due_name(&due)));
+                }
+                let mut w = world.clone();
+                match crate::group::plan_reform(&gspec, &gs, force, &st.on_share, cause, &mut w, None, pol, g.decision.as_ref()) {
+                    Err(want) if want == *why => {}
+                    other => bad(&mut r, e, Some(*intent), "a re-form refused that its facts do not refuse so", why.clone(), other.err().unwrap_or_else(|| "a re-form".into())),
+                }
+                if let Some(f) = forces.get_mut(intent) {
+                    f.last_attempt = Some(world.t);
+                    f.refused = Some(cause.uids());
+                    f.refused_why = Some(why.clone());
+                }
+            }
+            EventBody::GroupSuspended { intent, inputs, cause, strength, min } => {
+                let Some(world) = group_step_world(&mut r, e, *intent, inputs, &areas, &answers, &intents, &forces, policy.as_ref()) else {
+                    continue;
+                };
+                let (Some(pol), Some(g), Some(force)) = (policy.as_ref(), intents.get(intent), forces.get(intent)) else { continue };
+                let (gspec, gs) = (g.spec.clone(), g.spec.group().cloned().unwrap_or_default());
+                let Some(st) = group_cause_check(&mut r, e, *intent, &world, cause, force, &intents, &newest_on, &nodes, pol) else {
+                    continue;
+                };
+                let due = crate::group::due(force, &gs, cause, st.on_share.len(), st.taken.len(), gspec.uids.len(), world.t);
+                let want = crate::group::Due::Suspend { strength: *strength, min: *min };
+                if due != want {
+                    bad(&mut r, e, Some(*intent), "a group suspended that its facts do not put below its minimum", json(&(strength, min)), json(&due_name(&due)));
+                }
+                if let Some(f) = forces.get_mut(intent) {
+                    f.suspended = true;
+                    f.last_attempt = Some(world.t);
+                }
             }
             EventBody::IntentHandedOver {
                 intent: spec,
@@ -10144,6 +10316,106 @@ struct Dispatched<'a> {
 /// Rules 22: every routed leg in a decision's inputs is what the planner gives on its own logged
 /// grid (and the no-go areas the decision read): the same waypoints, or no route for the same
 /// reason; none before rules 22.
+/// Rules 34: a group step's world (`group.reformed`, `group.reform_refused`, `group.suspended`),
+/// resolved, for a group order in force under rules 34: None (flagged) otherwise.
+#[allow(clippy::too_many_arguments)]
+fn group_step_world(
+    r: &mut ReplayReport,
+    e: &Event,
+    gid: IntentId,
+    inputs: &LoggedInputs,
+    areas: &InForce,
+    answers: &Answers,
+    intents: &BTreeMap<IntentId, Tracked>,
+    forces: &BTreeMap<IntentId, crate::group::Force>,
+    policy: Option<&Policy>,
+) -> Option<WorldSnapshot> {
+    if !policy.is_some_and(|p| p.rules.group_orders()) {
+        bad(r, e, Some(gid), "a group step under rules that take no group order", String::new(), String::new());
+        return None;
+    }
+    let Some(g) = intents.get(&gid) else {
+        bad(r, e, Some(gid), "a group step of an unknown intent", String::new(), String::new());
+        return None;
+    };
+    let Some(force) = forces.get(&gid) else {
+        bad(r, e, Some(gid), "a group step of a group order never dispatched", String::new(), String::new());
+        return None;
+    };
+    if !matches!(g.state, State::Dispatched | State::Done) || force.suspended || g.spec.group().and_then(|s| s.reform) != Some(true) {
+        bad(r, e, Some(gid), "a group step of a group order not in force (not dispatched or done, suspended, or not re-forming)", json(&g.state), String::new());
+        return None;
+    }
+    match resolve(inputs, areas, answers) {
+        Ok(w) => Some(w),
+        Err(why) => {
+            bad(r, e, Some(gid), why, String::new(), String::new());
+            None
+        }
+    }
+}
+
+/// Rules 34: a group step's cause against the facts: its drops exactly the members on the layout
+/// the facts and the log show dropped; each member back one a re-form left out, heard now, its
+/// return no earlier than that and at least [`crate::group::BACK_AFTER_S`] ago (the engine's own
+/// tracking of how long it was heard running is bounded, not recomputed). Returns the standing.
+#[allow(clippy::too_many_arguments)]
+fn group_cause_check(
+    r: &mut ReplayReport,
+    e: &Event,
+    gid: IntentId,
+    world: &WorldSnapshot,
+    cause: &crate::group::Cause,
+    force: &crate::group::Force,
+    intents: &BTreeMap<IntentId, Tracked>,
+    newest_on: &BTreeMap<Uid, IntentId>,
+    nodes: &crate::nodes::NodeLedger,
+    pol: &Policy,
+) -> Option<crate::group::Standing> {
+    let views: BTreeMap<Uid, crate::group::MemberView> = force
+        .members
+        .iter()
+        .filter_map(|(u, mid)| {
+            let m = intents.get(mid)?;
+            let taken = newest_on
+                .get(u)
+                .is_some_and(|n| n > mid && intents.get(n).and_then(|i| i.spec.parent()) != Some(gid));
+            Some((
+                u.clone(),
+                crate::group::MemberView {
+                    state: m.state,
+                    ended_t: m.ended_t,
+                    taken,
+                },
+            ))
+        })
+        .collect();
+    let st = crate::group::standing(force, &views, world, nodes, &pol.rules);
+    if st.dropped != cause.dropped {
+        bad(r, e, Some(gid), "a group step's drops are not what its facts show", json(&cause.dropped), json(&st.dropped));
+        return None;
+    }
+    for (u, since) in &cause.back {
+        let left = force.left.get(u).copied();
+        let ok = st.heard.contains(u)
+            && left.is_some_and(|l| *since >= l)
+            && world.t.ms_since(*since) >= crate::group::BACK_AFTER_S * 1000;
+        if !ok {
+            bad(r, e, Some(gid), "a member counted back that its facts do not show back (left out, heard now, long enough)", json(&(u, since)), json(&left));
+            return None;
+        }
+    }
+    Some(st)
+}
+
+fn due_name(d: &crate::group::Due) -> String {
+    match d {
+        crate::group::Due::Nothing => "nothing due".into(),
+        crate::group::Due::Suspend { strength, min } => format!("suspended ({strength} of a minimum {min})"),
+        crate::group::Due::Reform => "a re-form".into(),
+    }
+}
+
 /// Rules 34: how long member order `id` may wait in the queue, s (its group's `wait_s`).
 fn member_wait(intents: &BTreeMap<IntentId, Tracked>, id: IntentId) -> Option<u32> {
     let g = intents.get(&intents.get(&id)?.spec.parent()?)?;

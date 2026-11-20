@@ -126,6 +126,10 @@ pub struct Scenario {
     /// to intent 1's patrol`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_identify: Vec<String>,
+    /// Rules 34, stage 4: substrings of what the groups' steps did, in order (`re-formed 1: moved
+    /// [...]`, `re-form refused: ...`, `suspended`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_groups: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
@@ -899,6 +903,18 @@ pub enum Action {
         /// order, by uid (`none`: it has none).
         #[serde(default)]
         member_states: Option<BTreeMap<String, String>>,
+        /// Rules 34, stage 4: how many times the last `task` step's group order has re-formed.
+        #[serde(default)]
+        reforms: Option<u32>,
+        /// Rules 34: the members its last re-form moved or brought back (in full, uid order).
+        #[serde(default)]
+        moved: Option<Vec<String>>,
+        /// Rules 34: a substring of why its last re-form was refused (`""`: none was).
+        #[serde(default)]
+        reform_refused: Option<String>,
+        /// Rules 34: whether it is suspended below its minimum.
+        #[serde(default)]
+        suspended: Option<bool>,
         /// Rules 34: a substring of a warning on the last `task` step's checks.
         #[serde(default)]
         warning: Option<String>,
@@ -1251,6 +1267,10 @@ pub struct ScenarioResult {
     /// ...`, `t=<s> 2 ended done: ...`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub identify: Vec<String>,
+    /// Rules 34: what the groups in force did (`t=<s> 3 re-formed 1: moved [...]`, `t=<s> 3 re-form
+    /// refused: ...`, `t=<s> 3 suspended`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
     /// Rules 27: the mines laid (`t=<s> MF-<id> mine <n> at [lon, lat]`) and the fields gone
     /// inert (`t=<s> MF-<id> inert`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2081,6 +2101,37 @@ pub fn run(
                 failures.push(format!("t={s}: finish {id}: {e}"));
             }
         }
+        // rules 34, stage 4: the groups in force step (drops, re-forms, suspensions), as the
+        // bridge's loop steps them; each re-form's member orders go out as a dispatch's do
+        let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
+        match engine.step_groups(&world, &terrain) {
+            Ok(step) => {
+                for (gid, routed) in step.reformed {
+                    let uids: Vec<String> = routed
+                        .iter()
+                        .filter_map(|(mid, _)| engine.intent(*mid).and_then(|i| i.spec().uids.first().map(ToString::to_string)))
+                        .collect();
+                    let seq = engine.force(gid).map_or(0, |f| f.seq);
+                    extra.group_reports.push(format!("t={s} {gid} re-formed {seq}: moved {uids:?}"));
+                    extra.group_moved.insert(gid, uids);
+                    extra.group_refused.remove(&gid);
+                    for (_, r) in routed {
+                        if let Routed::Dispatched(Order::Vehicles(o)) = r {
+                            report_started(&mut engine, &o, &mut failures, s);
+                            fly(&mut vehicles, &o);
+                        }
+                    }
+                }
+                for (gid, why) in step.refused {
+                    extra.group_reports.push(format!("t={s} {gid} re-form refused: {why}"));
+                    extra.group_refused.insert(gid, why);
+                }
+                for gid in step.suspended {
+                    extra.group_reports.push(format!("t={s} {gid} suspended"));
+                }
+            }
+            Err(e) => failures.push(format!("t={s}: step_groups: {e}")),
+        }
         follow_queue(&mut engine, &world, &terrain, &mut vehicles, &mut engaging, &mut failures, s);
         for (id, (uid, _)) in &engaging {
             extra.preloads.entry(*id).or_insert_with(|| PreloadSim {
@@ -2288,6 +2339,7 @@ pub fn run(
         (&sc.expect_reinstated, &extra.reinstated, "confirmations void"),
         (&sc.expect_lapsed, &extra.lapsed, "acceptances lapsed"),
         (&sc.expect_identify, &extra.identify_reports, "identify reports"),
+        (&sc.expect_groups, &extra.group_reports, "group steps"),
     ] {
         let mut it = got.iter();
         for w in want {
@@ -2418,6 +2470,7 @@ pub fn run(
         reinstated: extra.reinstated.clone(),
         lapsed: extra.lapsed.clone(),
         identify: extra.identify_reports.clone(),
+        groups: extra.group_reports.clone(),
         mines: extra.mines.clone(),
         inert: extra.inert.clone(),
         ident_reports,
@@ -3867,10 +3920,42 @@ fn act(
             waiting,
             excluded,
             member_states,
+            reforms,
+            moved,
+            reform_refused,
+            suspended,
             warning,
             detail,
             detail_rule,
         } => {
+            // rules 34, stage 4: the last task's group order in force, as its steps left it
+            if let Some(gid) = extra.last_task {
+                let force = engine.force(gid);
+                if let Some(want) = reforms {
+                    let got = force.map_or(0, |f| f.seq);
+                    if got != *want {
+                        failures.push(format!("t={s}: expected {want} re-form(s) of {gid}, got {got}"));
+                    }
+                }
+                if let Some(want) = moved {
+                    let got = extra.group_moved.get(&gid).cloned().unwrap_or_default();
+                    if &got != want {
+                        failures.push(format!("t={s}: expected {gid}'s last re-form to move {want:?}, got {got:?}"));
+                    }
+                }
+                if let Some(want) = reform_refused {
+                    let got = extra.group_refused.get(&gid).cloned().unwrap_or_default();
+                    if (want.is_empty() && !got.is_empty()) || !got.contains(want.as_str()) {
+                        failures.push(format!("t={s}: expected {gid}'s last re-form refused ({want:?}), got {got:?}"));
+                    }
+                }
+                if let Some(want) = suspended {
+                    let got = force.is_some_and(|f| f.suspended);
+                    if got != *want {
+                        failures.push(format!("t={s}: expected {gid} suspended {want}, got {got}"));
+                    }
+                }
+            }
             // rules 34: the last task's group order, its members and their orders
             let task_intent = extra.last_task.and_then(|id| engine.intent(id));
             for (want, class, name) in [
@@ -4030,6 +4115,11 @@ fn act(
 struct Extra {
     /// No engagement step before this second.
     stall_until: u32,
+    /// Rules 34, stage 4: what each group's steps did (`t=<s> <group> re-formed 1: moved [...]`),
+    /// the members each group's last re-form moved, and why its last one was refused.
+    group_reports: Vec<String>,
+    group_moved: BTreeMap<IntentId, Vec<String>>,
+    group_refused: BTreeMap<IntentId, String>,
     /// Rules 30: what each confirmed loss ended (`t=<s> <uid> lost: voided [...], ...`).
     losses: Vec<String>,
     /// Rules 26: a gun's bursts as they went out (`t=<s> burst <n>: <rounds> rounds`).
@@ -4957,6 +5047,9 @@ fn follow_queue(
 /// dispatched while it waits for one), `admit_raised_member` (a member order added for a member the
 /// group's check left out, an armed platform an engagement holds, under the group's approval).
 fn forge_group(events: &mut Vec<crate::audit::Event>, kind: &str) -> Option<Result<(), String>> {
+    if let Some(r) = forge_reform(events, kind) {
+        return Some(r);
+    }
     if !matches!(kind, "move_member_slot" | "member_without_group" | "admit_raised_member") {
         return None;
     }
@@ -5057,6 +5150,70 @@ fn forge_group(events: &mut Vec<crate::audit::Event>, kind: &str) -> Option<Resu
             Some(Ok(()))
         }
     }
+}
+
+/// Rules 34, stage 4: the attacks on a re-form (None for another `kind`): `forge_reform` (the
+/// first re-form's drops' facts made fresh in its inputs, each dropped member's position, status
+/// and heartbeat re-dated to the re-form's time, as if the group re-formed with nobody gone),
+/// `reform_outside_envelope` (the first re-form's first moved member's altitude raised 200 m,
+/// out of its band, in the re-form's layout, its member order and that order's dispatch alike).
+fn forge_reform(events: &mut [crate::audit::Event], kind: &str) -> Option<Result<(), String>> {
+    if !matches!(kind, "forge_reform" | "reform_outside_envelope") {
+        return None;
+    }
+    let Some(at) = events.iter().position(|e| matches!(e.body, EventBody::GroupReformed { .. })) else {
+        return Some(Err("no group.reformed in the log".into()));
+    };
+    if kind == "forge_reform" {
+        let EventBody::GroupReformed { inputs, cause, .. } = &mut events[at].body else {
+            return Some(Err("no group.reformed in the log".into()));
+        };
+        let t = inputs.t;
+        let mut done = false;
+        for uid in cause.dropped.keys() {
+            if let Some(v) = inputs.vehicles.get_mut(uid) {
+                if let Some(p) = v.position.as_mut() {
+                    p.t = t;
+                    done = true;
+                }
+                if let Some(n) = v.nav_ready.as_mut() {
+                    n.t = t;
+                }
+                if let Some(a) = v.autopilot.as_mut() {
+                    a.t = t;
+                }
+            }
+        }
+        return Some(if done { Ok(()) } else { Err("the re-form has no dropped member with a position".into()) });
+    }
+    let (member, mid) = match &mut events[at].body {
+        EventBody::GroupReformed { layout, moved, .. } => {
+            let Some((u, m)) = moved.iter().next().map(|(u, m)| (u.clone(), *m)) else {
+                return Some(Err("the re-form moved nobody".into()));
+            };
+            if let Some(sh) = layout.shares.get_mut(&u) {
+                sh.alt_m = Some(sh.alt_m.unwrap_or(0.0) + 200.0);
+            }
+            (u, m)
+        }
+        _ => return Some(Err("no group.reformed in the log".into())),
+    };
+    let mut done = false;
+    for e in events.iter_mut() {
+        match &mut e.body {
+            EventBody::IntentCreated { intent, .. } if intent.id == mid => {
+                if let Some(sh) = intent.grouping.share.as_mut() {
+                    sh.alt_m = Some(sh.alt_m.unwrap_or(0.0) + 200.0);
+                    done = true;
+                }
+            }
+            EventBody::IntentDispatched { intent, share: Some(sh), .. } if *intent == mid => {
+                sh.alt_m = Some(sh.alt_m.unwrap_or(0.0) + 200.0);
+            }
+            _ => {}
+        }
+    }
+    Some(if done { Ok(()) } else { Err(format!("{member}'s re-form member order has no share")) })
 }
 
 /// Rules 16: every decision's inputs an event logs.

@@ -421,6 +421,52 @@ pub enum EventBody {
         members: BTreeMap<Uid, IntentId>,
     },
 
+    /// Rules 34: a group order in force re-formed itself inside its envelope and tier (docs/SWARMS.md
+    /// section 4.3), its `reform`th re-form: on `cause` (the members on its layout that dropped, the
+    /// members a re-form had left out that are back), the facts of every member of its selection
+    /// (`inputs`, with the terrain along each moved member's new share), the new layout, each
+    /// member moved or back with its new member order (created and approved under the group's
+    /// approval right after, then dispatched or queued on its own), the members back whose share
+    /// failed its checks (left out for good), the moved members' checks, and the largest gap
+    /// against the even spacing. Replay recomputes all of it.
+    #[serde(rename = "group.reformed")]
+    GroupReformed {
+        intent: IntentId,
+        reform: u32,
+        inputs: LoggedInputs,
+        cause: crate::group::Cause,
+        layout: Box<crate::group::Layout>,
+        moved: BTreeMap<Uid, IntentId>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        left_out: BTreeMap<Uid, String>,
+        results: Vec<CheckResult>,
+        largest_gap_m: f64,
+        even_spacing_m: f64,
+    },
+
+    /// Rules 34: a re-form due was refused (it would leave the envelope: a layout that does not
+    /// hold, a moved member's share failing its checks; or raise the tier): nothing moved, the
+    /// members on their shares fly on, the person decides. On the same facts as a re-form.
+    #[serde(rename = "group.reform_refused")]
+    GroupReformRefused {
+        intent: IntentId,
+        inputs: LoggedInputs,
+        cause: crate::group::Cause,
+        why: String,
+    },
+
+    /// Rules 34: a group order in force fell below its minimum (its members on their shares and
+    /// back, `strength`, fewer than `min`, its own less one for each member a newer order took):
+    /// it re-forms no more; the person re-forms it or orders anew (decision 4).
+    #[serde(rename = "group.suspended")]
+    GroupSuspended {
+        intent: IntentId,
+        inputs: LoggedInputs,
+        cause: crate::group::Cause,
+        strength: u32,
+        min: u32,
+    },
+
     /// Rules 5: an approved intent held for vehicles that can't be reached now (`reach`,
     /// recomputed by replay from `inputs`), until `expires_t` at the latest.
     #[serde(rename = "intent.queued")]
@@ -1212,6 +1258,9 @@ impl EventBody {
             | EventBody::PictureIssued { inputs, .. }
             | EventBody::EngagePicture { inputs, .. }
             | EventBody::EngageObserve { inputs, .. }
+            | EventBody::GroupReformed { inputs, .. }
+            | EventBody::GroupReformRefused { inputs, .. }
+            | EventBody::GroupSuspended { inputs, .. }
             | EventBody::IntentQueued { inputs, .. } => vec![inputs_slot(inputs)],
             EventBody::ApprovalReset { inputs, .. } | EventBody::IntentDispatched { inputs, .. } => {
                 inputs.iter_mut().map(inputs_slot).collect()
@@ -1253,6 +1302,9 @@ impl EventBody {
             | EventBody::PictureIssued { inputs, .. }
             | EventBody::EngagePicture { inputs, .. }
             | EventBody::EngageObserve { inputs, .. }
+            | EventBody::GroupReformed { inputs, .. }
+            | EventBody::GroupReformRefused { inputs, .. }
+            | EventBody::GroupSuspended { inputs, .. }
             | EventBody::IntentQueued { inputs, .. } => vec![l(inputs)],
             EventBody::ApprovalReset { inputs, .. } | EventBody::IntentDispatched { inputs, .. } => {
                 inputs.iter().map(l).collect()

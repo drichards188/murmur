@@ -1,0 +1,112 @@
+# Rules 34, stage 4 (docs/SWARMS.md sections 4.3 and 5; bd murmur-4nik): a re-form never raises
+# the tier its group's approval covers. Eight Pumas orbit a 500 m ring on op-1's order, the minimum
+# five. PUMA 3 and PUMA 7 fall silent; once their drops have settled the group would re-form,
+# moving the gaps' neighbours, but PUMA 5, between the two gaps, now navigates on dead reckoning,
+# which no check can verify: its new share would need a person's judgement, so the re-form is
+# refused (`group.reform_refused`, saying why) and nothing moves; the members on their shares fly
+# on and the person decides. The same drops are not tried again a minute later.
+title = "A re-form that would raise the tier is refused, and nothing moves"
+invariant = "group_order"
+attack = "a re-form moving a member whose own facts a person must judge"
+expect = "dispatched"
+end_s = 120
+min_rules = 34
+expect_groups = ["re-form refused: puma-5: would raise the tier: a check nobody could verify (readiness puma-5: navigation on dead reckoning"]
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"
+at = [-122.4720, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-2"
+platform = "puma"
+at = [-122.4680, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-3"
+platform = "puma"
+at = [-122.4640, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-4"
+platform = "puma"
+at = [-122.4600, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-5"
+platform = "puma"
+at = [-122.4720, 37.8190]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-6"
+platform = "puma"
+at = [-122.4680, 37.8190]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-7"
+platform = "puma"
+at = [-122.4640, 37.8190]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-8"
+platform = "puma"
+at = [-122.4600, 37.8190]
+alt_m = 150
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["puma-1", "puma-2", "puma-3", "puma-4", "puma-5", "puma-6", "puma-7", "puma-8"]
+center = [-122.4800, 37.8200]
+radius_m = 500
+group = { min_members = 5 }
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+detail = "8 of 8 can take it (8 sent); the minimum is 5"
+detail_rule = "strength"
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "puma-3"
+silent = true
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "puma-7"
+silent = true
+
+[[step]]
+at_s = 30
+action = "vehicle"
+uid = "puma-5"
+nav = "dead_reckoning"
+
+[[step]]
+at_s = 55
+action = "expect"
+reforms = 0
+reform_refused = "puma-5: would raise the tier: a check nobody could verify"
+member_states = { "puma-5" = "dispatched", "puma-3" = "dispatched" }
+
+[[step]]
+at_s = 118
+action = "expect"
+reforms = 0

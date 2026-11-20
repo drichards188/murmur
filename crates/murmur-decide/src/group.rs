@@ -27,6 +27,7 @@ use crate::geo::LonLat;
 use crate::ids::{IntentId, Uid};
 use crate::intent::{IntentSpec, Task, TaskKind};
 use crate::rules::{CheckResult, Outcome, RuleId, RulesConfig};
+use crate::time::Time;
 use crate::world::{VehicleFacts, WorldSnapshot};
 
 /// How a group's members share its task (docs/SWARMS.md section 3.2).
@@ -735,6 +736,55 @@ pub fn racetrack(a: LonLat, b: LonLat, width_m: f64) -> Vec<LonLat> {
     pts.into_iter().map(|p| round_ll(plane.ll(p))).collect()
 }
 
+/// A member's route as it flies its share of a patrol: the closed loop of `route` (its task's,
+/// the lane or the racetrack it was given) entered `entry_m` along it, the point there first, then
+/// the route's points from the next one on, round to the one before it. The task layer flies this
+/// (rules 34: no slot arithmetic of its own), the same distance along the same loop the layout
+/// measured.
+pub fn entered_route(route: &[LonLat], entry_m: f64) -> Vec<LonLat> {
+    let Some(first) = route.first().copied() else {
+        return Vec::new();
+    };
+    let n = route.len();
+    if n < 2 || !(entry_m.is_finite() && entry_m > 0.0) {
+        return route.to_vec();
+    }
+    let plane = Plane::new(first);
+    let path = Path {
+        pts: route.iter().map(|p| plane.xy(*p)).collect(),
+        closed: true,
+    };
+    let len = path.length();
+    if len <= 0.0 {
+        return route.to_vec();
+    }
+    let mut d = entry_m.rem_euclid(len);
+    // the leg it enters on: from point i to point i + 1 (round to the first)
+    let mut leg = 0;
+    for (i, (a, b)) in path.legs().iter().enumerate() {
+        let l = dist(*a, *b);
+        if d < l {
+            leg = i;
+            break;
+        }
+        d -= l;
+        leg = i + 1;
+    }
+    let leg = leg % n.max(1);
+    let at = round_ll(plane.ll(path.at(entry_m)));
+    let mut out = vec![at];
+    for k in 1..=n {
+        let p = route[(leg + k) % n];
+        if k == n && p == at {
+            break;
+        }
+        if out.last() != Some(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// A point at MAVLink's resolution (1e-7 degree), so a route's waypoints read back the same.
 fn round_ll(p: LonLat) -> LonLat {
     LonLat::new((p.lon * 1e7).round() / 1e7, (p.lat * 1e7).round() / 1e7)
@@ -1425,18 +1475,45 @@ pub fn reform(task: &Task, group: &GroupSpec, prev: &Layout, members: &[Member],
         placed.push((at, m));
         placed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.uid.cmp(&b.1.uid)));
     }
-    // close each gap too large by spreading a window of its neighbours over it
+    // close each gap too large by spreading a window of its neighbours over it; a member whose
+    // link is not healthy is never in a window (it anchors one), and a gap no window can close (a
+    // pinned member on each side, or pinned ones all round) is left while the others are closed
+    let mut stuck: BTreeSet<Uid> = BTreeSet::new();
     let mut guard = 0;
-    while let Some((i, g)) = largest_gap(&placed, len) {
+    loop {
         guard += 1;
-        if g + GAP_MARGIN_M < GAP_FACTOR * s_even || guard > 4 * n {
+        let k = placed.len();
+        if k < 2 || guard > 4 * n + 4 {
             break;
         }
-        let k = placed.len();
-        // the gap runs from member i to member i+1 (cyclic); grow a window [lo, hi] round it
-        let (mut lo, mut hi) = (i, (i + 1) % k);
+        let gap_after = |i: usize| -> f64 {
+            let g = (placed[(i + 1) % k].0 - placed[i].0).rem_euclid(len);
+            if g == 0.0 && i == k - 1 { len } else { g }
+        };
+        let Some((i, g)) = (0..k)
+            .filter(|i| !stuck.contains(&placed[*i].1.uid))
+            .map(|i| (i, gap_after(i)))
+            .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+        else {
+            break;
+        };
+        if g + GAP_MARGIN_M < GAP_FACTOR * s_even {
+            break;
+        }
+        let pin = |q: usize| pinned.contains(&placed[q].1.uid);
+        let (a, b) = (i, (i + 1) % k);
+        // the window: the movable members round the gap, lo..=hi cyclically, anchored outside it
+        let (mut lo, mut hi) = match (pin(a), pin(b)) {
+            (true, true) => {
+                stuck.insert(placed[a].1.uid.clone());
+                continue;
+            }
+            (true, false) => (b, b),
+            (false, true) => (a, a),
+            (false, false) => (a, b),
+        };
         let mut fixed = false;
-        for _ in 0..k {
+        loop {
             let size = (hi + k - lo) % k + 1;
             if size >= k {
                 break;
@@ -1445,27 +1522,26 @@ pub fn reform(task: &Task, group: &GroupSpec, prev: &Layout, members: &[Member],
             let right = (hi + 1) % k;
             let span = (placed[right].0 - placed[left].0).rem_euclid(len);
             let span = if span == 0.0 { len } else { span };
-            let inside: Vec<usize> = (0..size).map(|q| (lo + q) % k).collect();
-            let movable = inside.iter().all(|q| !pinned.contains(&placed[*q].1.uid));
-            if movable && span / (size as f64 + 1.0) + GAP_MARGIN_M < GAP_FACTOR * s_even {
-                for (q, idx) in inside.iter().enumerate() {
-                    placed[*idx].0 = (placed[left].0 + span * (q as f64 + 1.0) / (size as f64 + 1.0)).rem_euclid(len);
+            if span / (size as f64 + 1.0) + GAP_MARGIN_M < GAP_FACTOR * s_even {
+                for q in 0..size {
+                    let idx = (lo + q) % k;
+                    placed[idx].0 = (placed[left].0 + span * (q as f64 + 1.0) / (size as f64 + 1.0)).rem_euclid(len);
                 }
                 fixed = true;
                 break;
             }
             // grow on the side not pinned, alternately
-            let grow_left = !pinned.contains(&placed[left].1.uid) && (size.is_multiple_of(2) || pinned.contains(&placed[right].1.uid));
-            if grow_left {
+            if !pin(left) && (size.is_multiple_of(2) || pin(right)) {
                 lo = left;
-            } else if !pinned.contains(&placed[right].1.uid) {
+            } else if !pin(right) {
                 hi = right;
             } else {
                 break;
             }
         }
         if !fixed {
-            break;
+            stuck.insert(placed[a].1.uid.clone());
+            continue;
         }
         placed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.uid.cmp(&b.1.uid)));
     }
@@ -1620,6 +1696,402 @@ fn largest_gap(placed: &[(f64, &Member)], len: f64) -> Option<(usize, f64)> {
 /// back, but a member whose link is not healthy now keeps its slot.
 pub fn movable(on_share: &BTreeSet<Uid>, back: &BTreeSet<Uid>, unhealthy: &BTreeSet<Uid>) -> BTreeSet<Uid> {
     on_share.union(back).filter(|u| !unhealthy.contains(*u)).cloned().collect()
+}
+
+// ---- in force: re-forming on drops (stage 4) ---------------------------------------------------
+
+/// A silent member drops this long after its position went stale, s: longer than Saturation's
+/// 10 s lost-link timer, so a member its failsafe sends home has gone before it counts, and a
+/// brief gap in its link does not count (docs/SWARMS.md section 4.3; an estimate).
+pub const DROP_AFTER_S: i64 = 20;
+/// A member a re-form left out is back once heard this long running, s (an estimate).
+pub const BACK_AFTER_S: i64 = 30;
+/// A re-form waits until no member dropped or came back for this long, s, so a jam that takes a
+/// swarm's links over half a minute makes one re-form, not ten (an estimate).
+pub const SETTLE_S: i64 = 15;
+/// At most one re-form, or one refusal, per group in this long, s (an estimate).
+pub const REFORM_EVERY_S: i64 = 60;
+/// Material: at least this many members dropped or back since the last layout...
+pub const MATERIAL_MIN: usize = 2;
+/// ...or this share of the selection, whichever is larger; fewer leave gaps (an estimate).
+pub const MATERIAL_SHARE: f64 = 0.05;
+
+/// A group order in force (docs/SWARMS.md sections 2.2 and 4.3): dispatched or done, re-forming,
+/// not suspended, some member still on an order of its own. The engine keeps one per group it
+/// dispatched, and replay one per group it saw dispatched, each changed only by the events both
+/// read (`group.dispatched`, `group.reformed`, `group.reform_refused`, `group.suspended`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Force {
+    /// The layout in force: its dispatch's, then its last re-form's.
+    pub layout: Layout,
+    /// Each member's member order in force, by uid: its dispatch's, then a re-form's.
+    pub members: BTreeMap<Uid, IntentId>,
+    /// When it was dispatched (a member that never reported is silent from then).
+    pub dispatched_t: Time,
+    /// Its re-forms so far (each `group.reformed`'s `reform`).
+    pub seq: u32,
+    /// When it last re-formed, was refused one or was suspended (the rate).
+    pub last_attempt: Option<Time>,
+    /// The members whose drops and returns its last refusal was on: the same cause is not tried
+    /// again (a new drop or return is); and why it was refused (the console's).
+    pub refused: Option<BTreeSet<Uid>>,
+    pub refused_why: Option<String>,
+    /// Members back whose new share failed its checks: left out for good (the person re-forms).
+    pub out: BTreeSet<Uid>,
+    /// When a re-form left each dropped member out of the layout (its return is after it).
+    pub left: BTreeMap<Uid, Time>,
+    /// Below its minimum: it re-forms no more (decision 4: the person re-forms it).
+    pub suspended: bool,
+}
+
+impl Force {
+    /// A group just dispatched on `layout` with `members`.
+    pub fn new(layout: Layout, members: BTreeMap<Uid, IntentId>, t: Time) -> Force {
+        Force {
+            layout,
+            members,
+            dispatched_t: t,
+            ..Force::default()
+        }
+    }
+}
+
+/// One member's order as the group step reads it (the engine's and replay's own intents).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberView {
+    pub state: crate::intent::State,
+    /// When it ended, if it did.
+    pub ended_t: Option<Time>,
+    /// A newer order that is not its group's took its vehicle.
+    pub taken: bool,
+}
+
+/// Why a member counts as dropped, and since when (logged in a re-form's cause; replay
+/// recomputes each from the facts and its own intents).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Drop {
+    pub why: String,
+    pub at: Time,
+}
+
+/// What a re-form, a refusal or a suspension is on: each member on the layout that dropped, and
+/// each member a re-form left out that is back (heard since `since`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Cause {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dropped: BTreeMap<Uid, Drop>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub back: BTreeMap<Uid, Time>,
+}
+
+impl Cause {
+    pub fn is_empty(&self) -> bool {
+        self.dropped.is_empty() && self.back.is_empty()
+    }
+
+    /// The members it is on, by uid.
+    pub fn uids(&self) -> BTreeSet<Uid> {
+        self.dropped.keys().chain(self.back.keys()).cloned().collect()
+    }
+
+    /// The latest change in it: a drop's time, or a return's (heard `BACK_AFTER_S` running).
+    pub fn latest(&self) -> Option<Time> {
+        self.dropped
+            .values()
+            .map(|d| d.at)
+            .chain(self.back.values().map(|t| t.plus_ms(BACK_AFTER_S * 1000)))
+            .max()
+    }
+
+    /// In words, for a refusal, a suspension and the console.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.dropped.is_empty() {
+            let mut by: BTreeMap<&str, u32> = BTreeMap::new();
+            for d in self.dropped.values() {
+                let k = d.why.split(':').next().unwrap_or("");
+                *by.entry(k).or_default() += 1;
+            }
+            let list: Vec<String> = by.iter().map(|(k, v)| format!("{v} {k}")).collect();
+            parts.push(format!("{} dropped ({})", self.dropped.len(), list.join(", ")));
+        }
+        if !self.back.is_empty() {
+            parts.push(format!("{} back", self.back.len()));
+        }
+        parts.join(", ")
+    }
+}
+
+/// A group in force's members as the facts show them now.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Standing {
+    /// On the layout and not dropped (a member silent less than [`DROP_AFTER_S`] past its stale
+    /// limit still counts here).
+    pub on_share: BTreeSet<Uid>,
+    /// On the layout and dropped, with why and since when.
+    pub dropped: BTreeMap<Uid, Drop>,
+    /// Left out of the layout by a re-form and heard again now (not dropped for any reason): back
+    /// once heard [`BACK_AFTER_S`] running.
+    pub heard: BTreeSet<Uid>,
+    /// Taken by a newer order that is not its group's: neither on its share nor dropped; the
+    /// minimum drops by one for each.
+    pub taken: BTreeSet<Uid>,
+}
+
+/// Why `uid` (member order `view`) counts as dropped at `t`, and since when: its member order
+/// ended other than done; confirmed or presumed lost (rules 30's ledger); silent
+/// [`DROP_AFTER_S`] past its link's stale limit. Drift alone never drops a member.
+pub fn drop_reason(
+    uid: &Uid,
+    view: &MemberView,
+    world: &WorldSnapshot,
+    nodes: &crate::nodes::NodeLedger,
+    dispatched_t: Time,
+    cfg: &RulesConfig,
+) -> Option<Drop> {
+    use crate::intent::State;
+    if view.state.is_terminal() && view.state != State::Done {
+        let name = serde_json::to_value(view.state).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        return Some(Drop {
+            why: format!("ended: its member order {name}"),
+            at: view.ended_t.unwrap_or(world.t),
+        });
+    }
+    if let Some(m) = nodes.lost_mark(uid) {
+        return Some(Drop {
+            why: "lost: confirmed lost".into(),
+            at: m.t,
+        });
+    }
+    if let Some(p) = nodes.presumption(uid) {
+        return Some(Drop {
+            why: "lost: presumed lost".into(),
+            at: p.t,
+        });
+    }
+    let v = world.vehicles.get(uid);
+    let (limit, _) = cfg.fact_age_limit_ms(v.and_then(|v| v.report_interval_ms));
+    let stale_at = match v.and_then(|v| v.position.as_ref()) {
+        Some(p) => p.t.plus_ms(limit),
+        None => dispatched_t.plus_ms(limit),
+    };
+    let at = stale_at.plus_ms(DROP_AFTER_S * 1000);
+    if world.t >= at {
+        return Some(Drop {
+            why: format!("silent: no position for {:.0} s", world.t.ms_since(stale_at.plus_ms(-limit)) as f64 / 1000.0),
+            at,
+        });
+    }
+    None
+}
+
+/// The members of a group in force as the facts at `world` show them (`views`: each member
+/// order in force; members a re-form left out for good are neither).
+pub fn standing(
+    force: &Force,
+    views: &BTreeMap<Uid, MemberView>,
+    world: &WorldSnapshot,
+    nodes: &crate::nodes::NodeLedger,
+    cfg: &RulesConfig,
+) -> Standing {
+    let mut s = Standing::default();
+    for uid in force.members.keys() {
+        if force.out.contains(uid) {
+            continue;
+        }
+        let Some(view) = views.get(uid) else { continue };
+        if view.taken {
+            s.taken.insert(uid.clone());
+            continue;
+        }
+        let drop = drop_reason(uid, view, world, nodes, force.dispatched_t, cfg);
+        let silent_now = world
+            .vehicles
+            .get(uid)
+            .is_none_or(|v| crate::nodes::silent(v, world.t, cfg));
+        if force.layout.shares.contains_key(uid) {
+            match drop {
+                Some(d) => {
+                    s.dropped.insert(uid.clone(), d);
+                }
+                None => {
+                    s.on_share.insert(uid.clone());
+                }
+            }
+        } else if drop.is_none() && !silent_now {
+            s.heard.insert(uid.clone());
+        }
+    }
+    s
+}
+
+/// What a group in force's step does now.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Due {
+    Nothing,
+    /// Below its minimum once settled: `group.suspended`.
+    Suspend { strength: u32, min: u32 },
+    /// A re-form is due (material, settled, not within the rate, not the cause last refused).
+    Reform,
+}
+
+/// The minimum a group in force holds to: its own, less one for each member a newer order took.
+pub fn min_in_force(group: &GroupSpec, taken: usize) -> u32 {
+    group.min_members().saturating_sub(taken as u32)
+}
+
+/// Whether a group in force re-forms, is suspended or does nothing at `t` on `cause` (its drops,
+/// and its members back: those heard [`BACK_AFTER_S`] running), `on_share` members on their
+/// shares, `n` the selection (docs/SWARMS.md section 4.3): suspended below its minimum once
+/// settled; else a re-form when the drops and returns are material (at least the larger of
+/// [`MATERIAL_MIN`] and [`MATERIAL_SHARE`] of the selection), settled (none in the last
+/// [`SETTLE_S`]), at least [`REFORM_EVERY_S`] after the last attempt, and not the cause last
+/// refused. A pure function: replay asks it of every logged step.
+pub fn due(force: &Force, group: &GroupSpec, cause: &Cause, on_share: usize, taken: usize, n: usize, t: Time) -> Due {
+    if force.suspended || group.reform != Some(true) {
+        return Due::Nothing;
+    }
+    let settled = cause.latest().is_none_or(|l| t.ms_since(l) >= SETTLE_S * 1000);
+    let min = min_in_force(group, taken);
+    let strength = (on_share + cause.back.len()) as u32;
+    if strength < min && settled && !cause.dropped.is_empty() {
+        return Due::Suspend { strength, min };
+    }
+    let changes = cause.dropped.len() + cause.back.len();
+    let material = changes >= MATERIAL_MIN.max((n as f64 * MATERIAL_SHARE).ceil() as usize);
+    if changes == 0 || !material || !settled {
+        return Due::Nothing;
+    }
+    if force.last_attempt.is_some_and(|l| t.ms_since(l) < REFORM_EVERY_S * 1000) {
+        return Due::Nothing;
+    }
+    if force.refused.as_ref() == Some(&cause.uids()) {
+        return Due::Nothing;
+    }
+    Due::Reform
+}
+
+/// The members a re-form lays out (those on their shares and those back), from their facts.
+pub fn reform_members(on_share: &BTreeSet<Uid>, back: &BTreeSet<Uid>, world: &WorldSnapshot) -> Vec<Member> {
+    on_share
+        .iter()
+        .chain(back.iter())
+        .filter_map(|u| world.vehicles.get(u).and_then(|v| Member::from_facts(u, v)))
+        .collect()
+}
+
+/// A member's link not healthy for a mission upload now (rules 5's reach): a re-form keeps its
+/// slot, so no upload goes into a link that just failed.
+pub fn pinned(group: &IntentSpec, on_share: &BTreeSet<Uid>, world: &WorldSnapshot, queue: &crate::queue::QueueConfig, cfg: &RulesConfig) -> BTreeSet<Uid> {
+    on_share
+        .iter()
+        .filter(|u| {
+            let one = alone(group, group.task.clone(), u);
+            crate::queue::reach(&one, world, queue, cfg).iter().any(|r| !r.reachable)
+        })
+        .cloned()
+        .collect()
+}
+
+/// A re-form as the engine makes it and replay recomputes it: the new layout, each member moved
+/// or back with its member order's spec (in uid order) and their checks, and the members back
+/// left out because their share failed its checks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReformPlan {
+    pub reform: Reform,
+    pub specs: Vec<IntentSpec>,
+    pub results: Vec<CheckResult>,
+    pub left_out: BTreeMap<Uid, String>,
+}
+
+/// Plan a re-form of group order `spec` (its normalized `group`) in force as `force`, on `cause`
+/// (its drops and returns) with `on_share` members on their shares, on `inputs` (every member's
+/// facts). The engine passes `sample` (the world and its terrain source): each moved member's
+/// new share is sampled into `inputs` before its checks read them; replay passes none (the logged
+/// inputs hold those samples). The layout ([`reform`]) keeps the slot of a member whose link is
+/// not healthy now, or that an engagement holds; each moved member's share passes every vehicle
+/// rule ([`member_checks`]), a member back whose share fails is left out (for good) and the
+/// layout made again without it, a member on its share whose new one fails refuses the re-form;
+/// and no moved member's own policy decision raises what its group's approval (`decision`)
+/// covers ([`crate::queue::raised`]). Err: why the re-form is refused.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_reform(
+    spec: &IntentSpec,
+    gs: &GroupSpec,
+    force: &Force,
+    on_share: &BTreeSet<Uid>,
+    cause: &Cause,
+    inputs: &mut WorldSnapshot,
+    sample: Option<(&WorldSnapshot, &dyn crate::terrain::TerrainOracle)>,
+    policy: &crate::policy::Policy,
+    decision: Option<&crate::policy::PolicyDecision>,
+) -> Result<ReformPlan, String> {
+    let cfg = &policy.rules;
+    let mut keep = pinned(spec, on_share, inputs, &policy.queue(), cfg);
+    keep.extend(on_share.iter().filter(|u| inputs.engaged.contains_key(*u)).cloned());
+    let mut left_out: BTreeMap<Uid, String> = BTreeMap::new();
+    loop {
+        let back: BTreeSet<Uid> = cause.back.keys().filter(|u| !left_out.contains_key(*u)).cloned().collect();
+        let members = reform_members(on_share, &back, inputs);
+        let rf = reform(&spec.task, gs, &force.layout, &members, &keep);
+        if let Some(why) = &rf.layout.refused {
+            return Err(format!("the re-formed layout does not hold: {why}"));
+        }
+        let mut specs = Vec::new();
+        for uid in &rf.moved {
+            let (Some(task), Some(share)) = (member_task(&spec.task, gs, &rf.layout, uid), rf.layout.shares.get(uid)) else {
+                return Err(format!("{uid}: the re-formed layout gives it no share"));
+            };
+            specs.push(member_spec(spec, task, uid, share.clone()));
+        }
+        if let Some((world, terrain)) = sample {
+            for ms in &specs {
+                let mw = world.for_intent_plan(ms, terrain, cfg, None);
+                inputs.terrain.merge(mw.terrain);
+                inputs.route_plans.extend(mw.route_plans);
+            }
+        }
+        let mut results = Vec::new();
+        let mut again = false;
+        for ms in &specs {
+            let Some(uid) = ms.uids.first() else { continue };
+            let own = member_checks(ms, inputs, cfg);
+            if let Some(f) = own.iter().find(|r| r.outcome == Outcome::Fail) {
+                let why = format!("{}: {}", f.rule.as_str(), f.detail);
+                if back.contains(uid) {
+                    left_out.insert(uid.clone(), why);
+                    again = true;
+                } else {
+                    return Err(format!("{uid}'s new share fails {why}"));
+                }
+            }
+            results.extend(own);
+        }
+        if again {
+            continue;
+        }
+        // the tier: what each moved member's own facts would ask of the policy, against its group's
+        let Some(group_decision) = decision else {
+            return Err("no policy decision of its group's to judge the re-form against".into());
+        };
+        for ms in &specs {
+            let Some(uid) = ms.uids.first() else { continue };
+            let mut w = inputs.clone();
+            w.engaged.retain(|u, _| u == uid);
+            w.waiting.retain(|u, _| u == uid);
+            let d = crate::policy::decide(ms, &w, policy);
+            let raised = crate::queue::raised(&d, group_decision);
+            if !raised.is_empty() {
+                return Err(format!("{uid}: {}", raised.join("; ")));
+            }
+        }
+        return Ok(ReformPlan {
+            reform: rf,
+            specs,
+            results,
+            left_out,
+        });
+    }
 }
 
 // ---- the group's check (rules 34) ----------------------------------------------------------
@@ -1794,14 +2266,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             && let (Some(t), Some(sh)) = (member_task(&spec.task, &group, &lay, uid), lay.shares.get(uid))
         {
             let ms = member_spec(spec, t.clone(), uid, sh.clone());
-            own.extend(crate::rules::readiness(&ms, world, cfg));
-            own.extend(crate::rules::platform_limits(&ms, world, cfg));
-            own.extend(crate::rules::domain(&ms, world, cfg));
-            own.extend(crate::rules::geofence(&ms, world, cfg));
-            own.extend(crate::rules::reserves(&ms, world, cfg));
-            if let Some(d) = depth(&ms, world, sh) {
-                own.push(d);
-            }
+            own.extend(member_checks(&ms, world, cfg));
             task = Some(t);
             share = Some(sh.clone());
         }
@@ -1885,6 +2350,22 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         members,
         results,
     }
+}
+
+/// Every vehicle rule on one member's own share (`ms`, a member order's spec): readiness, its
+/// platform's limits, the domain, the geofence, its reserves, and `depth` on a sub's layer. The
+/// group's check and a re-form's both judge a share here.
+pub fn member_checks(ms: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
+    let mut own = Vec::new();
+    own.extend(crate::rules::readiness(ms, world, cfg));
+    own.extend(crate::rules::platform_limits(ms, world, cfg));
+    own.extend(crate::rules::domain(ms, world, cfg));
+    own.extend(crate::rules::geofence(ms, world, cfg));
+    own.extend(crate::rules::reserves(ms, world, cfg));
+    if let Some(d) = ms.share().and_then(|sh| depth(ms, world, sh)) {
+        own.push(d);
+    }
+    own
 }
 
 /// The layout in words (the `separation` rule's detail).
