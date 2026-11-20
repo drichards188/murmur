@@ -1296,6 +1296,16 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
 /// The fewest distinct approvers an engagement may have, whatever the policy file says.
 pub const ENGAGE_MIN_APPROVERS: u32 = 2;
 
+/// Whether a tier's `kind` list takes `kind`. Rules 34 (policy schema 9, staged): a list that names
+/// patrol routes a transit as it routes a patrol (a route flown once and held, where a patrol loops
+/// on it), until the files name transit themselves: the flip writes it beside patrol into the
+/// standing policy and the watch policy's agent tier (docs/SWARMS.md section 5), whose text every
+/// run logs, so no older run's record moves before then. Under older rules a transit is refused
+/// before the policy is asked.
+fn kind_listed(ks: &[TaskKind], kind: TaskKind, rules: &crate::rules::RulesConfig) -> bool {
+    ks.contains(&kind) || (kind == TaskKind::Transit && rules.group_orders() && ks.contains(&TaskKind::Patrol))
+}
+
 fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy, group: Option<&crate::group::GroupEval>) -> PolicyDecision {
     // rules 34: a group's facts are its members' sent or waiting
     let counted: Option<std::collections::BTreeSet<Uid>> = group.map(|g| g.counted().into_iter().collect());
@@ -1350,7 +1360,7 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy, gro
     let human_source = facts.source == SourceKind::Human;
     for rule in &policy.tiers {
         let w = &rule.when;
-        let matches = w.kind.as_ref().is_none_or(|ks| ks.contains(&facts.kind))
+        let matches = w.kind.as_ref().is_none_or(|ks| kind_listed(ks, facts.kind, &policy.rules))
             && w.armed.is_none_or(|a| a == !facts.armed.is_empty())
             && w.leaves_approved_area
                 .is_none_or(|l| l == facts.leaves_approved_area)

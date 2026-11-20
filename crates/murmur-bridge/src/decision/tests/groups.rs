@@ -309,7 +309,7 @@ async fn a_transit_holds_where_its_route_ends_by_type() {
 
 /// Rules 34: a group transit through the bridge, each member's own order flown as its member
 /// order says: three quadcopters each straight to its own station along a line, at its share's
-/// altitude, holding there; and an agent proposes no transit yet (the operator orders one).
+/// altitude, holding there.
 #[tokio::test(start_paused = true)]
 async fn a_group_transit_flies_each_member_to_its_station() {
     let rig = rig_rules(GROUP_ORDER_SINCE);
@@ -319,7 +319,7 @@ async fn a_group_transit_flies_each_member_to_its_station() {
     let mut req = simple("transit", uids[0]);
     req.uids = uids.clone();
     req.params.route = Some(route.clone());
-    let (gid, shares) = dispatched(&rig, req.clone()).await;
+    let (gid, shares) = dispatched(&rig, req).await;
     assert_eq!(shares.len(), 3);
     for _ in 0..240 {
         rig.d.tick();
@@ -344,8 +344,4 @@ async fn a_group_transit_flies_each_member_to_its_station() {
         };
         assert!(metres(pos, (at.lat, at.lon)) < 5.0, "{}: holds at its station", w.uid);
     }
-    let agent = murmur_decide::AgentId::new("agent-planner");
-    req.rationale = Some("move the picket".into());
-    let e = rig.d.agent_propose(&agent, req).await.expect_err("an agent's transit");
-    assert_eq!(e.status, 422, "{}", e.detail);
 }

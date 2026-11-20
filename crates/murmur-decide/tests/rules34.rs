@@ -125,3 +125,23 @@ fn a_groups_end_counts_its_members() {
     assert!(!ok);
     assert!(why.starts_with("failed: 2 reached their shares, 2 failed, 1 voided"), "{why}");
 }
+
+/// Rules 34 (policy schema 9, staged): a transit is routed as a patrol is. Under the situations'
+/// watch policy an agent's transit waits for the operator in its agent tier, which names patrol;
+/// under the standing policy an agent's routine transit goes by the default tier, as a patrol does.
+#[test]
+fn a_transit_is_routed_as_a_patrol() {
+    let clock = ManualClock::new(T0);
+    let w = four_quads();
+    let t = terrain();
+    let route = vec![LonLat::new(-122.4600, 37.8100), LonLat::new(-122.4700, 37.8100)];
+    let one = || Proposal::new(Task::Transit { route: route.clone() }, vec![uid("sky-1")]);
+    let mut e = Engine::new(watch_policy(), roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
+    let id = e.agent_port(AgentId::new("agent-planner")).propose(one(), rationale("hold a station on the strait"), &w, &t).unwrap().id();
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::PendingApproval, "{:?}", i.history());
+    assert_eq!(i.policy().map(|p| p.rule.as_str()), Some("agent-tasking"));
+    let mut e = Engine::new(rules34(Policy::load(&sim_dir().join("policy.toml")).unwrap()), roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
+    let id = e.agent_port(AgentId::new("agent-planner")).propose(one(), rationale("hold a station on the strait"), &w, &t).unwrap().id();
+    assert_eq!(e.intent(id).unwrap().policy().map(|p| p.rule.as_str()), Some("default"), "{:?}", e.intent(id).unwrap().policy());
+}
