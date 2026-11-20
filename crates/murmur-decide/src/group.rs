@@ -229,6 +229,16 @@ pub struct Share {
     /// Its slot's point (a ring's entry point, a route's, a station, a block's cell).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<LonLat>,
+    /// `ring` on the surface: the radius of the concentric ring it flies, m, where the order's
+    /// ring would bring members closer than their lateral minimum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring_m: Option<f64>,
+    /// `lanes`: the lane it flies (0: the leftmost, looking along the route).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<u32>,
+    /// `along` on a two-point route: how far apart the legs of the racetrack it flies are, m.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_m: Option<f64>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -463,9 +473,31 @@ pub struct Member {
     /// Its last reported position (fresh or not: the assignment pairs it with the slot nearest
     /// where it was last seen); None: never reported, laid out last.
     pub at: Option<LonLat>,
+    /// Its last reported altitude above mean sea level, m (a hold's warnings read it).
+    pub alt_m: Option<f64>,
     pub domain: Domain,
     pub fixed_wing: bool,
+    /// How tight it turns, m: a fixed wing's loiter radius, else its catalog turn radius.
+    pub turn_m: Option<f64>,
     pub figures: Formation,
+}
+
+impl Member {
+    /// One of ours as the layout reads it, from its logged facts (None: no platform facts).
+    pub fn from_facts(uid: &Uid, v: &crate::world::VehicleFacts) -> Option<Member> {
+        let p = v.platform.as_ref()?;
+        let figures = figures(p);
+        let fixed_wing = p.autopilot.is_some_and(AutopilotKind::is_fixed_wing);
+        Some(Member {
+            uid: uid.clone(),
+            at: v.position.as_ref().map(|f| f.value),
+            alt_m: v.alt_msl_m.as_ref().map(|f| f.value),
+            domain: p.domain,
+            fixed_wing,
+            turn_m: if fixed_wing { figures.loiter_m } else { p.min_turn_radius_m },
+            figures,
+        })
+    }
 }
 
 /// A group's layout: each member's share, and the figures it was laid out on (logged in the
@@ -504,19 +536,1082 @@ pub struct DomainLayout {
     pub lateral_m: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertical_m: Option<f64>,
+    /// `along` on a two-point route: how far apart the racetrack's legs are, m.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub racetrack_m: Option<f64>,
+    /// The path's length, m (a ring's circumference, a route's loop or line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_m: Option<f64>,
 }
 
-/// Lay out `members` (the members a group's check lays out, in uid order) over `task` as `group`
-/// spreads it: the slots first, then each member paired with a slot by minimum total distance
-/// (ties by uid), its layer and altitude within its type's band. A pure function of its
-/// arguments: the engine and replay call it on the same logged facts and get the same layout.
+/// Lay out `members` (the members a group's check lays out) over `task` as `group` spreads it:
+/// the slots first, per domain (air, surface and subsurface never share a layer), then each
+/// member paired with a slot by minimum total distance (integer millimetres, ties by uid), its
+/// layer and altitude within its type's band (docs/SWARMS.md section 3). A pure function of its
+/// arguments: the engine and replay call it on the same logged facts and get the same layout,
+/// whatever order the members come in.
 pub fn layout(task: &Task, group: &GroupSpec, members: &[Member]) -> Layout {
-    let _ = (task, members);
-    Layout {
-        spread: group.spread,
-        refused: Some("the layout is not built in this stage".into()),
+    let spread = group.spread.or_else(|| Spread::default_for(task.kind()));
+    let mut out = Layout {
+        spread,
         ..Layout::default()
+    };
+    let Some(spread) = spread.filter(|s| s.fits(task.kind()) || matches!(s, Spread::Stations | Spread::Block)) else {
+        out.refused = Some(format!("no spread lays out a group {}", task.kind().as_str()));
+        return out;
+    };
+    let mut sorted: Vec<&Member> = members.iter().collect();
+    sorted.sort_by(|a, b| a.uid.cmp(&b.uid));
+    sorted.dedup_by(|a, b| a.uid == b.uid);
+    if !spread.laid_out() {
+        // a hold or an rtl: each where it is, or home; never refused for its layout
+        for (i, m) in sorted.iter().enumerate() {
+            out.shares.insert(
+                m.uid.clone(),
+                Share {
+                    slot: i as u32,
+                    at: if spread == Spread::Here { m.at } else { None },
+                    ..Share::default()
+                },
+            );
+        }
+        if spread == Spread::Here {
+            out.warnings = hold_warnings(&sorted);
+        }
+        return out;
     }
+    let mut by_domain: BTreeMap<Domain, Vec<&Member>> = BTreeMap::new();
+    for m in sorted {
+        by_domain.entry(m.domain).or_default().push(m);
+    }
+    for (domain, ms) in by_domain {
+        match lay_domain(task, group, spread, domain, &ms) {
+            Ok((d, shares)) => {
+                out.domains.push(d);
+                out.shares.extend(shares);
+            }
+            Err(why) => {
+                out.refused = Some(why);
+                out.shares.clear();
+                return out;
+            }
+        }
+    }
+    if let Some(why) = separation(&out, members) {
+        out.refused = Some(why);
+        out.shares.clear();
+    }
+    out
+}
+
+/// A member order's task: the group's, with the member's own geometry (its ring's radius on the
+/// surface, its lane, the racetrack a two-point route becomes); its altitude and where it enters
+/// are its share's. None when the layout has no share for `uid`.
+pub fn member_task(task: &Task, group: &GroupSpec, lay: &Layout, uid: &Uid) -> Option<Task> {
+    let share = lay.shares.get(uid)?;
+    Some(match (task, lay.spread) {
+        (Task::Orbit { center, radius_m }, _) => Task::Orbit {
+            center: *center,
+            radius_m: share.ring_m.unwrap_or(*radius_m),
+        },
+        (Task::Patrol { route }, Some(Spread::Lanes)) => {
+            let m = group.lanes.unwrap_or(1);
+            let spacing = group.lane_spacing_m.unwrap_or(0.0);
+            let j = share.lane.unwrap_or(0);
+            Task::Patrol {
+                route: offset_route(route, lane_offset(j, m, spacing)),
+            }
+        }
+        (Task::Patrol { route }, Some(Spread::Along)) if route.len() == 2 => Task::Patrol {
+            route: racetrack(route[0], route[1], share.width_m?),
+        },
+        (t, _) => t.clone(),
+    })
+}
+
+// ---- geometry on a local plane -------------------------------------------------------------
+
+/// Metres per degree of latitude (as `crate::geo`'s circles).
+const M_PER_DEG: f64 = 111_320.0;
+
+/// Points on each half circle of a racetrack's ends.
+const ARC_POINTS: usize = 8;
+
+#[derive(Clone, Copy, Debug)]
+struct Plane {
+    origin: LonLat,
+    cos: f64,
+}
+
+impl Plane {
+    fn new(origin: LonLat) -> Plane {
+        Plane {
+            origin,
+            cos: origin.lat.to_radians().cos().max(1e-6),
+        }
+    }
+    fn xy(&self, p: LonLat) -> (f64, f64) {
+        (
+            (p.lon - self.origin.lon) * M_PER_DEG * self.cos,
+            (p.lat - self.origin.lat) * M_PER_DEG,
+        )
+    }
+    fn ll(&self, (x, y): (f64, f64)) -> LonLat {
+        LonLat::new(self.origin.lon + x / (M_PER_DEG * self.cos), self.origin.lat + y / M_PER_DEG)
+    }
+}
+
+fn dist((ax, ay): (f64, f64), (bx, by): (f64, f64)) -> f64 {
+    (ax - bx).hypot(ay - by)
+}
+
+/// A polyline on the plane, closed (back to its first point) or open.
+#[derive(Clone, Debug)]
+struct Path {
+    pts: Vec<(f64, f64)>,
+    closed: bool,
+}
+
+impl Path {
+    fn legs(&self) -> Vec<((f64, f64), (f64, f64))> {
+        let n = self.pts.len();
+        let mut v: Vec<_> = self.pts.windows(2).map(|w| (w[0], w[1])).collect();
+        if self.closed && n > 2 {
+            v.push((self.pts[n - 1], self.pts[0]));
+        } else if self.closed && n == 2 {
+            v.push((self.pts[1], self.pts[0]));
+        }
+        v
+    }
+    fn length(&self) -> f64 {
+        self.legs().iter().map(|(a, b)| dist(*a, *b)).sum()
+    }
+    /// The point `d` metres along (wrapped round a closed path, clamped on an open one).
+    fn at(&self, d: f64) -> (f64, f64) {
+        let len = self.length();
+        let mut d = if self.closed && len > 0.0 { d.rem_euclid(len) } else { d.clamp(0.0, len) };
+        for (a, b) in self.legs() {
+            let l = dist(a, b);
+            if d <= l && l > 0.0 {
+                let f = d / l;
+                return (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
+            }
+            d -= l;
+        }
+        self.pts.last().copied().unwrap_or((0.0, 0.0))
+    }
+}
+
+/// A two-point route as a racetrack whose legs are `width_m` apart: out along one side of the
+/// line, round the far end, back along the other, round the near end (a closed loop, so members
+/// going opposite ways never meet head on).
+pub fn racetrack(a: LonLat, b: LonLat, width_m: f64) -> Vec<LonLat> {
+    let plane = Plane::new(a);
+    let (pa, pb) = (plane.xy(a), plane.xy(b));
+    let len = dist(pa, pb).max(1e-9);
+    let u = ((pb.0 - pa.0) / len, (pb.1 - pa.1) / len);
+    let n = (-u.1, u.0);
+    let r = width_m / 2.0;
+    let mut pts = Vec::new();
+    // the out leg on the right of the line (looking from a to b)
+    pts.push((pa.0 - n.0 * r, pa.1 - n.1 * r));
+    pts.push((pb.0 - n.0 * r, pb.1 - n.1 * r));
+    // round b, from its right through beyond it to its left
+    for k in 1..ARC_POINTS {
+        let t = std::f64::consts::PI * k as f64 / ARC_POINTS as f64;
+        let (c, s) = (t.cos(), t.sin());
+        pts.push((pb.0 - n.0 * r * c + u.0 * r * s, pb.1 - n.1 * r * c + u.1 * r * s));
+    }
+    pts.push((pb.0 + n.0 * r, pb.1 + n.1 * r));
+    pts.push((pa.0 + n.0 * r, pa.1 + n.1 * r));
+    // round a, from its left through behind it to its right
+    for k in 1..ARC_POINTS {
+        let t = std::f64::consts::PI * k as f64 / ARC_POINTS as f64;
+        let (c, s) = (t.cos(), t.sin());
+        pts.push((pa.0 + n.0 * r * c - u.0 * r * s, pa.1 + n.1 * r * c - u.1 * r * s));
+    }
+    pts.into_iter().map(|p| round_ll(plane.ll(p))).collect()
+}
+
+/// A point at MAVLink's resolution (1e-7 degree), so a route's waypoints read back the same.
+fn round_ll(p: LonLat) -> LonLat {
+    LonLat::new((p.lon * 1e7).round() / 1e7, (p.lat * 1e7).round() / 1e7)
+}
+
+/// Lane `j` of `m`'s sideways offset, m (lanes centred on the route).
+fn lane_offset(j: u32, m: u32, spacing_m: f64) -> f64 {
+    (f64::from(j) - f64::from(m.saturating_sub(1)) / 2.0) * spacing_m
+}
+
+/// `route` moved `off` metres sideways (to the left, looking from its first point to its last).
+pub fn offset_route(route: &[LonLat], off: f64) -> Vec<LonLat> {
+    let (Some(first), Some(last)) = (route.first(), route.last()) else {
+        return route.to_vec();
+    };
+    let plane = Plane::new(*first);
+    let (a, b) = (plane.xy(*first), plane.xy(*last));
+    let len = dist(a, b);
+    let n = if len > 0.0 { (-(b.1 - a.1) / len, (b.0 - a.0) / len) } else { (0.0, 1.0) };
+    route
+        .iter()
+        .map(|p| {
+            let (x, y) = plane.xy(*p);
+            round_ll(plane.ll((x + n.0 * off, y + n.1 * off)))
+        })
+        .collect()
+}
+
+// ---- one domain ------------------------------------------------------------------------------
+
+/// A slot: where it is, and what a member there flies.
+struct Slot {
+    xy: (f64, f64),
+    phase_deg: Option<f64>,
+    entry_m: Option<f64>,
+    ring_m: Option<f64>,
+    lane: Option<u32>,
+    layer: u32,
+}
+
+type DomainShares = (DomainLayout, BTreeMap<Uid, Share>);
+
+fn lay_domain(task: &Task, group: &GroupSpec, spread: Spread, domain: Domain, ms: &[&Member]) -> Result<DomainShares, String> {
+    let n = ms.len();
+    let lateral = ms.iter().map(|m| m.figures.lateral_m).fold(0.0, f64::max);
+    let vertical = ms.iter().filter_map(|m| m.figures.vertical_m).reduce(f64::max);
+    let layered = vertical.is_some() && matches!(domain, Domain::Air | Domain::Subsurface);
+    let name = domain.as_str();
+    // the most layers every member's band allows
+    let max_layers = if layered { max_layers(group.alt_m, ms, vertical.unwrap_or(0.0)) } else { 1 };
+    if layered && max_layers == 0 {
+        return Err(format!(
+            "the {name} members' layer base is outside their band (alt_m {}): no layer fits",
+            group.alt_m.map_or("their cruise altitude".into(), |a| format!("{a:.0} m"))
+        ));
+    }
+    // `k_need` neighbours in a row must be in different layers (1: all in one)
+    let layers_for = |k_need: u32, need: f64, capacity_per_layer: usize, what: &str, closed: bool| -> Result<u32, String> {
+        if k_need <= 1 {
+            return Ok(1);
+        }
+        if !layered {
+            return Err(format!(
+                "{what} holds {capacity_per_layer} {name} members at least {need:.0} m apart; {n} do not fit"
+            ));
+        }
+        let k = k_need.min(n as u32);
+        // round a closed path the wrap from the last slot to the first needs one more where k
+        // does not divide n
+        let k = if closed { layer_pattern(n, k).0 } else { k };
+        if k > max_layers {
+            let alts = layer_alts(group.alt_m, ms, max_layers, vertical.unwrap_or(0.0));
+            return Err(format!(
+                "{what} holds {} {name} members in {max_layers} layer(s) ({alts}) at least {need:.0} m apart; {n} do not fit",
+                capacity_per_layer * max_layers as usize
+            ));
+        }
+        Ok(k)
+    };
+    let mut d = DomainLayout {
+        domain,
+        members: n as u32,
+        spacing_m: None,
+        layers: 1,
+        rings_m: Vec::new(),
+        lateral_m: lateral,
+        vertical_m: if layered { vertical } else { None },
+        racetrack_m: None,
+        path_m: None,
+    };
+    let (plane, slots) = match (task, spread) {
+        (Task::Orbit { center, radius_m }, Spread::Ring) => {
+            let plane = Plane::new(*center);
+            let r = *radius_m;
+            let circ = std::f64::consts::TAU * r;
+            let s = circ / n as f64;
+            d.spacing_m = Some(round1(s));
+            d.path_m = Some(round1(circ));
+            let surface = !layered && s + 1e-9 < lateral;
+            let mut slots = Vec::with_capacity(n);
+            if surface {
+                // concentric rings two lateral minima apart, centred on the ordered radius, within
+                // a quarter of it; neighbours on the ring in different rings (the wrap round from
+                // the last slot to the first too: [`layer_pattern`])
+                let off = |j: u32, m: u32| lateral * (2.0 * f64::from(j) - f64::from(m - 1));
+                let fits = |m: u32| (0..m).all(|j| off(j, m).abs() <= 0.25 * r + 1e-9 && r + off(j, m) > 0.0);
+                // members of one ring are at least `m0` slots apart: on the innermost ring too
+                // their chord must be the lateral minimum, so `m0` grows until it is (or the
+                // rings no longer fit)
+                let mut m0 = ((lateral / s) - 1e-9).ceil().max(1.0) as u32;
+                let (m, pattern) = loop {
+                    let (m, pattern) = layer_pattern(n, m0.min(n as u32));
+                    let inner = r + off(0, m);
+                    let chord = 2.0 * inner * (std::f64::consts::PI * f64::from(m0) / n as f64).min(std::f64::consts::FRAC_PI_2).sin();
+                    if chord + 1e-6 >= lateral || !fits(m) || m0 as usize >= n {
+                        break (m, pattern);
+                    }
+                    m0 += 1;
+                };
+                if !fits(m) {
+                    let mut m_max = 1;
+                    while fits(m_max + 1) {
+                        m_max += 1;
+                    }
+                    let cap: usize = (0..m_max).map(|j| (std::f64::consts::TAU * (r + off(j, m_max)) / lateral).floor() as usize).sum();
+                    let radii: Vec<String> = (0..m_max).map(|j| format!("{:.0}", r + off(j, m_max))).collect();
+                    return Err(format!(
+                        "a {r:.0} m ring holds {cap} {name} members on {m_max} ring(s), at {} m; {n} do not fit",
+                        radii.join(", ")
+                    ));
+                }
+                d.rings_m = (0..m).map(|j| round1(r + off(j, m))).collect();
+                for (i, j) in pattern.iter().copied().enumerate() {
+                    let rr = r + off(j, m);
+                    let phase = 360.0 * i as f64 / n as f64;
+                    slots.push(Slot {
+                        xy: on_circle(rr, phase),
+                        phase_deg: Some(round3(phase)),
+                        entry_m: None,
+                        ring_m: (m > 1).then_some(round1(rr)),
+                        lane: None,
+                        layer: 0,
+                    });
+                }
+            } else {
+                // members `j` slots apart are a chord apart, shorter than the arc on a small ring
+                let chord = |j: usize| 2.0 * r * (std::f64::consts::PI * j as f64 / n as f64).min(std::f64::consts::FRAC_PI_2).sin();
+                let k_need = (1..=n).find(|j| chord(*j) + 1e-6 >= lateral).unwrap_or(n) as u32;
+                let per_layer = if lateral <= 2.0 * r { (std::f64::consts::PI / (lateral / (2.0 * r)).asin()).floor() as usize } else { 1 };
+                let k = layers_for(k_need, lateral, per_layer, &format!("a {r:.0} m ring"), true)?;
+                let pattern = closed_layers(n, k_need);
+                d.layers = k;
+                for (i, layer) in pattern.iter().copied().enumerate() {
+                    let phase = 360.0 * i as f64 / n as f64;
+                    slots.push(Slot {
+                        xy: on_circle(r, phase),
+                        phase_deg: Some(round3(phase)),
+                        entry_m: None,
+                        ring_m: None,
+                        lane: None,
+                        layer,
+                    });
+                }
+            }
+            (plane, slots)
+        }
+        (Task::Patrol { route }, Spread::Along) => {
+            let first = route.first().copied().unwrap_or(LonLat::new(0.0, 0.0));
+            let plane = Plane::new(first);
+            let pts: Vec<LonLat> = if route.len() == 2 {
+                let turn = ms.iter().filter_map(|m| m.turn_m).fold(0.0, f64::max);
+                let w = (2.0 * turn).max(lateral);
+                d.racetrack_m = Some(round1(w));
+                racetrack(route[0], route[1], w)
+            } else {
+                route.clone()
+            };
+            let path = Path {
+                pts: pts.iter().map(|p| plane.xy(*p)).collect(),
+                closed: true,
+            };
+            let len = path.length();
+            let s = len / n as f64;
+            d.spacing_m = Some(round1(s));
+            d.path_m = Some(round1(len));
+            let xy: Vec<(f64, f64)> = (0..n).map(|i| path.at(len * i as f64 / n as f64)).collect();
+            let k_need = apart_in_layers(&xy, need_in_a_row(s, lateral), lateral);
+            let k = layers_for(k_need, lateral, (len / lateral).floor() as usize, &format!("a {:.0} m route", len), true)?;
+            let pattern = closed_layers(n, k_need);
+            d.layers = k;
+            let slots = (0..n)
+                .map(|i| {
+                    let e = len * i as f64 / n as f64;
+                    Slot {
+                        xy: xy[i],
+                        phase_deg: None,
+                        entry_m: Some(round1(e)),
+                        ring_m: None,
+                        lane: None,
+                        layer: pattern[i],
+                    }
+                })
+                .collect();
+            (plane, slots)
+        }
+        (Task::Patrol { route }, Spread::Lanes) => {
+            let m = group.lanes.unwrap_or(1).max(1);
+            let spacing = group.lane_spacing_m.unwrap_or(0.0);
+            if m > 1 && spacing + 1e-9 < lateral {
+                return Err(format!("lanes {spacing:.0} m apart are closer than the {name} members' {lateral:.0} m"));
+            }
+            let first = route.first().copied().unwrap_or(LonLat::new(0.0, 0.0));
+            let plane = Plane::new(first);
+            let mut slots = Vec::with_capacity(n);
+            let mut k_all = 1;
+            for j in 0..m {
+                let lane_n = (0..n).filter(|i| (*i as u32) % m == j).count();
+                if lane_n == 0 {
+                    continue;
+                }
+                let lane = offset_route(route, lane_offset(j, m, spacing));
+                let path = Path {
+                    pts: lane.iter().map(|p| plane.xy(*p)).collect(),
+                    closed: true,
+                };
+                let len = path.length();
+                let s = len / lane_n as f64;
+                let xy: Vec<(f64, f64)> = (0..lane_n).map(|q| path.at(len * q as f64 / lane_n as f64)).collect();
+                let k_need = apart_in_layers(&xy, need_in_a_row(s, lateral), lateral);
+                let k = layers_for(k_need, lateral, (len / lateral).floor() as usize, &format!("lane {} ({len:.0} m)", j + 1), true)?;
+                let pattern = closed_layers(lane_n, k_need);
+                k_all = k_all.max(k);
+                d.spacing_m = Some(round1(s));
+                d.path_m = Some(round1(len));
+                for (q, _) in (0..n).filter(|i| (*i as u32) % m == j).enumerate() {
+                    let e = len * q as f64 / lane_n as f64;
+                    slots.push((j as usize + q * m as usize, Slot {
+                        xy: path.at(e),
+                        phase_deg: None,
+                        entry_m: Some(round1(e)),
+                        ring_m: None,
+                        lane: Some(j),
+                        layer: pattern[q],
+                    }));
+                }
+            }
+            d.layers = k_all;
+            slots.sort_by_key(|(i, _)| *i);
+            (plane, slots.into_iter().map(|(_, s)| s).collect())
+        }
+        (Task::Patrol { route }, Spread::Stations) => {
+            let first = route.first().copied().unwrap_or(LonLat::new(0.0, 0.0));
+            let plane = Plane::new(first);
+            let path = Path {
+                pts: route.iter().map(|p| plane.xy(*p)).collect(),
+                closed: false,
+            };
+            let len = path.length();
+            let s = if n > 1 { len / (n - 1) as f64 } else { f64::INFINITY };
+            // a station holds by its type: a copter in place, a fixed wing on its loiter circle
+            let need = ms
+                .iter()
+                .map(|m| if m.fixed_wing { (2.0 * m.figures.loiter_m.unwrap_or(LOITER_DEFAULT_M)).max(lateral) } else { lateral })
+                .fold(lateral, f64::max);
+            d.spacing_m = Some(round1(s.min(len)));
+            d.path_m = Some(round1(len));
+            let k = layers_for(need_in_a_row(s, need), need, (len / need).floor() as usize + 1, &format!("a {len:.0} m route"), false)?;
+            d.layers = k;
+            let slots = (0..n)
+                .map(|i| {
+                    let e = if n > 1 { len * i as f64 / (n - 1) as f64 } else { 0.0 };
+                    Slot {
+                        xy: path.at(e),
+                        phase_deg: None,
+                        entry_m: Some(round1(e)),
+                        ring_m: None,
+                        lane: None,
+                        layer: (i as u32) % k,
+                    }
+                })
+                .collect();
+            (plane, slots)
+        }
+        (Task::Patrol { route }, Spread::Block) => {
+            let end = route.last().copied().unwrap_or(LonLat::new(0.0, 0.0));
+            let plane = Plane::new(end);
+            let g = ms
+                .iter()
+                .map(|m| if m.fixed_wing { (2.0 * m.figures.loiter_m.unwrap_or(LOITER_DEFAULT_M)).max(lateral) } else { lateral })
+                .fold(lateral, f64::max);
+            let c = (n as f64).sqrt().ceil().max(1.0) as usize;
+            let rows = n.div_ceil(c);
+            d.spacing_m = Some(round1(g));
+            let slots = (0..n)
+                .map(|i| {
+                    let (col, row) = (i % c, i / c);
+                    let x = (col as f64 - (c as f64 - 1.0) / 2.0) * g;
+                    let y = ((rows as f64 - 1.0) / 2.0 - row as f64) * g;
+                    Slot {
+                        xy: (x, y),
+                        phase_deg: None,
+                        entry_m: None,
+                        ring_m: None,
+                        lane: None,
+                        layer: 0,
+                    }
+                })
+                .collect();
+            (plane, slots)
+        }
+        (t, s) => return Err(format!("{} does not lay out a {}", s.as_str(), t.kind().as_str())),
+    };
+    // each member with a slot by minimum total distance (ties by uid: the members come sorted)
+    let cost: Vec<Vec<i64>> = ms
+        .iter()
+        .map(|m| {
+            slots
+                .iter()
+                .map(|sl| m.at.map_or(0, |p| (dist(plane.xy(p), sl.xy) * 1000.0).round() as i64))
+                .collect()
+        })
+        .collect();
+    let pick = assign(&cost);
+    let mut shares = BTreeMap::new();
+    for (mi, m) in ms.iter().enumerate() {
+        let si = pick[mi];
+        let sl = &slots[si];
+        let alt = alt_for(m, group.alt_m, sl.layer, d.layers, d.vertical_m.unwrap_or(0.0));
+        let alt = match alt {
+            Ok(a) => a,
+            Err(why) => return Err(format!("{}: {why}", m.uid)),
+        };
+        shares.insert(
+            m.uid.clone(),
+            Share {
+                slot: si as u32,
+                layer: sl.layer,
+                alt_m: alt.map(round1),
+                phase_deg: sl.phase_deg,
+                entry_m: sl.entry_m,
+                at: Some(round_ll(plane.ll(sl.xy))),
+                ring_m: sl.ring_m,
+                lane: sl.lane,
+                width_m: d.racetrack_m,
+            },
+        );
+    }
+    Ok((d, shares))
+}
+
+/// How many neighbours in a row, `s` apart along a path, must be in different layers to keep
+/// `need` apart in each (1: all in one).
+fn need_in_a_row(s: f64, need: f64) -> u32 {
+    if s + 1e-9 >= need {
+        1
+    } else {
+        ((need / s) - 1e-9).ceil().max(1.0) as u32
+    }
+}
+
+/// The fewest neighbours in a row (from `k_need` up) that, put in different layers round a closed
+/// path ([`closed_layers`]), leave every two slots of one layer at least `lateral` apart in a
+/// straight line (round a racetrack's ends the line is shorter than the way along it).
+fn apart_in_layers(xy: &[(f64, f64)], k_need: u32, lateral: f64) -> u32 {
+    let n = xy.len();
+    let mut k = k_need.max(1);
+    while (k as usize) < n {
+        let pattern = closed_layers(n, k);
+        let apart = (0..n).all(|i| (i + 1..n).all(|j| pattern[i] != pattern[j] || dist(xy[i], xy[j]) + 1e-6 >= lateral));
+        if apart {
+            break;
+        }
+        k += 1;
+    }
+    k
+}
+
+/// [`layer_pattern`]'s layers for `n` slots round a closed path, `k_need` in a row in different
+/// layers (all in one when 1).
+fn closed_layers(n: usize, k_need: u32) -> Vec<u32> {
+    if k_need <= 1 {
+        return vec![0; n];
+    }
+    layer_pattern(n, k_need.min(n as u32)).1
+}
+
+/// The layer of each of `n` slots round a closed path, where any `k` neighbours in a row must be
+/// in different layers: `i mod k` when `k` divides `n`; else blocks of `k` and `k + 1` slots (the
+/// `k + 1` ones using one more layer), so the wrap round from the last slot to the first keeps
+/// them apart too; else the smallest number of layers that divides `n`. Returns the layers used.
+fn layer_pattern(n: usize, k: u32) -> (u32, Vec<u32>) {
+    let k = k.max(1) as usize;
+    if k == 1 || n.is_multiple_of(k) {
+        return (k as u32, (0..n).map(|i| (i % k) as u32).collect());
+    }
+    let (q, r) = (n / k, n % k);
+    if q >= r {
+        let mut v = Vec::with_capacity(n);
+        for b in 0..q {
+            let size = if b < r { k + 1 } else { k };
+            v.extend((0..size).map(|j| j as u32));
+        }
+        return ((k + 1) as u32, v);
+    }
+    let k2 = (k + 1..=n).find(|c| n.is_multiple_of(*c)).unwrap_or(n);
+    (k2 as u32, (0..n).map(|i| (i % k2) as u32).collect())
+}
+
+/// The point `phase` degrees clockwise from north on a circle of `r` about the plane's origin.
+fn on_circle(r: f64, phase_deg: f64) -> (f64, f64) {
+    let a = phase_deg.to_radians();
+    (r * a.sin(), r * a.cos())
+}
+
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+fn round3(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
+}
+
+/// A member's altitude on `layer` of `k`, `v` m apart, as the task layer flies it (negative below
+/// the surface), or why it is outside its band. None on the surface.
+fn alt_for(m: &Member, alt_m: Option<f64>, layer: u32, k: u32, v: f64) -> Result<Option<f64>, String> {
+    let f = &m.figures;
+    let l = f64::from(layer);
+    match f.band {
+        Band::Surface => Ok(None),
+        Band::AboveGround { min_m, max_m } => {
+            let base = alt_m.or(f.cruise_alt_m.filter(|c| *c > 0.0)).unwrap_or(min_m);
+            let a = base + l * v;
+            if a + 1e-6 < min_m || a - 1e-6 > max_m {
+                return Err(format!("{a:.0} m is outside its band, {min_m:.0} to {max_m:.0} m above the ground"));
+            }
+            Ok(Some(a))
+        }
+        Band::AroundOrder { half_m } => {
+            let base = alt_m.or(f.cruise_alt_m.filter(|c| *c > 0.0)).unwrap_or(half_m);
+            let a = base + (l - f64::from(k.saturating_sub(1)) / 2.0) * v;
+            if (a - base).abs() - 1e-6 > half_m {
+                return Err(format!("{a:.0} m is outside its band, {base:.0} m plus or minus {half_m:.0}"));
+            }
+            Ok(Some(a))
+        }
+        Band::Depth { top_m, .. } => {
+            let base = alt_m.or(f.cruise_alt_m.filter(|c| *c < 0.0).map(|c| -c)).unwrap_or(top_m);
+            let depth = base + l * v;
+            if depth + 1e-6 < top_m {
+                return Err(format!("{depth:.0} m deep is above its band, {top_m:.0} m below the surface"));
+            }
+            Ok(Some(-depth))
+        }
+    }
+}
+
+/// The most layers, `v` m apart, in which every member stays inside its band.
+fn max_layers(alt_m: Option<f64>, ms: &[&Member], v: f64) -> u32 {
+    const CAP: u32 = 64;
+    let mut best = 0;
+    for k in 1..=CAP {
+        let ok = ms.iter().all(|m| (0..k).all(|l| alt_for(m, alt_m, l, k, v).is_ok()));
+        if ok {
+            best = k;
+        } else if best > 0 {
+            break;
+        }
+    }
+    best
+}
+
+/// The layers' altitudes in words (the first member's kind), for a refusal.
+fn layer_alts(alt_m: Option<f64>, ms: &[&Member], k: u32, v: f64) -> String {
+    let Some(m) = ms.first() else { return String::new() };
+    let alts: Vec<String> = (0..k)
+        .filter_map(|l| alt_for(m, alt_m, l, k, v).ok().flatten())
+        .map(|a| if a < 0.0 { format!("{:.0} m deep", -a) } else { format!("{a:.0} m") })
+        .collect();
+    alts.join(", ")
+}
+
+/// The minimum-total-cost pairing of rows (members) with columns (slots) of a square matrix
+/// (the Hungarian method with potentials, O(n^3) on integer costs: exact, and the same answer
+/// for the same matrix). Returns each row's column.
+fn assign(cost: &[Vec<i64>]) -> Vec<usize> {
+    let n = cost.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    const INF: i64 = i64::MAX / 4;
+    let mut u = vec![0i64; n + 1];
+    let mut v = vec![0i64; n + 1];
+    let mut p = vec![0usize; n + 1];
+    let mut way = vec![0usize; n + 1];
+    for i in 1..=n {
+        p[0] = i;
+        let mut j0 = 0;
+        let mut minv = vec![INF; n + 1];
+        let mut used = vec![false; n + 1];
+        loop {
+            used[j0] = true;
+            let i0 = p[j0];
+            let mut delta = INF;
+            let mut j1 = 0;
+            for j in 1..=n {
+                if !used[j] {
+                    let cur = cost[i0 - 1].get(j - 1).copied().unwrap_or(INF) - u[i0] - v[j];
+                    if cur < minv[j] {
+                        minv[j] = cur;
+                        way[j] = j0;
+                    }
+                    if minv[j] < delta {
+                        delta = minv[j];
+                        j1 = j;
+                    }
+                }
+            }
+            for j in 0..=n {
+                if used[j] {
+                    u[p[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    minv[j] -= delta;
+                }
+            }
+            j0 = j1;
+            if p[j0] == 0 {
+                break;
+            }
+        }
+        loop {
+            let j1 = way[j0];
+            p[j0] = p[j1];
+            j0 = j1;
+            if j0 == 0 {
+                break;
+            }
+        }
+    }
+    let mut out = vec![0; n];
+    for j in 1..=n {
+        if p[j] > 0 {
+            out[p[j] - 1] = j - 1;
+        }
+    }
+    out
+}
+
+/// The separation rule's own judgement of a layout: no two members of one domain within both
+/// minima at their slots (laterally closer than the domain's lateral minimum, at heights less
+/// than its vertical minimum apart). None when they are all apart.
+pub fn separation(lay: &Layout, members: &[Member]) -> Option<String> {
+    let domain_of: BTreeMap<&Uid, Domain> = members.iter().map(|m| (&m.uid, m.domain)).collect();
+    for d in &lay.domains {
+        let ours: Vec<(&Uid, &Share)> = lay.shares.iter().filter(|(u, _)| domain_of.get(u) == Some(&d.domain)).collect();
+        let Some(origin) = ours.iter().find_map(|(_, s)| s.at) else { continue };
+        let plane = Plane::new(origin);
+        let pts: Vec<(&Uid, (f64, f64), Option<f64>)> = ours
+            .iter()
+            .filter_map(|(u, s)| Some((*u, plane.xy(s.at?), s.alt_m)))
+            .collect();
+        for (i, a) in pts.iter().enumerate() {
+            for b in &pts[i + 1..] {
+                let apart_v = match (a.2, b.2, d.vertical_m) {
+                    (Some(x), Some(y), Some(v)) => (x - y).abs() + 1e-6 >= v,
+                    _ => false,
+                };
+                let lat = dist(a.1, b.1);
+                if !apart_v && lat + 0.05 < d.lateral_m {
+                    return Some(format!(
+                        "{} and {} would be {lat:.0} m apart at one height (the {} minimum is {:.0} m)",
+                        a.0,
+                        b.0,
+                        d.domain.as_str(),
+                        d.lateral_m
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A hold's warnings: fixed wings whose loiter circles overlap at one height (each holds where it
+/// is, by its type; never a refusal).
+fn hold_warnings(ms: &[&Member]) -> Vec<String> {
+    let wings: Vec<&&Member> = ms.iter().filter(|m| m.fixed_wing && m.at.is_some()).collect();
+    let Some(origin) = wings.first().and_then(|m| m.at) else { return Vec::new() };
+    let plane = Plane::new(origin);
+    let mut pairs = 0;
+    let mut first: Option<String> = None;
+    for (i, a) in wings.iter().enumerate() {
+        for b in &wings[i + 1..] {
+            let (Some(pa), Some(pb)) = (a.at, b.at) else { continue };
+            let r = a.figures.loiter_m.unwrap_or(LOITER_DEFAULT_M) + b.figures.loiter_m.unwrap_or(LOITER_DEFAULT_M);
+            let v = a.figures.vertical_m.unwrap_or(0.0).max(b.figures.vertical_m.unwrap_or(0.0));
+            let one_height = match (a.alt_m, b.alt_m) {
+                (Some(x), Some(y)) => (x - y).abs() < v,
+                _ => true,
+            };
+            let d = dist(plane.xy(pa), plane.xy(pb));
+            if one_height && d < r {
+                pairs += 1;
+                first.get_or_insert_with(|| format!("{} and {}, {d:.0} m apart", a.uid, b.uid));
+            }
+        }
+    }
+    match first {
+        None => Vec::new(),
+        Some(eg) => vec![format!(
+            "{pairs} pair(s) of fixed wings hold on loiter circles that overlap at one height (first: {eg}); a hold holds each where it is"
+        )],
+    }
+}
+
+// ---- re-forming ------------------------------------------------------------------------------
+
+/// A re-form's layout (docs/SWARMS.md section 4.3): the members on their shares and those back,
+/// spread back over the same task, moving as few as it can.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reform {
+    pub layout: Layout,
+    /// The members given a new share (each back member, and those whose slot moved more than half
+    /// the even spacing).
+    pub moved: BTreeSet<Uid>,
+    /// The largest gap between neighbours along the path now, and the even spacing, m.
+    pub largest_gap_m: f64,
+    pub even_spacing_m: f64,
+}
+
+/// How much larger than the even spacing the largest gap may stay (section 4.3, a GUESS).
+pub const GAP_FACTOR: f64 = 1.5;
+
+/// A gap must be under [`GAP_FACTOR`] times the spacing by at least this, m (a gap exactly at the
+/// bound, as rounding leaves one, is not under it).
+const GAP_MARGIN_M: f64 = 0.01;
+
+/// Lay out a re-form of `prev` (a ring or a route of one domain): `members` are those on their
+/// shares (with their share in `prev`) and those back (without one); `pinned` keep their slot
+/// whatever (a link not healthy now: no upload goes into it). The largest gap is closed by
+/// spreading its neighbours into it, the window growing until it is under [`GAP_FACTOR`] times the
+/// even spacing; a member whose slot moves by no more than half the spacing keeps its old one.
+/// A pure function: replay recomputes it from the logged facts.
+pub fn reform(task: &Task, group: &GroupSpec, prev: &Layout, members: &[Member], pinned: &BTreeSet<Uid>) -> Reform {
+    let mut out = Reform::default();
+    let refuse = |out: &mut Reform, why: String| out.layout.refused = Some(why);
+    let mut sorted: Vec<&Member> = members.iter().collect();
+    sorted.sort_by(|a, b| a.uid.cmp(&b.uid));
+    sorted.dedup_by(|a, b| a.uid == b.uid);
+    let n = sorted.len();
+    let (Some(d0), true) = (prev.domains.first(), prev.domains.len() == 1) else {
+        refuse(&mut out, "a re-form lays out a ring or a route of one domain".into());
+        return out;
+    };
+    if !matches!(prev.spread, Some(Spread::Ring) | Some(Spread::Along)) || d0.rings_m.len() > 1 || n == 0 {
+        refuse(&mut out, "a re-form lays out one ring or one route (not concentric rings, lanes or stations)".into());
+        return out;
+    }
+    let Some(len) = d0.path_m.filter(|l| *l > 0.0) else {
+        refuse(&mut out, "the layout has no path length".into());
+        return out;
+    };
+    // positions along the path, m
+    let pos_of = |s: &Share| -> Option<f64> {
+        match prev.spread {
+            Some(Spread::Ring) => s.phase_deg.map(|p| p / 360.0 * len),
+            _ => s.entry_m,
+        }
+    };
+    let mut placed: Vec<(f64, &Member)> = Vec::new();
+    let mut back: Vec<&Member> = Vec::new();
+    for m in &sorted {
+        match prev.shares.get(&m.uid).and_then(pos_of) {
+            Some(p) => placed.push((p.rem_euclid(len), m)),
+            None => back.push(m),
+        }
+    }
+    let s_even = len / n as f64;
+    out.even_spacing_m = round1(s_even);
+    let old: BTreeMap<Uid, f64> = placed.iter().map(|(p, m)| (m.uid.clone(), *p)).collect();
+    placed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.uid.cmp(&b.1.uid)));
+    // the back members into the largest gaps, one at a time
+    for m in back {
+        let at = match largest_gap(&placed, len) {
+            Some((i, g)) => (placed[i].0 + g / 2.0).rem_euclid(len),
+            None => 0.0,
+        };
+        placed.push((at, m));
+        placed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.uid.cmp(&b.1.uid)));
+    }
+    // close each gap too large by spreading a window of its neighbours over it
+    let mut guard = 0;
+    while let Some((i, g)) = largest_gap(&placed, len) {
+        guard += 1;
+        if g + GAP_MARGIN_M < GAP_FACTOR * s_even || guard > 4 * n {
+            break;
+        }
+        let k = placed.len();
+        // the gap runs from member i to member i+1 (cyclic); grow a window [lo, hi] round it
+        let (mut lo, mut hi) = (i, (i + 1) % k);
+        let mut fixed = false;
+        for _ in 0..k {
+            let size = (hi + k - lo) % k + 1;
+            if size >= k {
+                break;
+            }
+            let left = (lo + k - 1) % k;
+            let right = (hi + 1) % k;
+            let span = (placed[right].0 - placed[left].0).rem_euclid(len);
+            let span = if span == 0.0 { len } else { span };
+            let inside: Vec<usize> = (0..size).map(|q| (lo + q) % k).collect();
+            let movable = inside.iter().all(|q| !pinned.contains(&placed[*q].1.uid));
+            if movable && span / (size as f64 + 1.0) + GAP_MARGIN_M < GAP_FACTOR * s_even {
+                for (q, idx) in inside.iter().enumerate() {
+                    placed[*idx].0 = (placed[left].0 + span * (q as f64 + 1.0) / (size as f64 + 1.0)).rem_euclid(len);
+                }
+                fixed = true;
+                break;
+            }
+            // grow on the side not pinned, alternately
+            let grow_left = !pinned.contains(&placed[left].1.uid) && (size.is_multiple_of(2) || pinned.contains(&placed[right].1.uid));
+            if grow_left {
+                lo = left;
+            } else if !pinned.contains(&placed[right].1.uid) {
+                hi = right;
+            } else {
+                break;
+            }
+        }
+        if !fixed {
+            break;
+        }
+        placed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.uid.cmp(&b.1.uid)));
+    }
+    // a member moved by no more than half the spacing keeps its old slot, where that leaves no gap
+    // too large (the smallest shifts first); a pinned one always does
+    let shift_of = |p: f64, o: f64| {
+        let d = (p - o).rem_euclid(len);
+        d.min(len - d)
+    };
+    let mut small: Vec<(f64, Uid)> = placed
+        .iter()
+        .filter_map(|(p, m)| old.get(&m.uid).map(|o| (shift_of(*p, *o), m.uid.clone())))
+        .filter(|(d, u)| *d > 0.0 && (*d <= s_even / 2.0 || pinned.contains(u)))
+        .collect();
+    small.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (_, uid) in small {
+        let Some(i) = placed.iter().position(|(_, m)| m.uid == uid) else { continue };
+        let Some(o) = old.get(&uid).copied() else { continue };
+        let was = placed[i].0;
+        placed[i].0 = o;
+        let mut trial = placed.clone();
+        trial.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.uid.cmp(&b.1.uid)));
+        let ok = largest_gap(&trial, len).is_none_or(|(_, g)| g + GAP_MARGIN_M < GAP_FACTOR * s_even);
+        if !ok && !pinned.contains(&uid) {
+            placed[i].0 = was;
+        }
+    }
+    placed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.uid.cmp(&b.1.uid)));
+    out.largest_gap_m = round1(largest_gap(&placed, len).map_or(0.0, |(_, g)| g));
+    // the shares: a kept member's as it was; a moved or back one's at its new place, in a layer
+    // the separation holds in
+    let geometry = match (task, prev.spread) {
+        (Task::Orbit { center, radius_m }, _) => Some((Plane::new(*center), None, *radius_m)),
+        (Task::Patrol { route }, _) => {
+            let first = route.first().copied().unwrap_or(LonLat::new(0.0, 0.0));
+            let plane = Plane::new(first);
+            let pts: Vec<LonLat> = match d0.racetrack_m {
+                Some(w) if route.len() == 2 => racetrack(route[0], route[1], w),
+                _ => route.clone(),
+            };
+            Some((plane, Some(Path { pts: pts.iter().map(|p| plane.xy(*p)).collect(), closed: true }), 0.0))
+        }
+        _ => None,
+    };
+    let Some((plane, path, r)) = geometry else {
+        refuse(&mut out, "a re-form lays out a ring or a route".into());
+        return out;
+    };
+    let k = d0.layers.max(1);
+    let v = d0.vertical_m.unwrap_or(0.0);
+    let mut shares: BTreeMap<Uid, Share> = BTreeMap::new();
+    for (slot, (p, m)) in placed.iter().enumerate() {
+        let kept = old.get(&m.uid).is_some_and(|o| o == p);
+        let mut share = match (kept, prev.shares.get(&m.uid)) {
+            (true, Some(s)) => s.clone(),
+            _ => {
+                out.moved.insert(m.uid.clone());
+                let xy = match &path {
+                    Some(path) => path.at(*p),
+                    None => on_circle(r, p / len * 360.0),
+                };
+                Share {
+                    slot: slot as u32,
+                    layer: 0,
+                    alt_m: None,
+                    phase_deg: path.is_none().then_some(round3(p / len * 360.0)),
+                    entry_m: path.is_some().then_some(round1(*p)),
+                    at: Some(round_ll(plane.ll(xy))),
+                    ring_m: None,
+                    lane: None,
+                    width_m: d0.racetrack_m,
+                }
+            }
+        };
+        share.slot = slot as u32;
+        shares.insert(m.uid.clone(), share);
+    }
+    // each moved member in the first layer where its neighbours along the path leave it room
+    let order: Vec<(f64, Uid)> = placed.iter().map(|(p, m)| (*p, m.uid.clone())).collect();
+    for (idx, (p, uid)) in order.iter().enumerate() {
+        if !out.moved.contains(uid) {
+            continue;
+        }
+        let Some(m) = sorted.iter().find(|m| &m.uid == uid) else { continue };
+        let lateral = d0.lateral_m;
+        let mut chosen = None;
+        for layer in 0..k {
+            let clear = order.iter().enumerate().all(|(j, (q, other))| {
+                if j == idx || shares.get(other).is_none_or(|s| s.layer != layer) {
+                    return true;
+                }
+                let gap = (q - p).rem_euclid(len);
+                gap.min(len - gap) + 1e-6 >= lateral
+            });
+            if clear {
+                chosen = Some(layer);
+                break;
+            }
+        }
+        let layer = chosen.unwrap_or(0);
+        let alt = alt_for(m, group.alt_m, layer, k, v);
+        match alt {
+            Ok(a) => {
+                if let Some(s) = shares.get_mut(uid) {
+                    s.layer = layer;
+                    s.alt_m = a.map(round1);
+                }
+            }
+            Err(why) => {
+                refuse(&mut out, format!("{uid}: {why}"));
+                return out;
+            }
+        }
+    }
+    out.layout = Layout {
+        spread: prev.spread,
+        shares,
+        domains: vec![DomainLayout {
+            members: n as u32,
+            spacing_m: Some(round1(s_even)),
+            ..d0.clone()
+        }],
+        warnings: Vec::new(),
+        refused: None,
+    };
+    if let Some(why) = separation(&out.layout, members) {
+        out.layout.refused = Some(why);
+    }
+    out
+}
+
+/// The largest gap between neighbours along a path of `len` (each `placed` sorted by position):
+/// the index of the member it starts after, and its length.
+fn largest_gap(placed: &[(f64, &Member)], len: f64) -> Option<(usize, f64)> {
+    let k = placed.len();
+    if k == 0 {
+        return None;
+    }
+    if k == 1 {
+        return Some((0, len));
+    }
+    (0..k)
+        .map(|i| {
+            let next = placed[(i + 1) % k].0;
+            let g = (next - placed[i].0).rem_euclid(len);
+            (i, if g == 0.0 && i == k - 1 { len } else { g })
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
 }
 
 /// The members a re-form may move (docs/SWARMS.md section 4.3): those on their shares and those
