@@ -1242,7 +1242,10 @@ pub fn capability(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> 
         let ap = ap.value;
         // rules 27: a ground vehicle or a sub lays mines (a lay order exists from rules 27 only)
         let lays = kind == TaskKind::Lay && matches!(ap, AutopilotKind::Ugv | AutopilotKind::Sub);
-        if !ap.supports(kind) && !lays {
+        // rules 34: whatever patrols transits (its list of tasks is as before, so older details
+        // read the same; a transit exists from rules 34 only)
+        let transits = kind == TaskKind::Transit && ap.supports(TaskKind::Patrol);
+        if !ap.supports(kind) && !lays && !transits {
             let list: Vec<_> = ap.tasks().iter().map(|k| k.as_str()).collect();
             let can = if list.is_empty() {
                 "nothing".to_string()

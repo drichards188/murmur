@@ -24,6 +24,9 @@ use crate::time::Time;
 /// Waypoints in an orbit ring for non-fixed-wing vehicles (as the Python bridge flies it).
 pub const ORBIT_RING_POINTS: usize = 12;
 
+/// Rules 34: the most points a transit's route names (a mission upload carries each one).
+pub const MAX_TRANSIT_POINTS: usize = 50;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
@@ -48,6 +51,11 @@ pub enum TaskKind {
     /// along a line, live for the hours the order sets ([`crate::mines`]). Consequential: it is
     /// signed as an engagement is, by two operators with engagement authority.
     Lay,
+    /// Rules 34 ([`crate::rules::GROUP_ORDER_SINCE`]): go along a route and hold at its end by
+    /// the vehicle's type (a copter hovers, a fixed wing loiters, a boat or a sub holds station, a
+    /// ground vehicle stops); for a group, stations along the route or a block round its end
+    /// ([`crate::group::Spread::Stations`], [`crate::group::Spread::Block`]).
+    Transit,
 }
 
 impl TaskKind {
@@ -63,6 +71,7 @@ impl TaskKind {
             TaskKind::Engage => "engage",
             TaskKind::Identify => "identify",
             TaskKind::Lay => "lay",
+            TaskKind::Transit => "transit",
         }
     }
 
@@ -113,6 +122,11 @@ pub enum Task {
     },
     Hold {},
     Rtl {},
+    /// Rules 34: flown along `route` once, its first point to its last, and held at the last by
+    /// the vehicle's type (never looped back). One point: go there and hold.
+    Transit {
+        route: Vec<LonLat>,
+    },
     /// Point an antenna tracker at another vehicle.
     Track {
         target: Uid,
@@ -201,6 +215,7 @@ impl Task {
             Task::Engage { .. } => TaskKind::Engage,
             Task::Identify { .. } => TaskKind::Identify,
             Task::Lay { .. } => TaskKind::Lay,
+            Task::Transit { .. } => TaskKind::Transit,
         }
     }
 
@@ -253,6 +268,11 @@ impl Task {
                 points: points.clone(),
                 closed: false,
             }),
+            // rules 34: the route, flown once, held at its end
+            Task::Transit { route } => Some(TaskPath {
+                points: route.clone(),
+                closed: false,
+            }),
             // engage: the point is predicted from the world (crate::engage::preview), not
             // committed to by the spec; identify: the orbit is laid out around the track's
             // position (crate::identify::orbit_spec)
@@ -283,6 +303,14 @@ impl Task {
                 }
                 if !route.iter().all(LonLat::is_valid) {
                     return bad("patrol point out of range");
+                }
+            }
+            Task::Transit { route } => {
+                if route.is_empty() || route.len() > MAX_TRANSIT_POINTS {
+                    return bad("transit needs a route of 1 to 50 points [lon, lat], held at its last");
+                }
+                if !route.iter().all(LonLat::is_valid) {
+                    return bad("transit point out of range");
                 }
             }
             Task::Track { target } if target.as_str().is_empty() => {

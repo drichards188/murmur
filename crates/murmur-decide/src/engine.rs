@@ -7788,6 +7788,12 @@ impl Engine {
                 "these decision rules lay no mines (rules 27)".into(),
             )));
         }
+        // rules 34: no build of older rules took a transit
+        if proposal.task.kind() == TaskKind::Transit && !self.policy.rules.group_orders() {
+            return Err(EngineError::Proposal(ProposalError::BadParams(
+                "these decision rules take no transit (rules 34)".into(),
+            )));
+        }
         // rules 34: an order of an ordinary kind to more than one vehicle is a group order, its
         // spec as logged with the defaults filled (a tracker's track, which has no group meaning,
         // names one vehicle)
@@ -8098,9 +8104,11 @@ pub(crate) fn order_for(
         }
         _ => Order::Vehicles(DispatchOrder {
             intent: id,
-            task: match path {
-                Some(route) => Task::Patrol { route },
-                None => spec.task.clone(),
+            task: match (path, &spec.task) {
+                // rules 34: a transit's route routed as it is, open
+                (Some(route), Task::Transit { .. }) => Task::Transit { route },
+                (Some(route), _) => Task::Patrol { route },
+                (None, _) => spec.task.clone(),
             },
             uids: spec.uids.clone(),
             via,
@@ -8137,6 +8145,7 @@ pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order, identify: Optio
             o.via.clone(),
             match (&o.task, &spec.task) {
                 (Task::Patrol { route }, Task::Patrol { route: asked }) if route != asked => Some(route.clone()),
+                (Task::Transit { route }, Task::Transit { route: asked }) if route != asked => Some(route.clone()),
                 _ => None,
             },
         ),

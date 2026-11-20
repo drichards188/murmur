@@ -308,6 +308,8 @@ fn running(view: &IntentView, uid: &Uid, unconfirmed: bool) -> RunningOrder {
                     o.path.extend(points.iter().copied());
                     o.home = true;
                 }
+                // rules 34: along its route once, held at its end
+                Task::Transit { route } => o.path.extend(route.iter().copied()),
                 Task::Rtl {} => o.home = true,
                 _ => {}
             }

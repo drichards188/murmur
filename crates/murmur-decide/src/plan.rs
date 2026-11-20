@@ -375,7 +375,7 @@ fn met(leg: &RouteLeg, need: Option<&str>, world: &WorldSnapshot, oracle: &dyn T
 /// legs, each with what it met and the surface it keeps to.
 fn needing(spec: &IntentSpec, world: &WorldSnapshot, oracle: &dyn TerrainOracle, cfg: &RulesConfig) -> Vec<(Uid, RouteLeg, String, Option<&'static str>)> {
     // rules 27: a lay order's transit too (its line is the operator's)
-    if !cfg.route_plan() || !matches!(spec.task, Task::Orbit { .. } | Task::Patrol { .. } | Task::Lay { .. }) {
+    if !cfg.route_plan() || !matches!(spec.task, Task::Orbit { .. } | Task::Patrol { .. } | Task::Lay { .. } | Task::Transit { .. }) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -384,7 +384,8 @@ fn needing(spec: &IntentSpec, world: &WorldSnapshot, oracle: &dyn TerrainOracle,
         let fields = crate::mines::field_areas(world, uid, cfg);
         let need = v.platform.as_ref().and_then(|p| required_surface(p.domain, p.autopilot));
         let Ok(route) = route_for(spec, v, world, cfg) else { continue };
-        let patrol = matches!(spec.task, Task::Patrol { .. });
+        // rules 34: a transit's route is planned leg by leg as a patrol's is
+        let patrol = matches!(spec.task, Task::Patrol { .. } | Task::Transit { .. });
         for leg in route.legs() {
             let plannable = leg.name.starts_with(crate::route::LegKind::Transit.as_str())
                 || (patrol && leg.name.starts_with(crate::route::LegKind::Task.as_str()));
@@ -499,6 +500,20 @@ pub fn dispatch_routes(spec: &IntentSpec, plans: &BTreeMap<Uid, Vec<PlannedLeg>>
                     out.extend(p.via.iter().rev());
                 }
             }
+            any.then_some(out)
+        }
+        // rules 34: a transit's route, open (no leg back to its first point)
+        Task::Transit { route } if route.len() >= 2 => {
+            let mut out = Vec::new();
+            let mut any = false;
+            for w in route.windows(2) {
+                out.push(w[0]);
+                if let Some(p) = leg_plan(plans, w[0], w[1]).filter(|p| p.no_route.is_none() && !p.via.is_empty()) {
+                    out.extend_from_slice(&p.via);
+                    any = true;
+                }
+            }
+            out.extend(route.last().copied());
             any.then_some(out)
         }
         _ => None,

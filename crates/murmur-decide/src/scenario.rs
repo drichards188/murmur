@@ -924,8 +924,15 @@ pub enum Action {
         detail: Option<String>,
         #[serde(default)]
         detail_rule: Option<String>,
+        /// Rules 34: where each of these vehicles is now, [lon, lat], within
+        /// [`EXPECT_AT_M`] (a transit's member holding at its route's end).
+        #[serde(default)]
+        at: Option<BTreeMap<String, [f64; 2]>>,
     },
 }
+
+/// How near an `expect` step's `at` a vehicle must be, m.
+pub const EXPECT_AT_M: f64 = 5.0;
 
 /// Options for batch runs.
 #[derive(Clone, Debug, Default)]
@@ -2098,6 +2105,22 @@ pub fn run(
             if engine.intent(id).is_some_and(|i| i.state() == State::Dispatched)
                 && let Err(e) = engine.finish(id, TaskOutcome::Done)
             {
+                failures.push(format!("t={s}: finish {id}: {e}"));
+            }
+        }
+        // rules 34: a transit is done once its vehicle holds at its route's end (the bridge's op
+        // ends there, the vehicle holding by its type)
+        let held: Vec<IntentId> = engine
+            .intents()
+            .filter(|i| i.state() == State::Dispatched && i.spec().kind() == crate::intent::TaskKind::Transit)
+            .filter(|i| match i.spec().uids.as_slice() {
+                [u] => vehicles.get(u.as_str()).is_some_and(|v| v.goal.is_none() && v.route.is_empty()),
+                _ => false,
+            })
+            .map(|i| i.id())
+            .collect();
+        for id in held {
+            if let Err(e) = engine.finish(id, TaskOutcome::Done) {
                 failures.push(format!("t={s}: finish {id}: {e}"));
             }
         }
@@ -3425,9 +3448,13 @@ fn act(
                 ("patrol", _, Some(r)) => Task::Patrol {
                     route: r.iter().map(|p| LonLat::new(p[0], p[1])).collect(),
                 },
+                // rules 34: along a route once, held at its end
+                ("transit", _, Some(r)) => Task::Transit {
+                    route: r.iter().map(|p| LonLat::new(p[0], p[1])).collect(),
+                },
                 (other, _, _) => {
                     return failures.push(format!(
-                        "t={s}: task {other}: hold, rtl, orbit with a center, patrol with a route, or identify with a track"
+                        "t={s}: task {other}: hold, rtl, orbit with a center, patrol or transit with a route, or identify with a track"
                     ));
                 }
             };
@@ -3927,7 +3954,23 @@ fn act(
             warning,
             detail,
             detail_rule,
+            at,
         } => {
+            // rules 34: where the vehicles are (a transit's members holding at their ends)
+            for (uid, [lon, lat]) in at.iter().flatten() {
+                match vehicles.get(uid.as_str()) {
+                    Some(v) => {
+                        let d = haversine_m(v.pos, LonLat::new(*lon, *lat));
+                        if d > EXPECT_AT_M {
+                            failures.push(format!(
+                                "t={s}: expected {uid} at [{lon}, {lat}], it is {d:.0} m away at [{:.6}, {:.6}]",
+                                v.pos.lon, v.pos.lat
+                            ));
+                        }
+                    }
+                    None => failures.push(format!("t={s}: expected {uid} at [{lon}, {lat}]: no such vehicle")),
+                }
+            }
             // rules 34, stage 4: the last task's group order in force, as its steps left it
             if let Some(gid) = extra.last_task {
                 let force = engine.force(gid);
@@ -4985,8 +5028,9 @@ fn fly(vehicles: &mut BTreeMap<String, VehicleSim>, o: &crate::engine::DispatchO
                     v.goal = Some(route[0]);
                     v.orbit = false;
                 }
-                // rules 27: a lay order's line, its transit's waypoints first, driven once
-                Task::Lay { points, .. } if !points.is_empty() => {
+                // rules 27: a lay order's line, its transit's waypoints first, driven once; rules 34:
+                // a transit's route the same way, the vehicle stopping at its end
+                Task::Lay { points, .. } | Task::Transit { route: points } if !points.is_empty() => {
                     let mut way: Vec<LonLat> = o.via.get(u).cloned().unwrap_or_default();
                     way.extend(points.iter().copied());
                     v.goal = Some(way.remove(0));
@@ -5045,12 +5089,14 @@ fn follow_queue(
 /// member order's altitude moved 30 m after the layout, in its order and its dispatch alike),
 /// `member_without_group` (the group order's approval cut, so its member orders are created and
 /// dispatched while it waits for one), `admit_raised_member` (a member order added for a member the
-/// group's check left out, an armed platform an engagement holds, under the group's approval).
+/// group's check left out, an armed platform an engagement holds, under the group's approval),
+/// `move_member_station` (a transit's first member order held 50 m north of where its route ends,
+/// in its order and its dispatch alike).
 fn forge_group(events: &mut Vec<crate::audit::Event>, kind: &str) -> Option<Result<(), String>> {
     if let Some(r) = forge_reform(events, kind) {
         return Some(r);
     }
-    if !matches!(kind, "move_member_slot" | "member_without_group" | "admit_raised_member") {
+    if !matches!(kind, "move_member_slot" | "member_without_group" | "admit_raised_member" | "move_member_station") {
         return None;
     }
     let group: Option<IntentId> = events.iter().find_map(|e| match &e.body {
@@ -5085,6 +5131,27 @@ fn forge_group(events: &mut Vec<crate::audit::Event>, kind: &str) -> Option<Resu
                 }
             }
             Some(if done { Ok(()) } else { Err("the member order has no share".into()) })
+        }
+        "move_member_station" => {
+            let north = |route: &mut Vec<LonLat>| {
+                if let Some(p) = route.last_mut() {
+                    *p = LonLat::new(p.lon, p.lat + 50.0 / 111_320.0);
+                }
+            };
+            let mut done = false;
+            for e in events.iter_mut() {
+                match &mut e.body {
+                    EventBody::IntentCreated { intent, .. } if intent.id == member => {
+                        if let Task::Transit { route } = &mut intent.task {
+                            north(route);
+                            done = true;
+                        }
+                    }
+                    EventBody::IntentDispatched { intent, task: Task::Transit { route }, .. } if *intent == member => north(route),
+                    _ => {}
+                }
+            }
+            Some(if done { Ok(()) } else { Err("the first member order is no transit".into()) })
         }
         "member_without_group" => {
             let before = events.len();

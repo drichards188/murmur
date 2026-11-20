@@ -217,3 +217,135 @@ async fn rules_33_stacks_as_before_and_rules_34_never() {
         assert!((items[jump.unwrap_or(0)].2 - want).abs() < 0.1, "its share's altitude, nothing stacked");
     }
 }
+
+// ---- transit (stage 7) -------------------------------------------------------------------------
+
+/// Metres between two points (flat; the tests' distances are short).
+fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let x = (a.1 - b.1) * 111_320.0 * a.0.to_radians().cos();
+    let y = (a.0 - b.0) * 111_320.0;
+    x.hypot(y)
+}
+
+/// Rules 34, stage 7: a transit flies its route once and holds where it ends, by the vehicle's
+/// type, each stand-in's own autopilot doing the holding: a quadcopter hovers on the point, a
+/// fixed wing loiters round it on its loiter circle, a boat and an AUV hold station on it, a
+/// ground vehicle stops on it, and a blimp (whose firmware skips the hold item) holds at its last
+/// waypoint as its mission's end does. Each mission ends with the hold at the route's last point;
+/// the order is done there, and a minute and a half later each one still holds there, in its
+/// mission mode.
+#[tokio::test(start_paused = true)]
+async fn a_transit_holds_where_its_route_ends_by_type() {
+    struct Case {
+        platform: &'static str,
+        at: [f64; 4],
+        /// the route, [lon, lat]
+        route: [[f64; 2]; 2],
+        /// how far from the end it holds: at most (and, for a fixed wing's circle, at least)
+        within_m: f64,
+        circles: bool,
+        /// still once it holds (a quadcopter, a ground vehicle)
+        still: bool,
+    }
+    let (lat, lon) = (37.825, -122.47);
+    let water = [[lon - 0.0030, lat + 0.0010], [lon - 0.0050, lat + 0.0030]];
+    let cases = [
+        Case { platform: "x10", at: [lat, lon, AIR, 90.0], route: water, within_m: 5.0, circles: false, still: true },
+        Case { platform: "puma", at: [lat, lon, AIR, 90.0], route: water, within_m: 230.0, circles: true, still: false },
+        Case { platform: "corsair", at: [lat, lon, SURFACE, 90.0], route: water, within_m: 15.0, circles: false, still: false },
+        Case { platform: "remus", at: [lat, lon, SURFACE, 90.0], route: water, within_m: 20.0, circles: false, still: false },
+        Case { platform: "lta", at: [lat, lon, AIR, 90.0], route: water, within_m: 30.0, circles: false, still: false },
+        // on the rig's land, the Presidio's box
+        Case { platform: "ugv_recon", at: [37.800, -122.460, SURFACE, 90.0], route: [[-122.4615, 37.8010], [-122.4630, 37.8025]], within_m: 10.0, circles: false, still: true },
+    ];
+    for (i, c) in cases.iter().enumerate() {
+        let rig = rig_rules(GROUP_ORDER_SINCE);
+        let w = wire(&rig, 60 + i as Uid, c.platform, LINKS, c.at).await;
+        stream(&w);
+        sleep(Duration::from_secs(3)).await;
+        let mut req = simple("transit", w.uid);
+        req.params.route = Some(c.route.to_vec());
+        let out = rig.d.submit(&op1(), req).await.unwrap_or_else(|e| panic!("{}: {e:?}", c.platform));
+        assert_eq!(out.state, State::Dispatched, "{}: {}", c.platform, out.intent);
+        let id = out.id;
+        let end = (c.route[1][1], c.route[1][0]);
+        let mut done = false;
+        for _ in 0..600 {
+            rig.d.tick();
+            sleep(Duration::from_secs(1)).await;
+            if rig.d.lock().engine.intent(id).is_some_and(|i| i.state() == State::Done) {
+                done = true;
+                break;
+            }
+        }
+        let (items, jump) = held(&w);
+        assert!(done, "{}: the transit never ended done; it holds {items:?}", c.platform);
+        assert!(jump.is_none(), "{}: a transit never loops", c.platform);
+        let last = items.last().expect("a mission");
+        assert_eq!(last.0, apm::MavCmd::MAV_CMD_NAV_LOITER_UNLIM, "{}: it ends holding", c.platform);
+        assert!(metres((last.1[0], last.1[1]), end) < 0.05, "{}: its hold is the route's last point", c.platform);
+        // a minute and a half on (a boat or an AUV overshoots and comes back, a fixed wing settles
+        // on its circle), it holds there, in its mission mode
+        for _ in 0..90 {
+            rig.d.tick();
+            sleep(Duration::from_secs(1)).await;
+        }
+        let (pos, mode, speed) = {
+            let s = lock(&w.standin);
+            ((s.st.lat, s.st.lon), s.st.mode, s.st.speed)
+        };
+        let d = metres(pos, end);
+        assert!(d <= c.within_m, "{}: {d:.0} m from the route's end, holding within {} m", c.platform, c.within_m);
+        if c.circles {
+            assert!((d - 150.0).abs() < 10.0 && speed > 5.0, "{}: a fixed wing circles its hold on its 150 m loiter circle, {d:.0} m out at {speed:.1} m/s", c.platform);
+        }
+        if c.still {
+            assert!(speed < 0.5, "{}: still on its hold, {speed:.1} m/s", c.platform);
+        }
+        assert_eq!(mode, "AUTO", "{}: still in its mission mode, holding", c.platform);
+        assert_eq!(rig.d.lock().engine.intent(id).map(|i| i.state()), Some(State::Done), "{}", c.platform);
+    }
+}
+
+/// Rules 34: a group transit through the bridge, each member's own order flown as its member
+/// order says: three quadcopters each straight to its own station along a line, at its share's
+/// altitude, holding there; and an agent proposes no transit yet (the operator orders one).
+#[tokio::test(start_paused = true)]
+async fn a_group_transit_flies_each_member_to_its_station() {
+    let rig = rig_rules(GROUP_ORDER_SINCE);
+    let ws = fleet(&rig, "x10", 3, AIR).await;
+    let uids: Vec<Uid> = ws.iter().map(|w| w.uid).collect();
+    let route = vec![[-122.4660, 37.8270], [-122.4600, 37.8270]];
+    let mut req = simple("transit", uids[0]);
+    req.uids = uids.clone();
+    req.params.route = Some(route.clone());
+    let (gid, shares) = dispatched(&rig, req.clone()).await;
+    assert_eq!(shares.len(), 3);
+    for _ in 0..240 {
+        rig.d.tick();
+        sleep(Duration::from_secs(1)).await;
+        if rig.d.lock().engine.intent(gid).is_some_and(|i| i.state() == State::Done) {
+            break;
+        }
+    }
+    assert_eq!(rig.d.lock().engine.intent(gid).map(|i| i.state()), Some(State::Done), "every member holds at its station");
+    for w in &ws {
+        let (task, share) = &shares[&w.uid];
+        let murmur_decide::Task::Transit { route: mine } = task else { panic!("{task:?}") };
+        let at = share.at.expect("its station");
+        assert_eq!(mine.len(), 1, "straight to its station");
+        let (items, _) = held(w);
+        let last = items.last().expect("a mission");
+        assert_eq!(last.0, apm::MavCmd::MAV_CMD_NAV_LOITER_UNLIM);
+        assert!((last.2 - share.alt_m.unwrap_or(0.0)).abs() < 0.1, "{}: its share's altitude", w.uid);
+        let pos = {
+            let s = lock(&w.standin);
+            (s.st.lat, s.st.lon)
+        };
+        assert!(metres(pos, (at.lat, at.lon)) < 5.0, "{}: holds at its station", w.uid);
+    }
+    let agent = murmur_decide::AgentId::new("agent-planner");
+    req.rationale = Some("move the picket".into());
+    let e = rig.d.agent_propose(&agent, req).await.expect_err("an agent's transit");
+    assert_eq!(e.status, 422, "{}", e.detail);
+}

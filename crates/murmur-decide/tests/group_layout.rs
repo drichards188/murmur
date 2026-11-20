@@ -369,14 +369,15 @@ fn saturations_orders_are_laid_out_as_section_3_3_says() {
     assert!(lay.shares[first].entry_m.is_some());
 }
 
-/// RELAY-1 as stations (the transit kind's spread, a later stage's order): 4.8 km of the shore,
-/// 100 Pumas 48 m apart, whose 300 m loiter circles need 7 layers 30 m apart, 180 m of the 300 m
-/// band: allowed.
+/// RELAY-1 as stations (a transit along its patrol's line): 4.8 km of the shore, 100 Pumas 48 m
+/// apart, whose 300 m loiter circles need 7 layers 30 m apart, 180 m of the 300 m band: allowed.
 #[test]
 fn the_relay_as_stations_takes_seven_layers_inside_the_band() {
     let c = catalog();
     let (swarms, orders) = saturation();
     let (_, swarm, task) = orders.iter().find(|(id, ..)| id == "relay-1").unwrap();
+    let Task::Patrol { route } = task else { panic!("relay-1 is a patrol") };
+    let task = Task::Transit { route: route.clone() };
     let s = &swarms[swarm];
     let ms = swarm_members(&c, s, swarm);
     let g = GroupSpec {
@@ -384,7 +385,9 @@ fn the_relay_as_stations_takes_seven_layers_inside_the_band() {
         alt_m: s.cruise_alt_m,
         ..GroupSpec::default()
     };
-    let lay = group::layout(task, &g, &ms);
+    // a patrol takes no stations
+    assert!(group::layout(&Task::Patrol { route: route.clone() }, &g, &ms).refused.is_some());
+    let lay = group::layout(&task, &g, &ms);
     assert!(lay.refused.is_none(), "{:?}", lay.refused);
     let d = &lay.domains[0];
     assert_eq!(d.layers, 7);
@@ -444,4 +447,135 @@ fn a_reform_moves_only_the_neighbours_of_its_gaps() {
     let r3 = group::reform(&task, &g, &prev, &with_back, &BTreeSet::new());
     assert!(r3.layout.refused.is_none(), "{:?}", r3.layout.refused);
     assert!(r3.moved.contains(&back.uid), "a member back takes a new share");
+}
+
+// ---- transit (stage 7) -------------------------------------------------------------------------
+
+/// A transit's stations (its default spread): evenly along the route, its first and last points
+/// among them; each member's order goes straight to its own station (it enters the route there),
+/// held there; the same facts give the same layout; a one-point route takes a block, not stations;
+/// and a transit never re-forms (a gap a member leaves stays open).
+#[test]
+fn a_transit_lays_stations_along_its_route_and_each_member_flies_to_its_own() {
+    let c = catalog();
+    let a = offset(GATE, 0.0, -1500.0);
+    let b = offset(a, 600.0, 0.0);
+    let d = offset(b, 0.0, 600.0);
+    let task = Task::Transit { route: vec![a, b, d] };
+    let ms = members(&c, "x10", 5, 0, |i| Some(offset(a, -100.0 - 10.0 * i as f64, -50.0)));
+    let g = GroupSpec::default().normalized(task.kind(), ms.len(), 0.8);
+    assert_eq!((g.spread, g.reform), (Some(Spread::Stations), Some(false)), "stations, and no re-form");
+    let lay = group::layout(&task, &g, &ms);
+    assert!(lay.refused.is_none(), "{:?}", lay.refused);
+    assert_eq!(lay.domains[0].spacing_m, Some(300.0), "1,200 m in four gaps");
+    // the stations are 0, 300, 600, 900 and 1,200 m along: a, between a and b, b, between b and d, d
+    let mut along: Vec<f64> = lay.shares.values().filter_map(|s| s.entry_m).collect();
+    along.sort_by(f64::total_cmp);
+    assert_eq!(along, vec![0.0, 300.0, 600.0, 900.0, 1200.0]);
+    let mut legs = Vec::new();
+    for m in &ms {
+        let share = &lay.shares[&m.uid];
+        let Some(Task::Transit { route }) = group::member_task(&task, &g, &lay, &m.uid) else { panic!("a transit") };
+        assert_eq!(route.len(), 1, "straight to its station");
+        let (ex, ey) = xy(route[0], share.at.unwrap());
+        assert!(ex.hypot(ey) < 0.05, "{}'s order ends at its station (the route's own point where it falls on one)", m.uid);
+        let (x, y) = xy(a, route[0]);
+        let along = if share.entry_m.unwrap() <= 600.0 { x } else { 600.0 + y };
+        assert!((along - share.entry_m.unwrap()).abs() < 0.5, "{} at {along:.1} m, its share {:?}", m.uid, share.entry_m);
+        legs.push((xy(a, m.at.unwrap()), (x, y)));
+    }
+    // no two members' straight ways to their stations cross
+    for (i, p) in legs.iter().enumerate() {
+        for q in &legs[i + 1..] {
+            assert!(!crosses(p.0, p.1, q.0, q.1), "{p:?} crosses {q:?}");
+        }
+    }
+    let mut rev = ms.clone();
+    rev.reverse();
+    assert_eq!(lay, group::layout(&task, &g, &rev), "the same facts, the same layout");
+    // a transit to one point takes a block, not stations
+    let one = Task::Transit { route: vec![d] };
+    let refused = group::layout(&one, &g, &ms).refused.unwrap_or_default();
+    assert!(refused.contains("spreads its members as a block"), "{refused}");
+    // never re-formed
+    let re = GroupSpec { reform: Some(true), ..GroupSpec::default() };
+    assert!(re.invalid(task.kind(), 5).is_some_and(|w| w.contains("not re-formed")));
+    // stations spread no patrol, and no other spread a transit
+    let ring_transit = GroupSpec { spread: Some(Spread::Ring), ..GroupSpec::default() };
+    assert!(ring_transit.invalid(task.kind(), 5).is_some());
+}
+
+/// A transit's block: a grid round the route's end, the members' lateral minimum apart (a fixed
+/// wing's two loiter radii); each member flies the route moved as its cell sits from the end, so
+/// the block keeps its shape along the way (at any one distance along, the members are as far
+/// apart as their cells) and no two pass through one point.
+#[test]
+fn a_transit_block_moves_the_block_along_the_route_to_its_end() {
+    let c = catalog();
+    let start = offset(GATE, 0.0, -2000.0);
+    let mid = offset(start, -500.0, 0.0);
+    let end = offset(mid, -300.0, 400.0);
+    let task = Task::Transit { route: vec![start, mid, end] };
+    let g = GroupSpec { spread: Some(Spread::Block), ..GroupSpec::default() }.normalized(task.kind(), 9, 0.8);
+    let boats = members(&c, "corsair", 9, 0, |i| Some(offset(start, 40.0 * (i % 3) as f64, 40.0 * (i / 3) as f64)));
+    let lay = group::layout(&task, &g, &boats);
+    assert!(lay.refused.is_none(), "{:?}", lay.refused);
+    let cells: Vec<(f64, f64)> = lay.shares.values().map(|s| xy(end, s.at.unwrap())).collect();
+    // three columns and three rows, 30 m apart, centred on the end
+    let mut xs: Vec<i64> = cells.iter().map(|c| c.0.round() as i64).collect();
+    xs.sort();
+    xs.dedup();
+    assert_eq!(xs, vec![-30, 0, 30]);
+    for (i, a) in cells.iter().enumerate() {
+        for b in &cells[i + 1..] {
+            assert!(((a.0 - b.0).hypot(a.1 - b.1)) >= 30.0 - 0.1);
+        }
+    }
+    let routes: Vec<Vec<(f64, f64)>> = boats
+        .iter()
+        .map(|m| {
+            let Some(Task::Transit { route }) = group::member_task(&task, &g, &lay, &m.uid) else { panic!("a transit") };
+            assert_eq!(route.len(), 3, "the route's three points, moved");
+            assert_eq!(Some(route[2]), lay.shares[&m.uid].at, "it ends in its own cell");
+            route.iter().map(|p| xy(end, *p)).collect()
+        })
+        .collect();
+    // at every point of the route the members stand as their cells do: 30 m apart or more
+    for k in 0..3 {
+        for (i, a) in routes.iter().enumerate() {
+            for b in &routes[i + 1..] {
+                assert!((a[k].0 - b[k].0).hypot(a[k].1 - b[k].1) >= 30.0 - 0.2, "point {k}: {:?} and {:?}", a[k], b[k]);
+            }
+        }
+    }
+    // a one-point transit: each straight to its cell
+    let one = Task::Transit { route: vec![end] };
+    let lay1 = group::layout(&one, &g, &boats);
+    for m in &boats {
+        let Some(Task::Transit { route }) = group::member_task(&one, &g, &lay1, &m.uid) else { panic!("a transit") };
+        assert_eq!(route, vec![lay1.shares[&m.uid].at.unwrap()]);
+    }
+    // fixed wings: cells two loiter radii apart (300 m), so their circles do not overlap
+    let wings = members(&c, "puma", 4, 0, |i| Some(offset(start, 200.0 * i as f64, 0.0)));
+    let wl = group::layout(&task, &g, &wings);
+    assert!(wl.refused.is_none(), "{:?}", wl.refused);
+    assert_eq!(wl.domains[0].spacing_m, Some(300.0));
+}
+
+/// A route as far as a distance along it, whose last point is a station: the points before, then
+/// the point at the distance (the route's own point when it falls on one).
+#[test]
+fn a_route_to_a_distance_along_it() {
+    let a = GATE;
+    let b = offset(a, 1000.0, 0.0);
+    let d = offset(b, 0.0, 1000.0);
+    let r = vec![a, b, d];
+    assert_eq!(group::route_to(&r, 0.0), vec![a]);
+    assert_eq!(group::route_to(&r, 1000.0), vec![a, b]);
+    assert_eq!(group::route_to(&r, 2000.0), vec![a, b, d]);
+    assert_eq!(group::route_to(&r, 5000.0), vec![a, b, d], "past the end: the whole route");
+    let half = group::route_to(&r, 1500.0);
+    assert_eq!(half.len(), 3);
+    let (x, y) = xy(a, half[2]);
+    assert!((x - 1000.0).abs() < 0.5 && (y - 500.0).abs() < 0.5, "({x:.1}, {y:.1})");
 }

@@ -1,0 +1,73 @@
+# Rules 34 (docs/SWARMS.md section 3.2, a transit's `block`; bd murmur-4nik, stage 7): moving a
+# swarm somewhere. One order sends six Corsair USVs from the east of the bay to a point off Crissy
+# Field, to hold there as a block: the engine lays a grid round the route's end (three columns, two
+# rows, the Corsair's 30 m minimum apart, on the surface), pairs each member with a cell by the
+# shortest total way, and makes each member's order the route with its last leg to its own cell
+# (one point here: straight to its cell, so no two pass through the point), held there. Each boat
+# goes, judged on the water all the way (the domain rule along its own legs), and holds station in
+# its cell; once all six hold the group is done.
+title = "A group transit: six USVs to a block round one point"
+invariant = "group_order"
+attack = "six boats to one point, which would stack them there"
+expect = "done"
+end_s = 260
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "usv-1"
+platform = "corsair"
+at = [-122.4400, 37.8120]
+
+[[vehicle]]
+uid = "usv-2"
+platform = "corsair"
+at = [-122.4396, 37.8120]
+
+[[vehicle]]
+uid = "usv-3"
+platform = "corsair"
+at = [-122.4392, 37.8120]
+
+[[vehicle]]
+uid = "usv-4"
+platform = "corsair"
+at = [-122.4400, 37.8124]
+
+[[vehicle]]
+uid = "usv-5"
+platform = "corsair"
+at = [-122.4396, 37.8124]
+
+[[vehicle]]
+uid = "usv-6"
+platform = "corsair"
+at = [-122.4392, 37.8124]
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "transit"
+uids = ["usv-1", "usv-2", "usv-3", "usv-4", "usv-5", "usv-6"]
+route = [[-122.4550, 37.8150]]
+group = { spread = "block" }
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+sent = ["usv-1", "usv-2", "usv-3", "usv-4", "usv-5", "usv-6"]
+waiting = []
+excluded = []
+detail = "block: 6 surface 30 m apart"
+detail_rule = "separation"
+
+[[step]]
+at_s = 250
+action = "expect"
+task_state = "done"
+task_reason = "done: 6 reached their shares"
+at = { "usv-1" = [-122.4553411, 37.8148653], "usv-2" = [-122.4550, 37.8148653], "usv-3" = [-122.4546589, 37.8148653], "usv-4" = [-122.4553411, 37.8151347], "usv-5" = [-122.4550, 37.8151347], "usv-6" = [-122.4546589, 37.8151347] }

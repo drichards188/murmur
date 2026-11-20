@@ -1,0 +1,48 @@
+# Rules 34 (docs/SWARMS.md section 13, stage 7; bd murmur-4nik) with rules 22's planner: a transit's
+# own legs are routed as a patrol's are. HUNTER 1, a Sea Hunter east of the bridge, is sent along
+# the channel to a point west of it and told to hold there. The route's one leg runs straight into
+# the south tower's pier (the land 113 keeps as a live run saw it); the domain rule would refuse it,
+# so the planner routes the leg round the pier first, the dispatch carries the route with its
+# waypoints, the boat flies it that way and holds station at the route's end, where the order is
+# done. The way home from the end is judged straight, as every return is.
+title = "A transit whose leg runs into the pier is routed round it"
+invariant = "domain"
+attack = "a transit leg straight into the south tower's pier"
+expect = "done"
+expect_routed = ["routed around land at"]
+end_s = 360
+min_rules = 34
+# the Gate near the bridge as 113 draws it: San Francisco, Marin, and the south tower's pier
+land = [
+  [[-122.513, 37.700], [-122.300, 37.700], [-122.300, 37.8045], [-122.470, 37.8045], [-122.4772, 37.8098], [-122.4790, 37.8090], [-122.486, 37.802], [-122.497, 37.792], [-122.513, 37.785]],
+  [[-122.600, 37.950], [-122.460, 37.950], [-122.460, 37.832], [-122.475, 37.830], [-122.480, 37.8275], [-122.500, 37.827], [-122.530, 37.825], [-122.600, 37.825]],
+  [[-122.47725, 37.81279], [-122.47555, 37.81279], [-122.47555, 37.81415], [-122.47725, 37.81415]],
+]
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"
+at = [-122.4720341, 37.8136534]   # east of the bridge, mid-channel
+home = [-122.4660238, 37.8200010]
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "transit"
+uids = ["hunter-1"]
+route = [[-122.4700, 37.8136], [-122.4850, 37.8136]]
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 350
+action = "expect"
+task_state = "done"
+at = { "hunter-1" = [-122.4850, 37.8136] }

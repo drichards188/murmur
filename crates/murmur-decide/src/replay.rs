@@ -2319,6 +2319,7 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::GROUP_ORDER_SINCE, "\"type\":\"group.suspended\"", "a group order suspended below its minimum"),
     (rules::GROUP_ORDER_SINCE, "\"transition\":\"under\"", "a member order approved under its group's approval"),
     (rules::GROUP_ORDER_SINCE, "\"member\":\"", "a group member's class on its failing check"),
+    (rules::GROUP_ORDER_SINCE, "\"kind\":\"transit\"", "a transit order"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.

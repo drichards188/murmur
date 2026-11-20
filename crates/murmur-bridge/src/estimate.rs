@@ -1371,6 +1371,16 @@ impl Inputs<'_> {
                     format!("patrol #{}: {} {what}", task.tasking, fmt_mps(speed)),
                 ))
             }
+            // rules 34: a transit holds at its route's end once there, by its type; on the way, it
+            // is carried on its last heading
+            TaskKind::Transit if Some(mode) == auto => {
+                if task.state == OpState::Done {
+                    let (m, d) = self.holding(&format!("transit #{}, at its end", task.tasking));
+                    return Some(("hold", m, d));
+                }
+                let m = self.velocity()?;
+                Some(("velocity", m, format!("transit #{}: on its way along its route, carried on its last heading", task.tasking)))
+            }
             TaskKind::Hold if Some(mode) == hold => {
                 let (m, d) = self.holding(&format!("hold #{}", task.tasking));
                 Some(("hold", m, d))

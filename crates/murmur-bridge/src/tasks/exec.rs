@@ -233,6 +233,7 @@ async fn run_inner(ctx: &OpCtx) -> Result {
         TaskKind::Hold => t.hold().await,
         TaskKind::Track => t.track().await,
         TaskKind::Lay => t.lay().await,
+        TaskKind::Transit => t.transit().await,
     }
 }
 
@@ -1433,6 +1434,60 @@ impl Task<'_> {
         };
         let what = if home.is_some() { "the line laid, home" } else { "the line laid" };
         self.run_mission(items, candidates, done, what.into(), progress).await
+    }
+
+    /// Rules 34: a transit, its route flown once from its first point to its last, then held
+    /// there by the vehicle's type: the mission ends with a loiter-forever item at the last point,
+    /// which each firmware flies as its own hold (ArduCopter hovers, ArduPlane circles at its
+    /// WP_LOITER_RAD, ArduRover holds station within LOIT_RADIUS, a ground vehicle stopping there,
+    /// ArduSub holds position and depth; ArduBlimp, which skips it, holds at its last waypoint, as
+    /// its mission's end does). Done once on the hold item (a blimp at its last waypoint) within
+    /// the hold's tolerance of the end; the vehicle stays in its mission mode holding there, as an
+    /// orbit circles on. A member of a group flies its own route as its member order says (its
+    /// station, or the route moved to its cell) at its share's altitude: no slot of its own.
+    async fn transit(&self) -> Result {
+        let route = self.ctx.params.route.clone().unwrap_or_default();
+        let Some([end_lon, end_lat]) = route.last().copied() else {
+            return fail("transit needs a route".to_string());
+        };
+        let alt = self.task_alt();
+        let build = |takeoff: bool| {
+            let mut items = self.mission_prefix(alt, takeoff);
+            for [lon, lat] in &route {
+                items.push(Item::waypoint(*lat, *lon, alt));
+            }
+            items.push(Item::nav(apm::MavCmd::MAV_CMD_NAV_LOITER_UNLIM, end_lat, end_lon, alt));
+            items
+        };
+        let items = build(self.needs_takeoff());
+        let candidates = self.takeoff_choices().into_iter().map(build).collect();
+        let first = items.len() - route.len() - 1;
+        // the last waypoint (its hold follows it)
+        let end_wp = (items.len() - 2) as u16;
+        let fixed_wing = self.caps.orbit == Some(OrbitStyle::Loiter);
+        let loiter = self.v().read(|s| s.loiter_radius_m).map(f64::abs).filter(|r| *r > 0.0).unwrap_or(murmur_decide::group::LOITER_DEFAULT_M);
+        // a fixed wing holds on its loiter circle round the end; the rest at the point
+        let tol = if fixed_wing { loiter + (loiter * 0.4).max(60.0) } else { self.caps.home_tol.max(10.0) };
+        let kind = self.kind;
+        // on its hold item (a blimp, whose firmware skips it, at its mission's end on its last
+        // waypoint), near the end
+        let done = move |v: &Vehicle| {
+            v.mission_seq.is_some_and(|s| s > end_wp || (kind == Kind::Blimp && s == end_wp))
+                && v.distance_to(end_lat, end_lon).is_some_and(|d| d < tol)
+                && (!kind.flying() || v.airborne())
+        };
+        let n = route.len();
+        let has_takeoff = self.caps.takeoff.is_some();
+        let progress = move |v: &Vehicle| match v.mission_seq {
+            Some(seq) if usize::from(seq) > usize::from(end_wp) => "holding at the route's end".into(),
+            Some(seq) if usize::from(seq) >= first => format!("waypoint {}/{n}", usize::from(seq) - first + 1),
+            _ if has_takeoff && !v.airborne() => "taking off".into(),
+            _ => "en route to its first waypoint".into(),
+        };
+        let what = if fixed_wing { "at the route's end, loitering" } else { "at the route's end, holding" };
+        self.run_mission(items, candidates, done, what.into(), progress).await?;
+        self.op().set_progress(Some("holding at the route's end".into()));
+        Ok(())
     }
 
     /// After a bridge restart, for an order that is a mode (hold, rtl): whether the vehicle

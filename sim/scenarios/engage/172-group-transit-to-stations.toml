@@ -1,0 +1,77 @@
+# Rules 34 (docs/SWARMS.md section 3.2, a transit's `stations`; bd murmur-4nik, stage 7): one order
+# sends five quadcopters out to hold as a picket along a line. The engine lays five stations evenly
+# along the route, its first and last points among them (220 m apart, one layer: the X10's 15 m
+# minimum is far inside it), pairs each member with one by the shortest total way (so no two ways
+# there cross), and makes each member's order its own station, flown straight there (it enters the
+# route at its station) and held; each share is checked on its own and goes out as a member order
+# under the group's one approval. Each quadcopter flies to its station and holds; once all five
+# hold the group is done. The log is then attacked: the first member order is made to hold 50 m
+# north of its station (its order and its dispatch alike), and replay, which lays the stations out
+# again from the group's check and binds each member order to its share, must catch it.
+title = "A group transit: five quadcopters to stations along a line"
+invariant = "group_order"
+attack = "a member's station moved after the layout (move_member_station)"
+expect = "done"
+tamper = "move_member_station"
+end_s = 200
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-5"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "transit"
+uids = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5"]
+route = [[-122.4500, 37.8100], [-122.4600, 37.8100]]
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+sent = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5"]
+waiting = []
+excluded = []
+member_states = { "sky-1" = "dispatched", "sky-5" = "dispatched" }
+detail = "stations: 5 air 220 m apart"
+detail_rule = "separation"
+
+[[step]]
+at_s = 190
+action = "expect"
+task_state = "done"
+task_reason = "done: 5 reached their shares"
+member_states = { "sky-1" = "done", "sky-2" = "done", "sky-3" = "done", "sky-4" = "done", "sky-5" = "done" }
+at = { "sky-1" = [-122.4600, 37.8100], "sky-2" = [-122.4575, 37.8100], "sky-3" = [-122.4550, 37.8100], "sky-4" = [-122.4525, 37.8100], "sky-5" = [-122.4500, 37.8100] }

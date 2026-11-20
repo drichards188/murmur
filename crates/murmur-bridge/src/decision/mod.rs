@@ -1548,10 +1548,10 @@ impl Decision {
     /// a situation's runner asks before a scripted id submits an opening order, and sends such
     /// an order to a person instead.
     pub async fn operator_dry_run(&self, by: &Actor, req: IntentRequest) -> Result<Value, DecisionError> {
-        if !matches!(req.task.as_str(), "orbit" | "patrol" | "hold" | "rtl" | "track" | "identify") {
+        if !matches!(req.task.as_str(), "orbit" | "patrol" | "hold" | "rtl" | "track" | "identify" | "transit") {
             return Err(DecisionError::new(
                 422,
-                "an operator's dry run takes a vehicle task (orbit, patrol, hold, rtl, track, identify)",
+                "an operator's dry run takes a vehicle task (orbit, patrol, hold, rtl, track, identify, transit)",
             ));
         }
         self.check_vehicle_task(&req)?;
@@ -3302,6 +3302,10 @@ fn proposal(req: &IntentRequest) -> Result<Proposal, DecisionError> {
         TaskKind::Patrol => Task::Patrol {
             route: p.route.iter().flatten().copied().map(ll).collect(),
         },
+        // rules 34: along a route once, held at its end (the engine refuses it under older rules)
+        TaskKind::Transit => Task::Transit {
+            route: p.route.iter().flatten().copied().map(ll).collect(),
+        },
         TaskKind::Hold => Task::Hold {},
         TaskKind::Rtl => Task::Rtl {},
         TaskKind::Track => Task::Track {
@@ -3350,6 +3354,11 @@ fn task_request(task: &Task, uids: &[DUid]) -> Result<TaskRequest, String> {
         Task::Patrol { route } => {
             params.route = Some(route.iter().map(|p| [p.lon, p.lat]).collect());
             "patrol"
+        }
+        // rules 34: flown once, held at its end
+        Task::Transit { route } => {
+            params.route = Some(route.iter().map(|p| [p.lon, p.lat]).collect());
+            "transit"
         }
         Task::Hold {} => "hold",
         Task::Rtl {} => "rtl",

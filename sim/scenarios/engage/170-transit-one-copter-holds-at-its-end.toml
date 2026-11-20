@@ -1,0 +1,42 @@
+# Rules 34 (docs/SWARMS.md decision 7 and section 3.2; bd murmur-4nik, stage 7): a transit, the new
+# ordinary kind: go along a route once and hold at its end by the vehicle's type. Under rules 33
+# there was no such order: moving a vehicle somewhere and keeping it there took a patrol (which
+# loops back) or an orbit (which circles), then a hold sent by hand once it arrived. Here op-1 sends
+# SKY 1, a quadcopter at Crissy Field, along three points over the water; the engine checks it as a
+# path flown once (its transit leg, the route's legs open, the way home from its end), it goes out,
+# the quadcopter flies the route and holds at its last point, and the order is done there.
+# `--rules 33` refuses it (no transit in those rules).
+title = "A transit: one quadcopter along a route, holding at its end"
+invariant = "transit"
+attack = "a route flown once and held, which older rules had no order for"
+expect = "done"
+end_s = 180
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "transit"
+uids = ["sky-1"]
+route = [[-122.4500, 37.8100], [-122.4560, 37.8120], [-122.4620, 37.8110]]
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 170
+action = "expect"
+task_state = "done"
+at = { "sky-1" = [-122.4620, 37.8110] }

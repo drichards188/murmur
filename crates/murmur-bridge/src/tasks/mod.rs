@@ -48,6 +48,9 @@ pub enum TaskKind {
     /// Rules 27: drive a lay order's line once, its first point to its last (the decision engine
     /// lays each mine as the vehicle passes its place, `murmur_decide::mines`).
     Lay,
+    /// Rules 34: fly a route once and hold at its end by the vehicle's type (a copter hovers, a
+    /// fixed wing loiters, a boat or a sub holds station, a ground vehicle stops).
+    Transit,
 }
 
 impl TaskKind {
@@ -59,6 +62,7 @@ impl TaskKind {
             TaskKind::Rtl => "rtl",
             TaskKind::Track => "track",
             TaskKind::Lay => "lay",
+            TaskKind::Transit => "transit",
         }
     }
 }
@@ -73,6 +77,7 @@ impl FromStr for TaskKind {
             "rtl" => TaskKind::Rtl,
             "track" => TaskKind::Track,
             "lay" => TaskKind::Lay,
+            "transit" => TaskKind::Transit,
             _ => return Err(format!("unknown task {s}")),
         })
     }
@@ -220,6 +225,9 @@ impl TaskOrder {
             }
             TaskKind::Lay if p.route.as_ref().is_none_or(Vec::is_empty) => {
                 return invalid("lay needs its line, a route of at least 1 point");
+            }
+            TaskKind::Transit if p.route.as_ref().is_none_or(Vec::is_empty) => {
+                return invalid("transit needs a route of at least 1 point, held at its last");
             }
             _ => {}
         }

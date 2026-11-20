@@ -225,7 +225,7 @@ impl QueueConfig {
 pub fn queueable(kind: TaskKind) -> bool {
     matches!(
         kind,
-        TaskKind::Orbit | TaskKind::Patrol | TaskKind::Hold | TaskKind::Rtl | TaskKind::Track
+        TaskKind::Orbit | TaskKind::Patrol | TaskKind::Hold | TaskKind::Rtl | TaskKind::Track | TaskKind::Transit
     )
 }
 
@@ -238,11 +238,11 @@ pub fn vehicle_task(kind: TaskKind) -> bool {
 }
 
 /// Whether the task reaches the vehicle as a mission upload (and so needs a link that can
-/// carry one): orbit and patrol, and rtl on a sub (ArduSub has no RTL mode: the task layer
+/// carry one): orbit, patrol and (rules 34) transit, and rtl on a sub (ArduSub has no RTL mode: the task layer
 /// flies a mission home). Hold, rtl elsewhere and track are single commands.
 pub fn needs_mission(kind: TaskKind, autopilot: Option<AutopilotKind>) -> bool {
     match kind {
-        TaskKind::Orbit | TaskKind::Patrol | TaskKind::Identify => true,
+        TaskKind::Orbit | TaskKind::Patrol | TaskKind::Identify | TaskKind::Transit => true,
         TaskKind::Rtl => autopilot == Some(AutopilotKind::Sub),
         _ => false,
     }

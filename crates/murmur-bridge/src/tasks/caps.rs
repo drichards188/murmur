@@ -169,6 +169,9 @@ pub fn caps(kind: Kind) -> Option<&'static Caps> {
 }
 
 pub fn can(kind: Option<Kind>, task: TaskKind) -> bool {
+    // rules 34: whatever patrols transits (its list of tasks, which the fleet's views show, is as
+    // before until agents are told of transits)
+    let task = if task == TaskKind::Transit { TaskKind::Patrol } else { task };
     kind.and_then(caps).is_some_and(|c| c.tasks.contains(&task))
 }
 

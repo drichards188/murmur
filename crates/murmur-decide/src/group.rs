@@ -47,10 +47,12 @@ pub enum Spread {
     Here,
     /// An rtl: each member to its own home. Never refused for its layout.
     Home,
-    /// A transit (built in a later stage): n points evenly along the route, each member flying
-    /// to one and holding there.
+    /// A transit: n points evenly along the route (its first and its last among them), each
+    /// member flying straight to its own (entering the route there) and holding by its type.
     Stations,
-    /// A transit: a grid round the route's end, ceil(sqrt(n)) columns the lateral minimum apart.
+    /// A transit: a grid round the route's end, ceil(sqrt(n)) columns the lateral minimum apart
+    /// (a fixed wing's two loiter radii), each member flying the route moved as its cell sits from
+    /// the end (the block keeping its shape along the way) and holding in its cell.
     Block,
 }
 
@@ -75,6 +77,7 @@ impl Spread {
             TaskKind::Patrol => Some(Spread::Along),
             TaskKind::Hold => Some(Spread::Here),
             TaskKind::Rtl => Some(Spread::Home),
+            TaskKind::Transit => Some(Spread::Stations),
             _ => None,
         }
     }
@@ -86,8 +89,7 @@ impl Spread {
             Spread::Along | Spread::Lanes => kind == TaskKind::Patrol,
             Spread::Here => kind == TaskKind::Hold,
             Spread::Home => kind == TaskKind::Rtl,
-            // the transit kind is a later stage's (docs/SWARMS.md section 13, stage 7)
-            Spread::Stations | Spread::Block => false,
+            Spread::Stations | Spread::Block => kind == TaskKind::Transit,
         }
     }
 
@@ -170,6 +172,9 @@ impl GroupSpec {
         if self.reform == Some(true) && matches!(kind, TaskKind::Hold | TaskKind::Rtl) {
             return Some("a hold or an rtl never re-forms".into());
         }
+        if self.reform == Some(true) && kind == TaskKind::Transit {
+            return Some("a transit's stations and block are not re-formed: a gap a member leaves stays open, shown on its swarm".into());
+        }
         match (spread, self.lanes, self.lane_spacing_m) {
             (Spread::Lanes, Some(l), Some(s)) if (2..=50).contains(&l) && s.is_finite() && (10.0..=10_000.0).contains(&s) => {}
             (Spread::Lanes, _, _) => return Some("lanes needs lanes (2 to 50) and lane_spacing_m (10 to 10,000 m)".into()),
@@ -184,7 +189,7 @@ impl GroupSpec {
 
     /// The spec as the engine logs it for `kind` over `n` vehicles: the spread, the minimum
     /// (`min_share` of the selection, rounded up; one for a hold or an rtl) and whether it
-    /// re-forms filled in.
+    /// re-forms (never a hold, an rtl or a transit) filled in.
     pub fn normalized(&self, kind: TaskKind, n: usize, min_share: f64) -> GroupSpec {
         let safety = matches!(kind, TaskKind::Hold | TaskKind::Rtl);
         let min = if safety {
@@ -195,7 +200,7 @@ impl GroupSpec {
         GroupSpec {
             spread: self.spread.or_else(|| Spread::default_for(kind)),
             min_members: Some(self.min_members.unwrap_or(min)),
-            reform: Some(self.reform.unwrap_or(!safety)),
+            reform: Some(self.reform.unwrap_or(!safety && kind != TaskKind::Transit)),
             ..self.clone()
         }
     }
@@ -559,7 +564,7 @@ pub fn layout(task: &Task, group: &GroupSpec, members: &[Member]) -> Layout {
         spread,
         ..Layout::default()
     };
-    let Some(spread) = spread.filter(|s| s.fits(task.kind()) || matches!(s, Spread::Stations | Spread::Block)) else {
+    let Some(spread) = spread.filter(|s| s.fits(task.kind())) else {
         out.refused = Some(format!("no spread lays out a group {}", task.kind().as_str()));
         return out;
     };
@@ -628,8 +633,60 @@ pub fn member_task(task: &Task, group: &GroupSpec, lay: &Layout, uid: &Uid) -> O
         (Task::Patrol { route }, Some(Spread::Along)) if route.len() == 2 => Task::Patrol {
             route: racetrack(route[0], route[1], share.width_m?),
         },
+        // a station: straight there (it enters the route at its own point, as a patrol's member
+        // enters at its own; the pairing keeps the members' ways from crossing), held there
+        (Task::Transit { route }, Some(Spread::Stations)) => Task::Transit {
+            route: vec![station(route, share.entry_m?)],
+        },
+        // a block's cell: the route moved as the cell sits from its end, so the block keeps its
+        // shape along the way and no two members pass through one point, held in its cell
+        (Task::Transit { route }, Some(Spread::Block)) => {
+            let (Some(end), Some(cell)) = (route.last(), share.at) else { return None };
+            let (dlon, dlat) = (cell.lon - end.lon, cell.lat - end.lat);
+            let mut r: Vec<LonLat> = route.iter().map(|p| round_ll(LonLat::new(p.lon + dlon, p.lat + dlat))).collect();
+            if let Some(last) = r.last_mut() {
+                *last = cell;
+            }
+            Task::Transit { route: r }
+        }
         (t, _) => t.clone(),
     })
+}
+
+/// A station `d` metres along `route` (open), as the layout placed it: the route's own point when
+/// it falls on one, else the point there at MAVLink's resolution.
+pub fn station(route: &[LonLat], d: f64) -> LonLat {
+    route_to(route, d).last().copied().unwrap_or(LonLat::new(0.0, 0.0))
+}
+
+/// `route` (open) as far as `d` metres along it: its points before there, then the point there
+/// (at MAVLink's resolution; the route's own point when it falls on one).
+pub fn route_to(route: &[LonLat], d: f64) -> Vec<LonLat> {
+    let Some(first) = route.first().copied() else {
+        return Vec::new();
+    };
+    let plane = Plane::new(first);
+    let pts: Vec<(f64, f64)> = route.iter().map(|p| plane.xy(*p)).collect();
+    let mut out = vec![first];
+    let mut left = d.max(0.0);
+    for (i, w) in pts.windows(2).enumerate() {
+        let l = dist(w[0], w[1]);
+        if left <= l + 0.05 {
+            let at = if l - left <= 0.05 {
+                route[i + 1]
+            } else {
+                let f = if l > 0.0 { left / l } else { 0.0 };
+                round_ll(plane.ll((w[0].0 + (w[1].0 - w[0].0) * f, w[0].1 + (w[1].1 - w[0].1) * f)))
+            };
+            if out.last() != Some(&at) {
+                out.push(at);
+            }
+            return out;
+        }
+        left -= l;
+        out.push(route[i + 1]);
+    }
+    out
 }
 
 // ---- geometry on a local plane -------------------------------------------------------------
@@ -1035,7 +1092,7 @@ fn lay_domain(task: &Task, group: &GroupSpec, spread: Spread, domain: Domain, ms
             slots.sort_by_key(|(i, _)| *i);
             (plane, slots.into_iter().map(|(_, s)| s).collect())
         }
-        (Task::Patrol { route }, Spread::Stations) => {
+        (Task::Transit { route }, Spread::Stations) => {
             let first = route.first().copied().unwrap_or(LonLat::new(0.0, 0.0));
             let plane = Plane::new(first);
             let path = Path {
@@ -1043,6 +1100,11 @@ fn lay_domain(task: &Task, group: &GroupSpec, spread: Spread, domain: Domain, ms
                 closed: false,
             };
             let len = path.length();
+            if n > 1 && len < lateral {
+                return Err(format!(
+                    "stations need a route longer than the {name} members' {lateral:.0} m (this one is {len:.0} m): a transit to one point spreads its members as a block"
+                ));
+            }
             let s = if n > 1 { len / (n - 1) as f64 } else { f64::INFINITY };
             // a station holds by its type: a copter in place, a fixed wing on its loiter circle
             let need = ms
@@ -1055,7 +1117,8 @@ fn lay_domain(task: &Task, group: &GroupSpec, spread: Spread, domain: Domain, ms
             d.layers = k;
             let slots = (0..n)
                 .map(|i| {
-                    let e = if n > 1 { len * i as f64 / (n - 1) as f64 } else { 0.0 };
+                    // one member of a domain holds at the route's end, as a transit does
+                    let e = if n > 1 { len * i as f64 / (n - 1) as f64 } else { len };
                     Slot {
                         xy: path.at(e),
                         phase_deg: None,
@@ -1068,7 +1131,7 @@ fn lay_domain(task: &Task, group: &GroupSpec, spread: Spread, domain: Domain, ms
                 .collect();
             (plane, slots)
         }
-        (Task::Patrol { route }, Spread::Block) => {
+        (Task::Transit { route }, Spread::Block) => {
             let end = route.last().copied().unwrap_or(LonLat::new(0.0, 0.0));
             let plane = Plane::new(end);
             let g = ms

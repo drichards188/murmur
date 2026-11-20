@@ -5,6 +5,7 @@
 //! | kind          | transit                 | task path | return               |
 //! |---------------|-------------------------|-----------|----------------------|
 //! | orbit, patrol | position to waypoint 1  | yes       | task end to home     |
+//! | transit       | position to waypoint 1  | yes, open | its last point home  |
 //! | rtl           | none                    | none      | position to home     |
 //! | hold, track   | none                    | none      | none                 |
 //! | engage        | position to effect point| none      | effect point to home |
@@ -367,7 +368,7 @@ pub fn route_for(
         if let Some(p) = crate::plan::leg_plan(&world.route_plans, pos, first) {
             route.transit_via = p.via.clone();
         }
-        if matches!(spec.task, Task::Patrol { .. })
+        if matches!(spec.task, Task::Patrol { .. } | Task::Transit { .. })
             && let Some(path) = &route.task
         {
             for (i, a, b) in path.legs() {

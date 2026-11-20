@@ -447,6 +447,15 @@ impl Decision {
     /// [`space::proposal`] (no vehicles), else a vehicle task, refused before any intent
     /// exists when the task layer couldn't take it (as [`Decision::submit`] does).
     fn agent_proposal(&self, req: &IntentRequest) -> Result<Proposal, DecisionError> {
+        // rules 34: a transit is an operator's order until the agents' tools describe it and the
+        // situations' watch policy holds an agent's transit for the operator as it holds a patrol
+        // (docs/SWARMS.md section 13, the stage that brings group orders to MCP)
+        if req.task == "transit" {
+            return Err(DecisionError::new(
+                422,
+                "an agent proposes no transit yet: an operator orders one from the console",
+            ));
+        }
         if req.task == "engage" {
             // a nomination: the engine routes it to operators with engagement authority;
             // accepting a lost vehicle is an operator's decision, never an agent's (rules 6)
