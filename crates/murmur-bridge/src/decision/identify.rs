@@ -322,6 +322,7 @@ impl Decision {
                 uids: vec![duid(uid)],
                 constraints: murmur_decide::Constraints::default(),
                 rationale: None,
+                grouping: Default::default(),
             };
             self.prefetch(&spec.task, &spec.uids).await;
             let inputs = {

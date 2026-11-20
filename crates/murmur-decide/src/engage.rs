@@ -2536,6 +2536,7 @@ fn check(rule: RuleId, uid: Option<&Uid>, outcome: Outcome, detail: impl Into<St
         detail: detail.into(),
         fix: None,
         warning: None,
+        class: None,
     }
 }
 

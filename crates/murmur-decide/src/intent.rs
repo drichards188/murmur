@@ -481,6 +481,12 @@ pub struct Proposal {
     pub constraints: Constraints,
     #[serde(default)]
     pub rationale: Option<Rationale>,
+    /// Rules 34 ([`crate::rules::GROUP_ORDER_SINCE`]): how a group order to these vehicles is laid
+    /// out (its spread, minimum, layer base, wait, whether it re-forms). From rules 34 an order of
+    /// an ordinary kind naming more than one vehicle is a group order whether or not it gives one
+    /// (the engine fills the defaults); refused under older rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<crate::group::GroupSpec>,
 }
 
 impl Proposal {
@@ -490,6 +496,7 @@ impl Proposal {
             uids,
             constraints: Constraints::default(),
             rationale: None,
+            group: None,
         }
     }
 
@@ -539,6 +546,10 @@ impl Proposal {
                 "reserve_pct must be 0..100".into(),
             ));
         }
+        // rules 34: a group order's own spec
+        if let Some(why) = self.group.as_ref().and_then(|g| g.invalid(self.task.kind(), self.uids.len())) {
+            return Err(ProposalError::BadParams(why));
+        }
         self.task.validate()
     }
 }
@@ -568,11 +579,30 @@ pub struct IntentSpec {
     pub uids: Vec<Uid>,
     pub constraints: Constraints,
     pub rationale: Option<Rationale>,
+    /// Rules 34: a group order's spec, or a member order's group and share
+    /// ([`crate::group::Grouping`]); nothing at all on any other intent.
+    #[serde(flatten)]
+    pub grouping: crate::group::Grouping,
 }
 
 impl IntentSpec {
     pub fn kind(&self) -> TaskKind {
         self.task.kind()
+    }
+
+    /// Rules 34: a group order's spec, when it is one.
+    pub fn group(&self) -> Option<&crate::group::GroupSpec> {
+        self.grouping.group.as_ref()
+    }
+
+    /// Rules 34: the group order a member order is a share of, when it is one.
+    pub fn parent(&self) -> Option<IntentId> {
+        self.grouping.parent
+    }
+
+    /// Rules 34: a member order's share, when it is one.
+    pub fn share(&self) -> Option<&crate::group::Share> {
+        self.grouping.share.as_ref()
     }
 }
 
@@ -676,10 +706,14 @@ pub enum Transition {
     /// Rules 11: a dispatched collect or cover withdrawn by an operator (`operator.action
     /// intent.cancel`, then the engine's `op.state cancelled`): `aborted`.
     Cancel,
+    /// Rules 34: a member order approved under its group order's approval (proposed to approved):
+    /// the group's checks, policy decision and approval cover it, and it is dispatched or queued
+    /// on its own from here.
+    Under,
 }
 
 impl Transition {
-    pub const ALL: [Transition; 17] = [
+    pub const ALL: [Transition; 18] = [
         Transition::Check,
         Transition::ChecksFailed,
         Transition::AutoApprove,
@@ -697,6 +731,7 @@ impl Transition {
         Transition::Queue,
         Transition::Requeue,
         Transition::Cancel,
+        Transition::Under,
     ];
 }
 
@@ -723,6 +758,7 @@ pub struct IllegalTransition {
 /// queued -dispatch-> dispatched | -require_approval-> pending_approval
 ///        | -void-> voided | -expire-> expired                           (rules 5)
 /// dispatched -requeue-> queued                                           (rules 5)
+/// proposed -under-> approved                                (rules 34, a member order)
 /// ```
 ///
 /// A queued intent leaves the queue only through a re-check against the world at that
@@ -740,6 +776,7 @@ pub fn next_state(from: State, transition: Transition) -> Result<State, IllegalT
     use Transition as T;
     let to = match (from, transition) {
         (S::Proposed, T::Check) => S::Checked,
+        (S::Proposed, T::Under) => S::Approved,
         (S::Checked, T::ChecksFailed) => S::Rejected,
         (S::Checked, T::AutoApprove) => S::AutoApproved,
         (S::Checked, T::RequireApproval) => S::PendingApproval,

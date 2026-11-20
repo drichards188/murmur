@@ -174,6 +174,7 @@ pub fn spec(source: Source, p: Proposal) -> IntentSpec {
         uids: p.uids,
         constraints: p.constraints,
         rationale: p.rationale,
+        grouping: Default::default(),
     }
 }
 

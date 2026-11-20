@@ -1140,6 +1140,7 @@ fn replay_catches_a_direct_dispatch_to_a_vehicle_the_link_could_not_reach() {
                         engage: None,
                         inputs: None,
                         reach: None,
+                        share: None,
                     };
                 }
                 EventBody::IntentState {

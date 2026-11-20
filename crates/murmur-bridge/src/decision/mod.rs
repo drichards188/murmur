@@ -2451,6 +2451,7 @@ impl Decision {
             uids: uids.to_vec(),
             constraints: Constraints::default(),
             rationale: None,
+            grouping: Default::default(),
         }
     }
 

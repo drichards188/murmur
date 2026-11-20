@@ -467,6 +467,9 @@ pub struct DispatchOrder {
     /// Rules 22: each vehicle's transit waypoints, the route a plan laid around the wrong surface
     /// or a no-go area (flown before the task; a patrol's own routed legs are in its route).
     pub via: BTreeMap<Uid, Vec<crate::geo::LonLat>>,
+    /// Rules 34, a member order: its share of the group's task (the altitude it flies, where it
+    /// enters the ring or the route), from its spec.
+    pub share: Option<Box<crate::group::Share>>,
 }
 
 /// What [`Engine::dispatch_order`] hands the bridge: vehicle work for the task manager, or
@@ -4745,6 +4748,14 @@ impl Engine {
                 v.reach_now = None;
             }
         }
+        // rules 34: a type's group-order figures, a fact only rules 34 read
+        if !self.policy.rules.group_orders() {
+            for v in w.vehicles.values_mut() {
+                if let Some(p) = v.platform.as_mut() {
+                    p.formation = None;
+                }
+            }
+        }
     }
 
     /// The world as decisions read it (rules 9: its identification filled from the ledger),
@@ -6205,6 +6216,7 @@ impl Engine {
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
+            grouping: Default::default(),
         };
         let expires_t = t.plus_ms(i64::from(self.policy.queue().expire_s) * 1000);
         self.emit_at(t, EventBody::IntentHandedOver {
@@ -6626,6 +6638,7 @@ impl Engine {
                     task: moved.task.clone(),
                     uids: spec.uids.clone(),
                     via,
+                    share: None,
                 }));
             } else {
                 let reason = crate::identify::failing(&checks);
@@ -6724,6 +6737,7 @@ impl Engine {
             task: return_task.unwrap_or(returns),
             uids: spec.uids.clone(),
             via: return_via,
+            share: None,
         }))
     }
 
@@ -7105,6 +7119,7 @@ impl Engine {
                 results: results.clone(),
                 passed,
                 preview: preview.clone().map(Box::new),
+                layout: None,
             },
         )?;
         let intent = self.get_mut(spec.id)?;
@@ -7247,6 +7262,7 @@ impl Engine {
             uids: Vec::new(),
             constraints: old.spec().constraints.clone(),
             rationale: old.spec().rationale.clone(),
+            group: None,
         };
         proposal.validate()?;
         Ok((proposal, old.state()))
@@ -7265,6 +7281,12 @@ impl Engine {
         terrain: &dyn TerrainOracle,
     ) -> Result<IntentId, EngineError> {
         proposal.validate()?;
+        // rules 34: no build of older rules took a group order's spec
+        if proposal.group.is_some() && !self.policy.rules.group_orders() {
+            return Err(EngineError::Proposal(ProposalError::BadParams(
+                "these decision rules take no group order (rules 34)".into(),
+            )));
+        }
         // rules 27: no build of older rules took a lay order
         if proposal.task.kind() == TaskKind::Lay && !self.policy.rules.mines() {
             return Err(EngineError::Proposal(ProposalError::BadParams(
@@ -7281,6 +7303,7 @@ impl Engine {
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
+            grouping: Default::default(),
         };
         self.emit(EventBody::IntentCreated {
             intent: spec.clone(),
@@ -7558,6 +7581,7 @@ pub(crate) fn order_for(
                 },
                 uids: spec.uids.clone(),
                 via,
+                share: None,
             })
         }
         _ => Order::Vehicles(DispatchOrder {
@@ -7568,6 +7592,7 @@ pub(crate) fn order_for(
             },
             uids: spec.uids.clone(),
             via,
+            share: spec.share().cloned().map(Box::new),
         }),
     })
 }
@@ -7623,6 +7648,7 @@ pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order, identify: Optio
         },
         inputs: None,
         reach: None,
+        share: spec.share().cloned(),
     }
 }
 
@@ -8379,6 +8405,7 @@ impl Engine {
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
+            grouping: Default::default(),
         };
         let mut inputs = world.for_intent_with(&spec, terrain, &self.policy.rules);
         self.identify(&mut inputs);
@@ -8599,6 +8626,7 @@ impl AgentPort<'_> {
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
+            grouping: Default::default(),
         };
         let mut inputs = world.for_intent_with(&spec, terrain, &self.engine.policy.rules);
         self.engine.identify(&mut inputs);

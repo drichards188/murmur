@@ -1480,6 +1480,9 @@ pub fn run(
     let catalog = Catalog::load(&rel(&sc.catalog, "sim/platforms.toml"))
         .map_err(|e| setup(e.to_string()))?
         .reaching(reaches);
+    // rules 34: each type's group-order figures on its facts, as the bridge puts them there for a
+    // run under rules 34 (an older run's facts as before)
+    let catalog = if policy.rules.group_orders() { catalog.formed() } else { catalog };
     let areas = AreaSet::load_dir(&rel(&sc.areas, "sim/areas"), T0).map_err(|e| setup(e.to_string()))?;
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();

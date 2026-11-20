@@ -47,6 +47,8 @@ fn every_transition_legal_and_illegal() {
         (S::Dispatched, T::Requeue, S::Queued),
         // rules 11: a dispatched collect or cover cancelled by an operator
         (S::Dispatched, T::Cancel, S::Aborted),
+        // rules 34: a member order under its group order's approval
+        (S::Proposed, T::Under, S::Approved),
     ];
     let mut checked = 0;
     for from in State::ALL {
@@ -63,7 +65,7 @@ fn every_transition_legal_and_illegal() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 14 * 17);
+    assert_eq!(checked, 14 * 18);
     for s in State::ALL {
         if s.is_terminal() {
             assert!(
@@ -72,8 +74,11 @@ fn every_transition_legal_and_illegal() {
             );
         }
     }
-    // Approved has exactly two ways in, both needing a HumanAuthority: an inbox approval,
-    // and a human's own submission in a tier that lets the submitter authorize.
+    // Approved has exactly two ways in that decide, both needing a HumanAuthority: an inbox
+    // approval, and a human's own submission in a tier that lets the submitter authorize. Rules
+    // 34 adds a third that decides nothing: a member order under its group order's approval,
+    // which the engine performs only in the group's dispatch, for a group already approved (or
+    // auto-approved), and which replay binds to that group's approval.
     let into_approved: Vec<_> = State::ALL
         .iter()
         .flat_map(|f| Transition::ALL.iter().map(move |t| (*f, *t)))
@@ -82,6 +87,7 @@ fn every_transition_legal_and_illegal() {
     assert_eq!(
         into_approved,
         vec![
+            (State::Proposed, Transition::Under),
             (State::Checked, Transition::AuthorizeAtSubmission),
             (State::PendingApproval, Transition::Approve),
         ]

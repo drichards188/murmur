@@ -158,6 +158,13 @@ pub struct PlatformFacts {
     /// Absent for a platform that carries none, and in older logs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loadout: Vec<WeaponFacts>,
+    /// Rules 34 ([`crate::rules::GROUP_ORDER_SINCE`]): the type's separation and band for a group
+    /// order's layout ([`crate::group::Formation`]: the catalog's `sep_m`, `alt_band_m` and
+    /// `depth_band_m` over the default by autopilot kind, every figure an estimate). Put on the
+    /// facts only for a run deciding under rules 34 ([`Catalog::formed`]); the engine drops it
+    /// before logging under older rules. Absent elsewhere and in older logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formation: Option<crate::group::Formation>,
 }
 
 /// Rules 24: what kind of weapon a loadout entry is. Missiles, bombs and torpedoes fly from the
@@ -745,6 +752,13 @@ struct RawPlatform {
     /// (generated: docs/SENSING.md, "The decision engine's reaches").
     #[serde(default)]
     physical_reach_m: BTreeMap<String, SensorReach>,
+    /// Rules 34: a group order's figures for the type (docs/SWARMS.md section 3.3).
+    sep_m: Option<crate::group::RawSep>,
+    alt_band_m: Option<crate::group::RawAltBand>,
+    depth_band_m: Option<[f64; 2]>,
+    loiter_radius_m: Option<f64>,
+    typical_alt_m: Option<f64>,
+    alt_m: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -771,12 +785,16 @@ pub struct Catalog {
     /// Each platform's `physical_reach_m`, by sensor type: what [`Catalog::reaching`] puts
     /// on its sensors for a run on the physical model.
     physical_reach: BTreeMap<String, BTreeMap<String, SensorReach>>,
+    /// Rules 34: each platform's group-order figures, the entry's own over the default by
+    /// autopilot kind: what [`Catalog::formed`] puts on its facts for a run under rules 34.
+    formation: BTreeMap<String, crate::group::Formation>,
 }
 
 impl Catalog {
     pub fn from_toml(text: &str) -> Result<Self, CatalogError> {
         let mut raw: BTreeMap<String, RawPlatform> = toml::from_str(text)?;
         let mut physical_reach = BTreeMap::new();
+        let mut raws: BTreeMap<String, crate::group::RawFormation> = BTreeMap::new();
         for (id, r) in &mut raw {
             for (kind, reach) in &r.physical_reach_m {
                 if !r.sensors.iter().any(|s| s.kind == *kind) {
@@ -843,6 +861,18 @@ impl Catalog {
                     "[{id}] loadout: a self strike is one, on a platform spent by its own effect (expended_by_effect)"
                 )));
             }
+            // rules 34: a group order's figures, each one the entry gives within its bounds
+            let raw = crate::group::RawFormation {
+                sep_m: r.sep_m.clone(),
+                alt_band_m: r.alt_band_m.clone(),
+                depth_band_m: r.depth_band_m,
+                loiter_radius_m: r.loiter_radius_m,
+                cruise_alt_m: if r.domain == Domain::Subsurface { r.alt_m } else { r.typical_alt_m },
+            };
+            if let Some(why) = raw.invalid(r.domain) {
+                return Err(CatalogError::Invalid(format!("[{id}] {why}")));
+            }
+            raws.insert(id.clone(), raw);
             let reach = std::mem::take(&mut r.physical_reach_m);
             if !reach.is_empty() {
                 physical_reach.insert(id.clone(), reach);
@@ -880,13 +910,19 @@ impl Catalog {
                     expended_by_effect: r.expended_by_effect,
                     munition: r.munition,
                     loadout: r.loadout,
+                    formation: None,
                 };
                 (id, facts)
             })
+            .collect::<BTreeMap<String, PlatformFacts>>();
+        let formation = platforms
+            .iter()
+            .map(|(id, p)| (id.clone(), raws.get(id).cloned().unwrap_or_default().resolve(p)))
             .collect();
         Ok(Catalog {
             platforms,
             physical_reach,
+            formation,
         })
     }
 
@@ -898,6 +934,23 @@ impl Catalog {
 
     pub fn get(&self, id: &str) -> Option<&PlatformFacts> {
         self.platforms.get(id)
+    }
+
+    /// Rules 34 ([`crate::rules::GROUP_ORDER_SINCE`]): this catalog with each platform's
+    /// group-order figures on its facts ([`PlatformFacts::formation`]), for a run deciding under
+    /// rules 34; a run under older rules uses the catalog as loaded, so its facts, and every
+    /// decision logged with them, are as before.
+    pub fn formed(&self) -> Catalog {
+        let mut c = self.clone();
+        for (id, p) in &mut c.platforms {
+            p.formation = self.formation.get(id).copied();
+        }
+        c
+    }
+
+    /// A platform's group-order figures, as [`Catalog::formed`] puts them on its facts.
+    pub fn formation(&self, id: &str) -> Option<crate::group::Formation> {
+        self.formation.get(id).copied()
     }
 
     /// This catalog with its sensors' facts for a run on `reaches`' sensing model: on the

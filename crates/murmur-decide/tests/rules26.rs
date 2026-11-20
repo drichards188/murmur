@@ -226,6 +226,7 @@ fn nomination() -> IntentSpec {
         uids: vec![uid("bull-1")],
         constraints: Default::default(),
         rationale: None,
+        grouping: Default::default(),
     }
 }
 

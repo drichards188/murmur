@@ -366,6 +366,9 @@ behavior = "plane"
 cruise_mps = 20
 typical_alt_m = 80
 endurance_h = 2.5
+# rules 34, a group order's layout (docs/SWARMS.md 3.3): GUESS figures, a testbed's estimates
+sep_m = { lateral = 100, vertical = 30, guess = true }   # GUESS; it loiters at the stand-ins' 150 m (WP_LOITER_RAD)
+alt_band_m = { around = 150 }   # GUESS: the order's altitude plus or minus
 # Sent home, a Puma lands there, as a real one does (murmur-a5v): RTL_AUTOLAND 1, ArduPlane's
 # landing once on the RTL circle at home (crates/murmur-standins/src/behavior/plane.rs: with no
 # DO_LAND_START in the mission, the AUTOLAND mode's landing at home). It is hand-launched
@@ -442,6 +445,9 @@ cruise_mps = 12
 climb_mps = 2.5
 typical_alt_m = 30
 endurance_h = 0.65
+# rules 34, a group order's layout (docs/SWARMS.md 3.3): GUESS figures, a testbed's estimates
+sep_m = { lateral = 15, vertical = 10, guess = true }   # GUESS
+alt_band_m = [30, 120]   # GUESS: above the home's ground; 120 m is the US small-UAS ceiling (14 CFR 107.51) for scale
 [fpv]
 name = "FPV strike quadcopter"
 short = "FPV"
@@ -787,6 +793,8 @@ typical_alt_m = 0
 # the catalog's 8 m/s (15.6 kt), 64 h; Saronic's trials ran more than 92 h underway at a speed not
 # given ([70]).
 endurance_h = 64
+# rules 34, a group order's layout (docs/SWARMS.md 3.3): GUESS figures, a testbed's estimates
+sep_m = { lateral = 30, guess = true }   # GUESS
 [seahunter]
 name = "Sea Hunter-class MUSV"
 short = "MUSV"
@@ -862,6 +870,8 @@ max_mps = 4   # about 8 kt top speed; the polar gives less in light wind
 turn_dps = 20
 typical_alt_m = 0
 endurance_h = 8760
+# rules 34, a group order's layout (docs/SWARMS.md 3.3): GUESS figures, a testbed's estimates
+sep_m = { lateral = 50, guess = true }   # GUESS
 [buoy]
 name = "Drifting sensor buoy"
 short = "BUOY"
@@ -925,6 +935,9 @@ climb_mps = 0.5
 turn_dps = 10
 loiter_radius_m = 150
 endurance_h = 24
+# rules 34, a group order's layout (docs/SWARMS.md 3.3): GUESS figures, a testbed's estimates
+sep_m = { lateral = 50, vertical = 5, guess = true }   # GUESS
+depth_band_m = [10, 10]   # GUESS: 10 m below the surface to 10 m above the seabed at the slot
 link = "acoustic"
 sidc = "SFUP-----------"
 # physical model: the side-scan sonar ([50]: a 300 m swath (Klein) or 600 m (EdgeTech), 150 to

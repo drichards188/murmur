@@ -172,6 +172,7 @@ fn a_dry_run_and_its_explanation_read_the_trackers_velocity_error() {
         uids: vec![uid("blade-1")],
         constraints: Constraints::default(),
         rationale: None,
+        grouping: Default::default(),
     };
     let mut w = WorldSnapshot::new(T0);
     w.areas = Some(areas());

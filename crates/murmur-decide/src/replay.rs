@@ -2291,6 +2291,14 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::SCENARIO_SETTINGS_SINCE, "\"policy_layers\":[", "the files the policy was built from"),
     (rules::IDENTIFY_CRITERIA_SINCE, "\"sensor\":\"", "the sensor of a vehicle's own look at a track (a decision's fact)"),
     (rules::IDENTIFY_CRITERIA_SINCE, "\"step\":\"named\"", "an identify order's naming below the scenario's criteria"),
+    (rules::GROUP_ORDER_SINCE, "\"formation\":{", "a type's group-order figures (a decision's fact)"),
+    (rules::GROUP_ORDER_SINCE, "\"group\":{", "a group order's spec, or the policy's [group]"),
+    (rules::GROUP_ORDER_SINCE, "\"parent\":", "a member order's group order"),
+    (rules::GROUP_ORDER_SINCE, "\"share\":{", "a member order's share"),
+    (rules::GROUP_ORDER_SINCE, "\"layout\":{", "a group order's layout"),
+    (rules::GROUP_ORDER_SINCE, "\"type\":\"group.dispatched\"", "a group order dispatched as its member orders"),
+    (rules::GROUP_ORDER_SINCE, "\"transition\":\"under\"", "a member order approved under its group's approval"),
+    (rules::GROUP_ORDER_SINCE, "\"member\":\"", "a group member's class on its failing check"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2466,6 +2474,17 @@ fn check_claims<S: AsRef<str>>(r: &mut ReplayReport, events: &[Event], lines: &[
                 format!("schema {schema}"),
             );
         }
+    }
+    // rules 34: `[group]` is schema 9
+    if policy.group.is_some() && schema < crate::rules::GROUP_ORDER_SCHEMA_SINCE {
+        bad(
+            r,
+            first,
+            None,
+            "logged policy uses a key of a later policy schema than it claims",
+            format!("group (schema {})", crate::rules::GROUP_ORDER_SCHEMA_SINCE),
+            format!("schema {schema}"),
+        );
     }
     if policy.queue.is_some() && schema < 3 {
         bad(
@@ -3097,7 +3116,10 @@ fn replay_inner<S: AsRef<str>>(
                 results,
                 passed,
                 preview,
+                layout: logged_layout,
             } => {
+                // rules 34: a group order's layout, recomputed below once group orders are decided
+                let _ = logged_layout;
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
@@ -4077,6 +4099,7 @@ fn replay_inner<S: AsRef<str>>(
                 engage: engage_order,
                 inputs: reach_inputs,
                 reach,
+                share: dispatch_share,
             } => {
                 // rules 21: an identify order's plan (its last passing check's), its deadline from
                 // now, and the order it replaces on its vehicle (the newest there, of a kind it
@@ -4323,6 +4346,17 @@ fn replay_inner<S: AsRef<str>>(
                     },
                     policy.as_ref(),
                 );
+                // rules 34: a member order goes out with its own share, nothing else
+                if dispatch_share.as_ref() != tr.spec.share() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "dispatched with another share than its member order's",
+                        json(dispatch_share),
+                        json(&tr.spec.share()),
+                    );
+                }
             }
             EventBody::AuthRefused { operator, .. } => {
                 // rules 8: a login refused, in a credentials run, for an operator it lists
@@ -6698,6 +6732,9 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 resumed.push((e.seq, from.clone(), open, *state));
                 intents.insert(spec.id, tr);
+            }
+            EventBody::GroupDispatched { intent, .. } => {
+                bad(&mut r, e, Some(*intent), "a group order's dispatch, which this build does not replay yet", String::new(), String::new());
             }
             EventBody::IntentHandedOver {
                 intent: spec,

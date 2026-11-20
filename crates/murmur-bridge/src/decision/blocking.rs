@@ -362,6 +362,7 @@ impl Decision {
                     uids: vec![uid],
                     constraints: murmur_decide::Constraints::default(),
                     rationale: None,
+                    grouping: Default::default(),
                 })
                 .collect();
             if !specs.is_empty() {
@@ -499,7 +500,7 @@ mod tests {
     use murmur_decide::Outcome;
 
     fn check(rule: RuleId, outcome: Outcome) -> CheckResult {
-        CheckResult { rule, uid: None, outcome, detail: format!("{} {outcome:?}", rule.as_str()), fix: None, warning: None }
+        CheckResult { rule, uid: None, outcome, detail: format!("{} {outcome:?}", rule.as_str()), fix: None, warning: None, class: None }
     }
 
     fn passing() -> Vec<CheckResult> {

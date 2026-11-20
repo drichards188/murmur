@@ -70,6 +70,7 @@ fn spec(standoff_m: Option<f64>) -> IntentSpec {
         uids: vec![uid("puma-1")],
         constraints: Constraints::default(),
         rationale: None,
+        grouping: Default::default(),
     }
 }
 

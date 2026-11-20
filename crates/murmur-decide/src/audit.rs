@@ -221,6 +221,11 @@ pub enum EventBody {
         /// Engage: the preview computed from the same inputs (absent when there is none).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preview: Option<Box<EngagePreview>>,
+        /// Rules 34, a group order: its layout on the same inputs (each member's share, the
+        /// layers, the spacing; [`crate::group::Layout`]), which replay recomputes and binds each
+        /// member order to. Absent on any other check.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<Box<crate::group::Layout>>,
     },
 
     #[serde(rename = "policy.decision")]
@@ -399,6 +404,21 @@ pub enum EventBody {
         inputs: Option<LoggedInputs>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reach: Option<Vec<Reach>>,
+        /// Rules 34, a member order: the share it flies (its spec's: slot, layer, altitude, where
+        /// it enters), handed to the task layer with the task.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        share: Option<crate::group::Share>,
+    },
+
+    /// Rules 34: a group order goes out as its member orders, one per member sent or waiting,
+    /// each created and approved under it just before (`intent.created` with `parent`, the
+    /// transition `under`); the group's own dispatch follows at once, and each member order is
+    /// then dispatched or queued on its own.
+    #[serde(rename = "group.dispatched")]
+    GroupDispatched {
+        intent: IntentId,
+        /// Each member's member order, by uid.
+        members: BTreeMap<Uid, IntentId>,
     },
 
     /// Rules 5: an approved intent held for vehicles that can't be reached now (`reach`,

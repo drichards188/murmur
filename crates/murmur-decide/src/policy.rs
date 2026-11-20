@@ -377,6 +377,12 @@ pub struct Policy {
     /// with the reason it gives ([`LOOSENABLE`]). Absent from logs of older rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loosened: Option<BTreeMap<String, String>>,
+    /// `[group]` (rules 34, policy schema 9): a group order's figures where its proposal names
+    /// none ([`crate::group::GroupPolicy`]). Logged from rules 34 only, with the standing values
+    /// when the file has none ([`Policy::as_logged`]); a run of older rules refuses a file whose
+    /// figures differ from the standing ones ([`Policy::fits_rules`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<crate::group::GroupPolicy>,
 }
 
 /// The keys a policy file may set looser than the file it extends (a file that extends none:
@@ -473,6 +479,13 @@ impl Policy {
             self.approval.step_up_factor = None;
             self.approval.login_factor = None;
         }
+        // rules 34: a group order's figures, logged from rules 34 only (the standing ones where
+        // the file has none)
+        if self.rules.group_orders() {
+            self.group.get_or_insert_with(crate::group::GroupPolicy::default);
+        } else {
+            self.group = None;
+        }
         // rules 33: the scenario's settings, logged from rules 33 only (a run of older rules
         // logs the policy it always did, and decides as it always did); from 33 always logged
         if self.rules.scenario_settings() {
@@ -521,6 +534,17 @@ impl Policy {
     /// than run on values it would not use. [`crate::Engine::start`] asks it before it logs
     /// anything.
     pub fn fits_rules(&self) -> Result<(), PolicyError> {
+        // rules 34: a group order's figures are read from rules 34 only
+        if !self.rules.group_orders()
+            && self.group.as_ref().is_some_and(|g| *g != crate::group::GroupPolicy::default())
+        {
+            return Err(PolicyError::Invalid(format!(
+                "group.min_share differs from the standing value, and decision rules {} take no group order (rules {} do): run under rules {} (MURMUR_RULES), or leave [group] out",
+                self.rules.rules_version,
+                crate::rules::GROUP_ORDER_SINCE,
+                crate::rules::GROUP_ORDER_SINCE,
+            )));
+        }
         if self.rules.scenario_settings() {
             return Ok(());
         }
@@ -551,6 +575,11 @@ impl Policy {
             crate::rules::SCENARIO_SETTINGS_SINCE,
             crate::rules::SCENARIO_SETTINGS_SINCE,
         )))
+    }
+
+    /// `[group]`, or its standing values (rules 34).
+    pub fn group(&self) -> crate::group::GroupPolicy {
+        self.group.clone().unwrap_or_default()
     }
 
     /// `[identification]`, or its defaults (rule declaration off).
@@ -635,6 +664,9 @@ impl Policy {
         }
         if let Some(e) = &r.engage {
             e.validate().map_err(PolicyError::Invalid)?;
+        }
+        if let Some(g) = &p.group {
+            g.validate().map_err(PolicyError::Invalid)?;
         }
         if let Some(q) = &p.queue {
             q.validate().map_err(PolicyError::Invalid)?;

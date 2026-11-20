@@ -216,6 +216,7 @@ fn nomination(weapon: Option<&str>) -> IntentSpec {
         uids: vec![uid("reaper-1")],
         constraints: Default::default(),
         rationale: None,
+        grouping: Default::default(),
     }
 }
 

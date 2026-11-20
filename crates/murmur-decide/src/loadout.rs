@@ -404,6 +404,7 @@ mod tests {
             expended_by_effect: false,
             munition: None,
             loadout,
+            formation: None,
         }
     }
 

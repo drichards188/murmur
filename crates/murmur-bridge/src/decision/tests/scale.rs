@@ -275,6 +275,7 @@ async fn saturation_scale() {
             uids: vec![murmur_decide::Uid::new("1")],
             constraints: Constraints::default(),
             rationale: None,
+            grouping: Default::default(),
         };
         let mut a = Vec::new();
         let mut b = Vec::new();

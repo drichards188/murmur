@@ -109,6 +109,7 @@ fn spec() -> IntentSpec {
         uids: vec![uid("v-1")],
         constraints: Constraints::default(),
         rationale: None,
+        grouping: Default::default(),
     }
 }
 

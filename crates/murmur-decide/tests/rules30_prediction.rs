@@ -163,6 +163,7 @@ fn nomination() -> IntentSpec {
         uids: vec![uid("blade-1")],
         constraints: Constraints::default(),
         rationale: None,
+        grouping: Default::default(),
     }
 }
 
@@ -379,6 +380,7 @@ fn the_newest_order_it_started_runs_and_an_unconfirmed_one_may() {
         uids: vec![uid("hunter-1")],
         constraints: Constraints::default(),
         rationale: None,
+        grouping: Default::default(),
     };
     let orbit = |id: u64| IntentSpec {
         task: Task::Orbit { center: LEG_N, radius_m: 200.0 },

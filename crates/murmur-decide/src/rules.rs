@@ -116,6 +116,13 @@ pub enum RuleId {
     /// engine can see (protected tracks of the mine's target domains, ours, the layer after each
     /// mine arms, the no-strike areas: [`crate::mines`]).
     Minefield,
+    /// Rules 34: a group order: at least its minimum of members can take it (sent or waiting).
+    Strength,
+    /// Rules 34: a sub member's layer clears the seabed margin at its share's waypoints.
+    Depth,
+    /// Rules 34: the layout puts no two members of one domain within both minima on their
+    /// shares (more members than its layers or rings hold refuses the group).
+    Separation,
 }
 
 impl RuleId {
@@ -156,6 +163,9 @@ impl RuleId {
             RuleId::Weapon => "weapon",
             RuleId::LineOfFire => "line_of_fire",
             RuleId::Minefield => "minefield",
+            RuleId::Strength => "strength",
+            RuleId::Depth => "depth",
+            RuleId::Separation => "separation",
         }
     }
 }
@@ -195,6 +205,11 @@ pub struct CheckResult {
     /// (`path_crosses_land`) while the order runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// Rules 34: on a group order's failing result for one member, how it classes that member
+    /// (waiting or excluded, [`crate::group::MemberClass`]) instead of failing the group, whose
+    /// `strength` rule counts what is left. Absent on every other result. Logged as `member`.
+    #[serde(default, rename = "member", skip_serializing_if = "Option::is_none")]
+    pub class: Option<crate::group::MemberClass>,
 }
 
 impl CheckResult {
@@ -206,6 +221,7 @@ impl CheckResult {
             detail: detail.into(),
             fix: None,
             warning: None,
+            class: None,
         }
     }
 }
@@ -286,6 +302,8 @@ pub enum UnknownEndurance {
 /// `[watch]` (what counts as identified, stale and approaching) read by the engine, the bridge,
 /// the agents and the scoring alike; an identify order ends only on the sent vehicle's own look
 /// meeting its domain's criteria, and an engagement needs its target identified at its kind.
+/// Version 34 ([`GROUP_ORDER_SINCE`]), group orders, is being built and is not yet the default:
+/// see [`RULES_NEWEST`].
 pub const RULES_VERSION: u32 = SCENARIO_SETTINGS_SINCE;
 
 /// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
@@ -295,8 +313,32 @@ pub const RULES_VERSION: u32 = SCENARIO_SETTINGS_SINCE;
 /// version only when asked: a scenario's `min_rules`, the scenario runner's `--rules N`, a test's
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
-/// and this to [`RULES_VERSION`] again.
-pub const RULES_NEWEST: u32 = RULES_VERSION;
+/// and this to [`RULES_VERSION`] again. Rules 34, group orders (docs/SWARMS.md), are built so.
+pub const RULES_NEWEST: u32 = GROUP_ORDER_SINCE;
+
+/// The rules version from which one order to many of our vehicles is a group order (bd
+/// murmur-4nik; docs/SWARMS.md, the owner's decisions of 2026-11-10, picked up on 2026-11-20 for
+/// the ordinary tasks: orbit, patrol, hold, rtl). Up to rules 33 an order naming a hundred
+/// vehicles was one intent, all or nothing: one member's stale fact refused the hundred, one
+/// member behind a hill held the ninety-nine in the queue, one member's failsafe failed the order
+/// although the rest reached the ring, and the task layer invented each member's slot and
+/// altitude after the checks (a hundred quadcopters stacked to 591 m, AUVs to 238 m deep), so no
+/// check read them, the log did not hold them and replay could not bind them (bd murmur-3kqi).
+/// From this version a proposal naming more than one vehicle for one of those kinds is a group
+/// order (its `group`, [`crate::group::GroupSpec`]): the engine lays its members out
+/// ([`crate::group::layout`]: slots, layers, altitudes, from their logged facts and their types'
+/// catalog figures), checks every vehicle rule on each member's own share, classes each member
+/// sent, waiting or excluded with its reason (the `class` on its failing results), refuses the
+/// group only below its minimum (`strength`), or where the layout cannot keep them apart
+/// (`separation`) or a sub's layer reaches the seabed (`depth`), routes the policy once over the
+/// members sent or waiting, and on the one approval dispatches each such member as a one-vehicle
+/// member order (`intent.created` with `parent` and `share`, the transition `under`, then its own
+/// dispatch or queue). A member an engagement holds is excluded, saying so: a group order never
+/// stops an engagement. Its new inputs are the platform fact
+/// [`crate::catalog::PlatformFacts::formation`], which the engine drops before logging under
+/// older rules, and policy schema 9's `[group]` ([`GROUP_ORDER_SCHEMA_SINCE`]). Every gate of
+/// that change reads this constant, never a literal.
+pub const GROUP_ORDER_SINCE: u32 = 34;
 
 /// The rules version from which the thresholds are the scenario's (docs/SCENARIO-SETTINGS.md, the
 /// owner's decision of 2026-11-16, DECISIONS.md "Thresholds are the scenario's"; built in stages
@@ -735,8 +777,12 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 pub const POLICY_SCHEMA: u32 = SCENARIO_SETTINGS_SCHEMA_SINCE;
 
 /// The newest policy schema this build reads and replay accepts: [`POLICY_SCHEMA`], or the one
-/// rules being built behind [`RULES_NEWEST`] add.
-pub const POLICY_SCHEMA_NEWEST: u32 = POLICY_SCHEMA;
+/// rules being built behind [`RULES_NEWEST`] add (rules 34's [`GROUP_ORDER_SCHEMA_SINCE`]).
+pub const POLICY_SCHEMA_NEWEST: u32 = GROUP_ORDER_SCHEMA_SINCE;
+
+/// The policy schema that adds `[group]` (with [`GROUP_ORDER_SINCE`]): named so that a branch
+/// merging beside another schema bump renumbers it in one line.
+pub const GROUP_ORDER_SCHEMA_SINCE: u32 = 9;
 
 /// The policy schema that adds `[watch]`, `loosened`, `[rules.silent]` and `[rules.engage]
 /// min_identity_level` and `default_effect_radius_m` (with [`SCENARIO_SETTINGS_SINCE`]): named so
@@ -970,6 +1016,12 @@ impl RulesConfig {
         self.rules_version >= SCENARIO_SETTINGS_SINCE
     }
 
+    /// Rules 34 ([`GROUP_ORDER_SINCE`]): an order to many of our vehicles is a group order, laid
+    /// out, checked and dispatched member by member under one approval.
+    pub fn group_orders(&self) -> bool {
+        self.rules_version >= GROUP_ORDER_SINCE
+    }
+
     /// The watch settings these rules decide under: the policy's `[watch]` from rules 33, and
     /// before them what they meant, [`crate::watch::WatchSettings::legacy`], whatever the file
     /// says.
@@ -1007,7 +1059,9 @@ impl RulesConfig {
     /// [`POLICY_SCHEMA`] from rules 33, whose keys it logs; under older rules the schema they
     /// logged, [`PASSKEY_SCHEMA_SINCE`] (their logged policy drops rules 33's keys).
     pub fn policy_schema(&self) -> u32 {
-        if self.scenario_settings() {
+        if self.group_orders() {
+            GROUP_ORDER_SCHEMA_SINCE
+        } else if self.scenario_settings() {
             SCENARIO_SETTINGS_SCHEMA_SINCE.max(POLICY_SCHEMA)
         } else {
             PASSKEY_SCHEMA_SINCE
@@ -1096,7 +1150,9 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
 
 /// Whether a set of results lets the intent proceed.
 pub fn passed(results: &[CheckResult], kind: TaskKind) -> bool {
-    results.iter().all(|r| match r.outcome {
+    // rules 34: a group member's own failure classes that member (its `class`), and the group's
+    // `strength` rule decides whether enough are left
+    results.iter().filter(|r| r.class.is_none()).all(|r| match r.outcome {
         Outcome::Pass => true,
         Outcome::Fail => false,
         Outcome::NotEvaluated | Outcome::Unverified => !kind.is_consequential(),

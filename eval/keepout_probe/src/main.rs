@@ -244,6 +244,7 @@ pub fn nomination(s: &Situation, now: Time) -> IntentSpec {
         uids: vec![Uid::new(STRIKE)],
         constraints: Constraints::default(),
         rationale: None,
+        grouping: Default::default(),
     }
 }
 

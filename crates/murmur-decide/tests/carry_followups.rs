@@ -833,6 +833,7 @@ fn a_nomination_is_refused_while_a_failed_carry_may_owe_its_platform() {
         uids: vec![uid("blade-1")],
         constraints: Default::default(),
         rationale: None,
+        grouping: Default::default(),
     };
     // the engine fills the fact (the nomination form's dry run reads it too) and the
     // fallback_preload check refuses on it

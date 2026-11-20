@@ -248,6 +248,7 @@ fn nomination(aircraft: TrackFacts) -> (IntentSpec, WorldSnapshot) {
         uids: vec![uid("blade-1")],
         constraints: Constraints::default(),
         rationale: None,
+        grouping: Default::default(),
     };
     let mut w = WorldSnapshot::new(T0);
     w.areas = Some(areas());
