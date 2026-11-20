@@ -6763,11 +6763,18 @@ fn replay_inner<S: AsRef<str>>(
                     .clone()
                     .unwrap_or_else(|| crate::engine::no_basis(e.t));
                 // a delivery that only confirmed it found a vehicle not running it: to a human
-                let (want, want_inbox) = if queue::confirm_failed(&tr.confirming, &tr.ops).is_empty() {
+                // (rules 34, bd murmur-4jlq: a member order back to the queue, under its group's
+                // approval, its next delivery a whole one)
+                let not_running = !queue::confirm_failed(&tr.confirming, &tr.ops).is_empty();
+                let member = tr.spec.parent().is_some();
+                let (want, want_inbox) = if !not_running || member {
                     cfg.bound_for(&tr.spec, wait, cfg.wait_end(tr.spec.kind(), basis.t), &basis, e.t)
                 } else {
                     (e.t, true)
                 };
+                if member && not_running {
+                    tr.maybe_started.clear();
+                }
                 if (*expires_t, *inbox) != (want, want_inbox) {
                     bad(
                         &mut r,

@@ -1,7 +1,9 @@
 //! Decision rules 34, stage 4 (docs/SWARMS.md section 4.3): a group in force re-forms itself.
 //! Beside the scenarios (166 to 169): each re-form tamper is caught for its own reason; a re-form
 //! is never due on fewer than the material drops, before they settle, or within a minute of the
-//! last; and under rules 33 the group step does nothing.
+//! last; a member order whose delivery found its vehicle not running it goes back to the queue
+//! under its group's approval, never to a person (bd murmur-4jlq); and under rules 33 the group
+//! step does nothing.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -122,6 +124,90 @@ fn a_gap_beside_a_pinned_member_is_closed_from_its_other_side() {
     let r = scenario("166-group-reforms-after-three-drop.toml");
     assert!(r.ok, "{:?}", r.failures);
     assert!(r.groups.iter().any(|g| g.ends_with(r#"re-formed 1: moved ["sky-18", "sky-2", "sky-8"]"#)), "{:?}", r.groups);
+}
+
+/// bd murmur-4jlq: a member order whose start went out before its link was lost goes back to the
+/// queue; its next delivery only confirms it there; when the vehicle does not run it, the member
+/// order goes back to the queue again under its group's approval (never to a person on its own),
+/// its next delivery a whole one, re-checked first. Replay holds the engine to it.
+#[test]
+fn a_member_found_not_running_is_requeued_under_its_groups_approval() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut p = policy();
+    p.rules.rules_version = GROUP_ORDER_SINCE;
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let world_at = |t: Time| {
+        let mut w = WorldSnapshot::new(t);
+        w.areas = Some(areas());
+        for i in 1..=3 {
+            let mut v = vehicle("x10", LonLat::new(-122.4460 + 0.0004 * f64::from(i), 37.8068));
+            if let Some(f) = v.nav_ready.as_mut() {
+                f.t = t;
+            }
+            if let Some(f) = v.autopilot.as_mut() {
+                f.t = t;
+            }
+            if let Some(f) = v.position.as_mut() {
+                f.t = t;
+            }
+            if let Some(f) = v.battery_pct.as_mut() {
+                f.t = t;
+            }
+            v.report_interval_ms = Some(1_000);
+            w.vehicles.insert(uid(&format!("sky-{i}")), v);
+        }
+        w
+    };
+    let w = world_at(clock.now());
+    let t = terrain();
+    let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let gid = e
+        .submit(s.authority(), orbit(LonLat::new(-122.4700, 37.8150), 150.0, &["sky-1", "sky-2", "sky-3"]), &w, &t)
+        .unwrap()
+        .id();
+    let routed = e.dispatch_group(gid, &w).unwrap();
+    let mid = routed[0].0;
+    let sky = e.intent(mid).unwrap().spec().uids[0].clone();
+    e.record_op_state(mid, &sky, "sent", "uploading").unwrap();
+    e.record_op_state_ahead(mid, &sky, "starting mission: mission mode commanded").unwrap();
+    e.record_op_state(mid, &sky, "unconfirmed", "link lost waiting for the MAV_CMD_DO_SET_MODE ACK, after its start went out")
+        .unwrap();
+    e.requeue(mid).unwrap();
+    assert_eq!(e.intent(mid).unwrap().state(), State::Queued);
+    clock.advance_ms(20_000);
+    let w = world_at(clock.now());
+    assert!(matches!(e.dequeue(mid, &w, &t).unwrap(), Dequeued::Dispatched(_)));
+    assert!(e.intent(mid).unwrap().confirming().contains(&sky), "only confirmed");
+    e.record_op_state(mid, &sky, "unconfirmed", "it may have started before its link was lost, and does not run it now (mode RTL, mission still held): not started again; a human decides")
+        .unwrap();
+    e.requeue(mid).unwrap();
+    let m = e.intent(mid).unwrap();
+    assert_eq!(m.state(), State::Queued, "back to the queue, not to a person");
+    assert!(m.maybe_started().is_empty(), "it does not run there: its next delivery is a whole one");
+    assert!(e.inbox().is_empty(), "no member order in the inbox");
+    let why = m.history().last().map(|h| h.reason.clone()).unwrap_or_default();
+    assert!(why.contains("under its group's approval") && why.contains("mode RTL"), "{why}");
+    clock.advance_ms(5_000);
+    let w = world_at(clock.now());
+    assert!(matches!(e.dequeue(mid, &w, &t).unwrap(), Dequeued::Dispatched(_)));
+    assert!(e.intent(mid).unwrap().confirming().is_empty(), "a whole delivery");
+    let r = replay::replay_str_with(&log.text(), &replay::ReplayOptions { rules: replay::RulesAccepted::Exactly(GROUP_ORDER_SINCE), ..Default::default() }).unwrap();
+    assert!(r.mismatches.is_empty(), "{:#?}", r.mismatches);
+    // replay holds it to that: the second requeue sent to a person instead
+    let text = forge(&log.text(), |ev| {
+        let mut n = 0;
+        for e in ev.iter_mut() {
+            if let audit::EventBody::IntentRequeued { inbox, .. } = &mut e.body {
+                n += 1;
+                if n == 2 {
+                    *inbox = true;
+                }
+            }
+        }
+    });
+    let r = replay::replay_str_with(&text, &replay::ReplayOptions { rules: replay::RulesAccepted::Exactly(GROUP_ORDER_SINCE), ..Default::default() }).unwrap();
+    assert!(r.mismatches.iter().any(|m| m.what.contains("requeue deadline differs")), "{:#?}", r.mismatches);
 }
 
 /// Under rules 33 the group step does nothing (there are no group orders to step).

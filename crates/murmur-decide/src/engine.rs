@@ -6096,7 +6096,11 @@ impl Engine {
         let now = self.now();
         let basis = intent.basis().cloned().unwrap_or_else(|| no_basis(now));
         let wait = self.member_wait(&spec);
-        let (expires_t, inbox) = if not_running.is_empty() {
+        // rules 34 (bd murmur-4jlq): a member order whose delivery found its vehicle not running it
+        // is re-checked in the queue under its group's approval, which covers its share, never
+        // sent to a person on its own
+        let member = spec.parent().is_some();
+        let (expires_t, inbox) = if not_running.is_empty() || member {
             cfg.bound_for(&spec, wait, cfg.wait_end(spec.kind(), basis.t), &basis, now)
         } else {
             (now, true)
@@ -6116,6 +6120,20 @@ impl Engine {
             reach: Vec::new(),
             recheck: None,
         }));
+        if member && !not_running.is_empty() {
+            // it does not run there: its next delivery, once its re-check passes, sends it whole
+            self.get_mut(id)?.clear_maybe_started();
+            self.transition(
+                id,
+                Transition::Requeue,
+                format!(
+                    "back to the queue under its group's approval: it may have started before its link was lost, and does not run now ({}); re-checked before it is sent again (for {} s at most)",
+                    not_running.join("; "),
+                    expires_t.ms_since(now) / 1000
+                ),
+            )?;
+            return Ok(expires_t);
+        }
         if !not_running.is_empty() {
             self.transition(
                 id,
