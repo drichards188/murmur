@@ -3933,3 +3933,69 @@ against an even 20.9), one lost_link card in the inbox for the ten; heard again,
 after 30 s and a second re-form 15 s after that brought them back (15 moved, the largest gap 25.7
 m against 18.9), every member order of both re-forms ended done on station (the second's 65 s
 after it); the log replays under `--rules 34` and matches its anchors.
+
+## 2026-11-20: Group orders' transit, and the console's view of a group: stages 7 and 6 (rules 34, murmur-4nik, murmur-3kqi)
+
+docs/SWARMS.md section 13's stage 7 and stage 6's console part, still behind `RULES_NEWEST = 34`
+(rules 33 decides and flies exactly as before; no fixture or digest moves). Built:
+
+- **Stage 7, `transit`** (decision 7): a route of one to fifty points flown once and held at its
+  end by the vehicle's type; checked as any vehicle order (rules 17 along its transit leg, each
+  route leg and the way home from its end; rules 22 plans its own legs as a patrol's, the dispatch
+  carrying the routed route open; reserves on its route and time on task); queued, logged ahead
+  and carried as the queue's kinds are. A group transit spreads `stations` (the default) or
+  `block`. Scenarios 170 to 173, tamper `move_member_station`, a stand-in test per type.
+- **Stage 6, the console**: the order form offers Transit and, for a group, its spread, minimum,
+  layer base, lanes and re-forming; its dry run says the bottom line first (sent now, waiting,
+  left out, the minimum, whether it re-forms), the layout in words and by layer, the checks folded
+  by rule with each reason once, and draws each member's slot (coloured by layer, open while it
+  waits) with its way there; the inbox shows a group as one card with its counts, its checks by
+  rule and its members one click away (murmur-3kqi fault 12); the Swarms panel lists the group
+  orders in force with their strength against their minimum, drops, re-forms and group alerts.
+
+Where the build departs from the draft, and why:
+
+- **A station's member flies straight to its station**, entering the route there (the draft's
+  `entry_m`, "how far along a route it enters"), not along the route from its start: every member
+  following the same route converges on its points, while the minimum-distance pairing keeps the
+  straight ways from crossing. **A block's member flies the route moved as its cell sits from the
+  end**, so the block keeps its shape along the way and no two pass through one point.
+- **A transit never re-forms** (`reform = true` is refused for it): `group::reform` lays out one
+  ring or one closed route, and stations on an open route or a block need a layout of their own.
+  A gap a member leaves stays open, shown on its swarm.
+- **Stations need a route longer than the members' lateral minimum**: a one-point transit is
+  refused as stations, saying to spread it as a block. One member of a domain holds at the end.
+- **The hold is the mission's own last item**, a loiter-forever at the route's end, which each
+  firmware flies as its hold (a copter hovers, ArduPlane circles at WP_LOITER_RAD, ArduRover holds
+  station or stops, ArduSub holds position; ArduBlimp skips it and holds at its last waypoint as
+  its mission's end does), not a switch to the hold mode on arrival: the vehicle never leaves its
+  mission mode, so no race at the end and no failsafe reading of a mode change.
+- **Whatever patrols transits**, with the platforms' task lists unchanged (the capability rule's
+  details and MCP's fleet views read as before until the MCP stage lists it).
+- **Policy, staged without editing the files**: under policy schema 9 a tier's `kind` list that
+  names patrol routes a transit as it routes a patrol, until the flip writes `transit` beside
+  `patrol` in the standing policy and the watch policy's agent tier. Every run logs those files'
+  text, so editing them now would move the headless golden and paused digests on rules 33. With
+  that, an agent may propose a transit as it may a patrol (a first cut refused it).
+- **The operator's dry run decides a group order as its submission does**: it built no group spec
+  before, so under rules 34 it judged an order to many all or nothing. It now carries `group` (the
+  spec as it would be logged, the layout, each member's task); an agent's preview carries none and
+  still judges the order whole (MCP's stage). A group's terrain prefetch reads the request's own
+  spec (its spread, layer base, lanes), not the kind's defaults.
+- **Display only, on the bridge**: `/api/policy` says whether group orders are on (the console's
+  order form reads it; MCP `get_policy` builds its own answer); `/api/swarms` counts a member
+  order as its group's in a swarm's task line, and leaves out a group all of whose members a
+  newer order took (no longer in force, section 2.2).
+- **Left for later**: a group's predicted link is along the group's task, not each member's way to
+  its share (the console folds it and draws none of it); the command log is one card per member
+  tasking; Re-form on a suspended group, and member orders folded under their group in the
+  Decisions tab, are not built.
+
+Checked live (sim/fleets/group-ring-100.toml, the port block of 9365, `MURMUR_RULES=34`): an
+agent's group transit of six X10s, proposed through MCP as agent-planner, auto-approved by the
+default tier and dispatched as six member orders to stations 211 m apart along 1,055 m of water
+north of Crissy Field; each flew straight to its own and held there at 30 m (still, in AUTO), every
+member order done within 100 s and the group `done: 6 reached their shares; the minimum is 5`;
+`/api/swarms` showed it at 6 of a minimum 5, its swarm's task line one entry for the six; a group
+transit leaving the approved area waited in the inbox as one card. The logs replay under
+`--rules 34` and match their anchors.
