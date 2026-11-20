@@ -1,5 +1,17 @@
 # Commanding a swarm: one order, many members
 
+> **Picked up 2026-11-20 for the ordinary tasks only (bd murmur-4nik stages 2 and 3; the owner:
+> "finish what we can").** Built now: stages 0 to 7 and 10 of section 13, the group orders for
+> ordinary tasks (orbit, patrol, hold, rtl, transit), decisions 1 to 3, 5 and 7 as recommended,
+> decision 6 as the rule that a group order never stops an engagement (a member held by one is
+> excluded and said so). Left out: section 7 and stages G1 to G4 (declaring a hostile swarm), with
+> the salvo of docs/SALVO.md, after build agents on engagement work were stopped by safety
+> safeguards. Numbers: rules 34 (`GROUP_ORDER_SINCE`) where this draft says 29, policy schema 9
+> where it says 8; scenarios from 158; the GUESS figures (separation, bands, re-form terms) stand
+> as a testbed's estimates (section 14 question 2, the owner's War Thunder level). Open questions
+> 4 and 10 of section 14 take the draft's leanings: drift alone does not re-form a group, and
+> member orders carry over a crash as one-vehicle intents.
+>
 > **Shelved draft, not approved (the owner, 2026-11-10).** Saturation was meant as a performance
 > test, not a design of group command. What Murmur calls a swarm is a group of independent
 > vehicles managed together; a coupled swarm (members coordinating on board over vehicle-to-vehicle
