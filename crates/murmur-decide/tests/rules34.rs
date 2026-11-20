@@ -128,8 +128,8 @@ fn a_groups_end_counts_its_members() {
 
 /// Rules 34, stage 6: an operator's dry run of a group order decides it as its submission would
 /// (laid out and checked member by member), shows its layout, spec and each member's task, and
-/// logs nothing; an agent's preview carries no group view yet; under rules 33 a dry run of the
-/// same order is one intent's, with no group view, and a transit is refused.
+/// logs nothing; an agent's preview builds the same group; under rules 33 a dry run of the same
+/// order is one intent's, with no group view, and a transit is refused.
 #[test]
 fn an_operators_dry_run_of_a_group_order_shows_its_layout() {
     let clock = ManualClock::new(T0);
@@ -155,9 +155,17 @@ fn an_operators_dry_run_of_a_group_order_shows_its_layout() {
     let g = p.group.as_ref().expect("a group view");
     assert!(g.tasks.values().all(|t| matches!(t, Task::Transit { route } if route.len() == 1)), "{:?}", g.tasks);
     assert_eq!(g.layout.spread, Some(group::Spread::Stations));
-    // an agent's preview: no group view yet (MCP's stage)
+    // an agent's preview builds the same group (MCP's stage), and logs only that it previewed
+    let before = log.text().lines().count();
     let a = e.agent_port(AgentId::new("agent-planner")).preview(orbit(RING, 150.0, &uids), &w, &t).unwrap();
-    assert!(a.group.is_none());
+    let ga = a.group.as_ref().expect("the agent's group view");
+    assert_eq!(ga.layout.shares.len(), 4);
+    assert_eq!(ga.spec.min_members, Some(4));
+    assert!(a.checks.iter().any(|c| c.rule == RuleId::Strength), "the group's own checks");
+    assert_eq!(log.text().lines().count(), before + 1, "agent.action intent.preview");
+    // an agent's preview of a transit to stations too
+    let a = e.agent_port(AgentId::new("agent-planner")).preview(tr.clone(), &w, &t).unwrap();
+    assert_eq!(a.group.as_ref().and_then(|g| g.layout.spread), Some(group::Spread::Stations));
     // rules 33: one intent's dry run, and no transit
     let mut old = Engine::new(Policy::load(&sim_dir().join("policy.toml")).unwrap(), roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
     let p = old.dry_run_for_operator(&OperatorId::new("op-1"), orbit(RING, 150.0, &uids), &w, &t).unwrap();

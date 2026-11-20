@@ -505,10 +505,17 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: 46 463 characters), so their prompt sizes, token estimates and dollars; v2's brief is its mission,
 #: no card. These worlds run sim/situations/policies/legacy-v1v2.toml (`neutral_after_bar = false`,
 #: the legacy tracker's neutral call), which a v2 record's condition now names.
+#: The two model digests re-taken for group orders on MCP (docs/SWARMS.md section 10, bd
+#: murmur-4nik: preview_intent's and propose_intent's `group` and `members`, the transit kind in
+#: their texts and descriptions), still under rules 33: with mcp/tools.rs put back to the commit
+#: before (every other change of that stage kept) this code gave the digests before (2f6a7b34...,
+#: bcbeae2b...) byte for byte, so the only change is the two tools' schemas in the model's tool
+#: list (Harbor watch's 46 463 to 51 162 characters), and with it the prompt sizes, token estimates
+#: and dollars; the playbook's tool list names the tools only and did not move.
 PAUSED = {
-    "model harbor-watch s1": "2f6a7b34c089788c7e870605dbe3949b563dbc96a0e59c298c668608e889f852",
+    "model harbor-watch s1": "d6e6c3d94dcfda6f0af1388f98cf980791e6c41cd8c8db2d5d83828a712e6da7",
     "playbook v2 fast-unknown 1000": "7ce2d32103294cf346ba7b2110af6ac8cd352713a5843daee8a0cce8e4b75950",
-    "model v2 fast-unknown 1000": "bcbeae2be0bbd8439ce78a25eaea8d822f09d81b1d7cc70a8f7ec0ddf945d0c3",
+    "model v2 fast-unknown 1000": "e0b1e5bd5b6069c33ec87fb69d3114faf0f7b4d7e0ece2dfdfd625872102e956",
 }
 
 

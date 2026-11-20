@@ -2933,3 +2933,112 @@ fn the_reach_notes_say_the_reach_is_the_even_chance_range_under_rules_33() {
         assert_eq!(crate::api::reach_note(unshown.clone(), &r33, &w), unshown);
     }
 }
+
+/// Rules 34 (docs/SWARMS.md section 10; bd murmur-4nik): an agent proposes group orders and
+/// transits, and decides nothing about them. Its preview of an order to many builds the group as
+/// the operator's dry run does (the members laid out and checked share by share, its bottom line
+/// against its minimum, each rule's passing member checks counted unless `members`); its
+/// proposal goes out by the policy as one group order of member orders; get_fleet and
+/// get_platforms name transit beside patrol; and no tool approves, re-forms, resumes, suspends or
+/// recalls a group: every such name is an unknown tool, and the log holds no re-form, suspension or
+/// approval by anyone but the policy. Under rules 33 a group spec and a transit are refused as an
+/// operator's would be, and the fleet lists no transit.
+#[tokio::test(start_paused = true)]
+async fn agents_propose_group_orders_and_no_tool_approves_or_reforms_one() {
+    let old = rig();
+    old.vehicle(1, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let tasks = old.ok(&planner(), "get_fleet", json!({ "uids": [1] })).await["vehicles"][0]["platform"]["tasks"].clone();
+    assert!(!tasks.as_array().expect("tasks").contains(&json!("transit")), "rules 33: {tasks}");
+    let (err, v) = old
+        .call(&planner(), "preview_intent", json!({ "task": "transit", "uids": [1], "route": [[LON, LAT + 0.004]] }))
+        .await;
+    assert!(err && v.to_string().contains("no transit"), "{v}");
+
+    let r = rig_policy(|p| p.rules.rules_version = murmur_decide::GROUP_ORDER_SINCE);
+    for k in 0..4u64 {
+        r.vehicle(k + 1, Firmware::Copter, "x10", (LAT, LON + 0.0008 * k as f64));
+    }
+    sleep(Duration::from_millis(500)).await;
+    let tasks = r.ok(&planner(), "get_fleet", json!({ "uids": [1] })).await["vehicles"][0]["platform"]["tasks"].clone();
+    assert_eq!(tasks, json!(["orbit", "patrol", "transit", "hold", "rtl"]), "transit beside patrol");
+    let platforms = r.ok(&planner(), "get_platforms", json!({})).await;
+    let x10 = platforms["platforms"].as_array().expect("platforms").iter().find(|p| p["id"] == "x10").expect("x10").clone();
+    assert!(x10["tasks"].as_array().expect("tasks").contains(&json!("transit")), "{x10}");
+
+    let ring = json!({
+        "task": "orbit", "uids": [1, 2, 3, 4], "center": [LON + 0.004, LAT], "radius_m": 150.0,
+        "group": { "min_members": 3 },
+    });
+    let p = r.ok(&planner(), "preview_intent", ring.clone()).await;
+    assert_eq!(p["passed"], true, "{p}");
+    let g = &p["group"];
+    assert_eq!((g["members"].as_u64(), g["sent"].as_u64(), g["waiting"].as_u64()), (Some(4), Some(4), Some(0)), "{g}");
+    assert_eq!(g["min_members"], 3, "the spec's minimum");
+    assert_eq!(g["reforms"], true, "an orbit re-forms by default");
+    assert_eq!(g["layout"]["spread"], "ring", "{g}");
+    assert!(g["summary"].as_str().is_some_and(|s| s.starts_with("4 of 4 would be sent now")), "{g}");
+    assert!(g.get("shares").is_none() && g.get("tasks").is_none(), "members folded: {g}");
+    let checks = p["checks"].as_array().expect("checks");
+    assert!(checks.iter().all(|c| c["uid"].is_null() || c["outcome"] != "pass"), "passing member checks counted: {p}");
+    assert!(checks.iter().any(|c| c["rule"] == "strength"), "the group's own checks stay: {p}");
+    assert!(p["checks_folded"]["passed_by_rule"]["readiness"].as_u64() == Some(4), "{p}");
+    let mut whole = ring.clone();
+    whole["members"] = json!(true);
+    let w = r.ok(&planner(), "preview_intent", whole).await;
+    assert_eq!(w["group"]["shares"].as_object().map(|s| s.len()), Some(4), "{w}");
+    assert_eq!(w["group"]["tasks"].as_object().map(|s| s.len()), Some(4), "{w}");
+    assert!(w.get("checks_folded").is_none(), "every check with members: {w}");
+
+    // a transit to a block round the route's end, and a spec the engine refuses
+    let block = r
+        .ok(
+            &planner(),
+            "preview_intent",
+            json!({ "task": "transit", "uids": [1, 2, 3, 4], "route": [[LON + 0.002, LAT + 0.002], [LON + 0.006, LAT + 0.002]], "group": { "spread": "block" } }),
+        )
+        .await;
+    assert_eq!(block["passed"], true, "{block}");
+    assert_eq!(block["group"]["spec"]["spread"], "block", "{block}");
+    assert_eq!(block["group"]["reforms"], false, "a transit never re-forms");
+    let (err, v) = r
+        .call(&planner(), "preview_intent", json!({ "task": "orbit", "uids": [1, 2], "center": [LON, LAT], "group": { "spread": "lanes" } }))
+        .await;
+    assert!(err && v.to_string().contains("lanes spreads no orbit"), "{v}");
+    let (err, v) = r
+        .call(&planner(), "preview_intent", json!({ "task": "orbit", "uids": [1, 2], "center": [LON, LAT], "group": { "slots": 3 } }))
+        .await;
+    assert!(err && v.to_string().contains("slots"), "an unknown key is refused: {v}");
+
+    // proposed: the standing policy's default tier sends it as four member orders
+    let mut prop = ring.clone();
+    prop["rationale"] = json!("ring the east approach");
+    let o = r.ok(&planner(), "propose_intent", prop).await;
+    assert_eq!(o["state"], "dispatched", "{o}");
+    assert_eq!(o["dispatched"], true, "{o}");
+    assert_eq!(o["member_orders"]["count"], 4, "{o}");
+    assert!(o["intent"]["checks_folded"].is_object(), "{o}");
+    let gid = o["id"].as_u64().expect("id");
+
+    for name in [
+        "approve_group",
+        "approve_group_order",
+        "reform_group",
+        "re_form_group",
+        "reform",
+        "regroup",
+        "resume_group",
+        "suspend_group",
+        "recall_group",
+        "set_group_minimum",
+        "reform_swarm",
+        "approve_swarm",
+    ] {
+        let args = json!({ "id": gid, "uids": [1, 2, 3, 4], "note": "please" }).as_object().cloned().expect("object");
+        let err = tools::call(&r.mcp, &planner(), name, args).await.expect_err(name);
+        assert!(err.message.contains("unknown tool"), "{name}: {}", err.message);
+    }
+    assert_eq!(r.events("group.reformed") + r.events("group.suspended") + r.events("approval.granted"), 0);
+    assert!(r.log.lines().iter().all(|l| !l.contains("\"source\":{\"kind\":\"agent\"") || !l.contains("\"type\":\"approval")));
+    r.replays_since(murmur_decide::GROUP_ORDER_SINCE);
+}

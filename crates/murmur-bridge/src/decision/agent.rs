@@ -115,7 +115,8 @@ impl Decision {
                 )
             })?;
         let proposal = self.agent_proposal(&req)?;
-        self.prefetch(&proposal.task, &proposal.uids).await;
+        // rules 34: a group order's terrain along its members' shares, as its check lays them out
+        self.prefetch_grouped(&proposal.task, &proposal.uids, proposal.group.as_ref()).await;
         let out = {
             let mut guard = self.lock_with_space(&proposal.task).await;
             let core = &mut *guard;
@@ -141,7 +142,7 @@ impl Decision {
         req: IntentRequest,
     ) -> Result<Value, DecisionError> {
         let proposal = self.agent_proposal(&req)?;
-        self.prefetch(&proposal.task, &proposal.uids).await;
+        self.prefetch_grouped(&proposal.task, &proposal.uids, proposal.group.as_ref()).await;
         let (task, uids) = (proposal.task.clone(), proposal.uids.clone());
         let preview = {
             let mut guard = self.lock_with_space(&proposal.task).await;

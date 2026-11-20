@@ -349,7 +349,8 @@ async fn a_group_transit_flies_each_member_to_its_station() {
 /// Rules 34, stage 6: the order form's dry run of a group order (`POST /api/intents/preview`)
 /// carries its layout for the map and the card: the spec as it would be logged, each member's
 /// share (slot, layer, altitude, point) and its own task; nothing is created. An agent's preview
-/// carries no group view (MCP's stage), and `/api/policy` tells the console group orders are on.
+/// builds the same group (MCP folds it for the agent), and `/api/policy` tells the console group
+/// orders are on.
 #[tokio::test(start_paused = true)]
 async fn the_operators_dry_run_of_a_group_order_carries_its_layout() {
     let rig = rig_rules(GROUP_ORDER_SINCE);
@@ -368,9 +369,10 @@ async fn the_operators_dry_run_of_a_group_order_carries_its_layout() {
     assert_eq!(g["tasks"].as_object().map(|t| t.len()), Some(3));
     assert_eq!(v["uids"].as_array().map(Vec::len), Some(3));
     assert!(rig.d.lock().engine.intents().next().is_none(), "nothing created");
-    // an agent's preview: no group view yet
+    // an agent's preview builds the group as the operator's dry run does (MCP's stage)
     let a = rig.d.agent_preview(&murmur_decide::AgentId::new("agent-planner"), orbit_req(&uids, LonLat::new(-122.4720, 37.8270), 200.0)).await.expect("a preview");
-    assert!(a.get("group").is_none(), "{a}");
+    assert_eq!(a["group"]["layout"]["shares"].as_object().map(|s| s.len()), Some(3), "{a}");
+    assert!(a["checks"].as_array().is_some_and(|c| c.iter().any(|c| c["rule"] == "strength")), "{a}");
     assert_eq!(rig.d.policy_api_json()["group_orders"], true);
     assert_eq!(rig_rules(GROUP_ORDER_SINCE - 1).d.policy_api_json()["group_orders"], false);
 }

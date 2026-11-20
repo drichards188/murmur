@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
-use crate::tasks::{caps, platform_kind};
+use crate::tasks::platform_kind;
 use crate::vehicle::Uid;
 use crate::world::World;
 
@@ -28,7 +28,9 @@ const KEYS: [&str; 13] = [
     "turn_dps",
 ];
 
-pub fn catalog(world: &World) -> Result<Value, String> {
+/// The platform catalog as the console and MCP `get_platforms` read it; `transit`: the run's rules
+/// take a transit (rules 34), named in each movable type's tasks beside patrol.
+pub fn catalog(world: &World, transit: bool) -> Result<Value, String> {
     world.load_manifest();
     let text = std::fs::read_to_string(&world.cfg.platforms)
         .map_err(|e| format!("{}: {e}", world.cfg.platforms.display()))?;
@@ -92,10 +94,7 @@ pub fn catalog(world: &World) -> Result<Value, String> {
             str_of("vehicle"),
             str_of("behavior"),
         );
-        let mut tasks: Vec<&str> = kind
-            .and_then(caps)
-            .map(|c| c.tasks.iter().map(|t| t.name()).collect())
-            .unwrap_or_default();
+        let mut tasks = crate::tasks::task_names(kind, transit);
         tasks.sort_unstable();
         p.insert("tasks".into(), json!(tasks));
         let mut fleet = members.remove(pid).unwrap_or_default();

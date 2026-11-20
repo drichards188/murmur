@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
-pub use caps::{caps, mission_alt, platform_kind};
+pub use caps::{caps, mission_alt, platform_kind, task_names};
 pub use exec::Resume;
 pub(crate) use exec::link_silent;
 #[cfg(test)]

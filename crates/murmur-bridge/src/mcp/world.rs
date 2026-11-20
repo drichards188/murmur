@@ -3,7 +3,7 @@
 //! value with `as_of`, `age_s` and, for vehicle facts, `stale` against the freshness limit
 //! the rules apply to that vehicle's link.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::http::Method;
 use murmur_decide::{AgentId, Fact, Time, VehicleFacts};
@@ -15,7 +15,7 @@ use super::tools::STALE_NOTE;
 use crate::clock::{self, round};
 use crate::decision::snapshot::duid;
 use crate::decision::DecisionError;
-use crate::tasks::{OpSnapshot, caps};
+use crate::tasks::OpSnapshot;
 use crate::vehicle::{Uid, VehicleSnapshot};
 
 fn age(now_s: f64, t_s: f64) -> f64 {
@@ -67,11 +67,8 @@ fn vehicle_json(
     let identity = v.identity.as_deref();
     let id = |k: &str| identity.and_then(|i| i.0.get(k)).cloned().unwrap_or(Value::Null);
     let platform = facts.and_then(|f| f.platform.as_ref());
-    let tasks: Vec<&str> = v
-        .kind
-        .and_then(caps)
-        .map(|c| c.tasks.iter().map(|t| t.name()).collect())
-        .unwrap_or_default();
+    // rules 34: transit beside patrol where the run's rules take one
+    let tasks = crate::tasks::task_names(v.kind, rules.group_orders());
     let position = facts.and_then(|f| f.position.as_ref());
     // the link's last packet; a link that counts no packets (test doubles) falls back to
     // the heartbeat the autopilot fact rests on
@@ -324,7 +321,8 @@ pub async fn platforms(mcp: &Mcp) -> Result<Value, DecisionError> {
         detail,
         intent: None,
     };
-    let mut v = tokio::task::spawn_blocking(move || crate::platforms::catalog(&world))
+    let transit = mcp.decision.rules().group_orders();
+    let mut v = tokio::task::spawn_blocking(move || crate::platforms::catalog(&world, transit))
         .await
         .map_err(|e| fail(e.to_string()))?
         .map_err(fail)?;
@@ -419,6 +417,8 @@ pub fn intents(mcp: &Mcp, agent: &AgentId, state: Option<&str>, mine: bool, limi
         .cloned()
         .map(|mut i| {
             intent_ages(&mut i, now);
+            // rules 34: a group order's passing member checks counted
+            group_view(&mut i, false);
             i
         })
         .collect();
@@ -718,4 +718,120 @@ pub fn events(mcp: &Mcp, uid: Option<u64>, limit: usize) -> Value {
         "note": "What the audit log recorded as vehicle.event since the bridge started (the last 500), newest first: mode changes, failsafes and autopilot status text.",
         "events": events,
     })
+}
+
+/// Rules 34: an agent's view of a group order (`preview_intent`'s answer, the intent
+/// `propose_intent` answers with and `get_intents` lists): a hundred members' checks are over a
+/// thousand results, past what lands whole in a model's context, so unless `members` each rule's
+/// passing member results are counted (`checks_folded`) and `checks` keeps the group's own results
+/// (the layout's separation, the strength) and every one that did not pass. A preview's `group`
+/// says the bottom line (sent now, waiting to join, left out, each with its reasons, against the
+/// minimum, and whether it re-forms) and its layout by domain; every member's share and task only
+/// with `members`. Display only: the decision and the log are the engine's, whole. Anything but a
+/// group order is left as it is.
+pub fn group_view(v: &mut Value, members: bool) {
+    // a preview's `group` holds the spec and the layout; an intent's is its spec
+    let preview = v["group"].get("layout").is_some();
+    let spec = if preview { v["group"]["spec"].clone() } else { v["group"].clone() };
+    if !spec.is_object() {
+        return;
+    }
+    let Some(checks) = v["checks"].as_array().cloned() else { return };
+    let uids: Vec<String> = v["uids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|u| u.as_str().map(str::to_string))
+        .collect();
+    // each member's class from its failing results (`member`), as the console reads them
+    let mut class: BTreeMap<String, &'static str> = uids.iter().map(|u| (u.clone(), "sent")).collect();
+    let mut why: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut folded: BTreeMap<String, u64> = BTreeMap::new();
+    let mut kept = Vec::new();
+    for c in &checks {
+        let (Some(uid), rule) = (c["uid"].as_str(), c["rule"].as_str().unwrap_or("?")) else {
+            kept.push(c.clone());
+            continue;
+        };
+        if c["outcome"] == "pass" {
+            *folded.entry(rule.to_string()).or_default() += 1;
+            if members {
+                kept.push(c.clone());
+            }
+            continue;
+        }
+        kept.push(c.clone());
+        if let Some(m @ ("waiting" | "excluded")) = c["member"].as_str() {
+            why.entry(uid.to_string()).or_default().push(format!("{rule}: {}", c["detail"].as_str().unwrap_or("")));
+            let e = class.entry(uid.to_string()).or_insert("sent");
+            if m == "excluded" {
+                *e = "excluded";
+            } else if *e != "excluded" {
+                *e = "waiting";
+            }
+        }
+    }
+    if !members {
+        v["checks"] = Value::Array(kept);
+        v["checks_folded"] = json!({
+            "passed_by_rule": folded,
+            "note": "each rule's member checks that passed, counted; checks keeps the group's own and every one that did not pass (members true: all of them)",
+        });
+    }
+    if !preview {
+        return;
+    }
+    let count = |k: &str| class.values().filter(|c| **c == k).count();
+    let (sent, waiting, excluded) = (count("sent"), count("waiting"), count("excluded"));
+    let list = |k: &str| -> Vec<Value> {
+        class
+            .iter()
+            .filter(|(_, c)| **c == k)
+            .map(|(u, _)| json!({ "uid": u, "why": why.get(u).cloned().unwrap_or_default() }))
+            .collect()
+    };
+    let min = spec["min_members"].as_u64().unwrap_or(1) as usize;
+    let reforms = spec["reform"].as_bool().unwrap_or(false);
+    let layout = &v["group"]["layout"];
+    let mut summary = format!("{sent} of {} would be sent now", uids.len());
+    if waiting > 0 {
+        summary.push_str(&format!(", {waiting} would wait to join"));
+    }
+    if excluded > 0 {
+        summary.push_str(&format!(", {excluded} left out"));
+    }
+    summary.push_str(&format!(
+        "; the minimum is {min}, {}; it {}",
+        if sent + waiting >= min { "met" } else { "not met: the order is refused" },
+        if reforms { "re-forms when members drop, inside what was approved" } else { "does not re-form" }
+    ));
+    if let Some(r) = layout["refused"].as_str() {
+        summary.push_str(&format!("; the layout does not fit: {r}"));
+    }
+    let mut g = json!({
+        "spec": spec,
+        "summary": summary,
+        "members": uids.len(),
+        "sent": sent,
+        "waiting": waiting,
+        "excluded": excluded,
+        "min_members": min,
+        "meets_minimum": sent + waiting >= min,
+        "reforms": reforms,
+        "waiting_members": list("waiting"),
+        "excluded_members": list("excluded"),
+        "layout": {
+            "spread": layout["spread"],
+            "domains": layout.get("domains").cloned().unwrap_or(json!([])),
+            "warnings": layout.get("warnings").cloned().unwrap_or(json!([])),
+        },
+    });
+    if let Some(r) = layout.get("refused") {
+        g["layout"]["refused"] = r.clone();
+    }
+    if members {
+        g["shares"] = layout["shares"].clone();
+        g["tasks"] = v["group"]["tasks"].clone();
+    }
+    v["group"] = g;
 }

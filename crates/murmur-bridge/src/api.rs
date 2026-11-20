@@ -740,7 +740,9 @@ async fn minefields(State(app): State<App>) -> Response {
 
 async fn platforms(State(app): State<App>) -> Response {
     let world = app.world.clone();
-    match tokio::task::spawn_blocking(move || platforms::catalog(&world)).await {
+    // rules 34: transit beside patrol where the run's rules take one
+    let transit = app.decision.rules().group_orders();
+    match tokio::task::spawn_blocking(move || platforms::catalog(&world, transit)).await {
         Ok(Ok(v)) => Json(v).into_response(),
         Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

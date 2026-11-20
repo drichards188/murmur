@@ -169,10 +169,24 @@ pub fn caps(kind: Kind) -> Option<&'static Caps> {
 }
 
 pub fn can(kind: Option<Kind>, task: TaskKind) -> bool {
-    // rules 34: whatever patrols transits (its list of tasks, which the fleet's views show, is as
-    // before until agents are told of transits)
+    // rules 34: whatever patrols transits (the families' lists stay as they were; the fleet's views
+    // name transit beside patrol where the run's rules take one, `task_names`)
     let task = if task == TaskKind::Transit { TaskKind::Patrol } else { task };
     kind.and_then(caps).is_some_and(|c| c.tasks.contains(&task))
+}
+
+/// The tasks a vehicle of `kind` can be given, by name, as the fleet's views show them (MCP
+/// `get_fleet` and `get_platforms`, `/api/platforms`): its family's list, with transit after
+/// patrol where `transit` (rules 34, whose runs take one: whatever patrols transits).
+pub fn task_names(kind: Option<Kind>, transit: bool) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for t in kind.and_then(caps).map(|c| c.tasks).unwrap_or_default() {
+        out.push(t.name());
+        if transit && *t == TaskKind::Patrol {
+            out.push(TaskKind::Transit.name());
+        }
+    }
+    out
 }
 
 /// Mission altitude relative to home (negative = depth) for the vehicle in `slot` among

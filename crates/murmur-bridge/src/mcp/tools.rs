@@ -8,7 +8,7 @@ use rmcp::ErrorData;
 use rmcp::handler::server::tool::schema_for_type;
 use rmcp::model::{CallToolResult, JsonObject, Tool, ToolAnnotations};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -182,10 +182,41 @@ pub struct TaskingParams {
     pub exclusions: Option<usize>,
 }
 
+/// Rules 34: how a group order's members share its task (`group` on preview_intent and
+/// propose_intent), passed on as the bridge's own spec ([`murmur_decide::group::GroupSpec`]), which
+/// refuses what does not fit the kind. Its descriptions are kept short: they ride in every model
+/// call's tool list, twice.
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupParams {
+    /// orbit: ring (the default); patrol: along (the default) or lanes (with lanes and
+    /// lane_spacing_m); transit: stations (the default: evenly along the route, each holding at
+    /// its own) or block (a grid round the route's end); hold: here; rtl: home.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spread: Option<String>,
+    /// The minimum strength (default 80 % of the vehicles, rounded up; 1 for hold and rtl): fewer
+    /// able to take it and the order is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_members: Option<u32>,
+    /// The layer base, m (default each type's cruise altitude; a sub's below the surface).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alt_m: Option<f64>,
+    /// lanes: how many copies of the route (2 to 50).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lanes: Option<u32>,
+    /// lanes: their spacing sideways, m (10 to 10,000).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane_spacing_m: Option<f64>,
+    /// Re-form when members drop, under the same approval (default true for orbit and patrol;
+    /// never hold, rtl or transit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reform: Option<bool>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct IntentParams {
-    /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; identify (send one
-    /// vehicle with an EO/IR to identify one live track, track_id, an identified one included:
+    /// The task kind: orbit, patrol, transit, hold, rtl or track on fleet vehicles; identify (send
+    /// one vehicle with an EO/IR to identify one live track, track_id, an identified one included:
     /// it orbits the track at its camera's standoff, following it, its camera looking for it
     /// first, until that vehicle's own sensors identify it after the order went out (the
     /// outcome says whether that agrees with the identity before, and what another vehicle
@@ -207,7 +238,8 @@ pub struct IntentParams {
     /// orbit: the radius in metres (default 200). The rules require at least 1.1 times the
     /// platform's minimum turn radius and suggest a radius when yours is too tight.
     pub radius_m: Option<f64>,
-    /// patrol: the waypoints as [[lon, lat], ...], flown as a loop until retasked.
+    /// patrol: the waypoints as [[lon, lat], ...], flown as a loop until retasked; transit: 1 to
+    /// 50 points flown once and held at the last.
     pub route: Option<Vec<[f64; 2]>>,
     /// track: the fleet uid of the vehicle to follow (antenna trackers only).
     pub target: Option<u64>,
@@ -259,6 +291,14 @@ pub struct IntentParams {
     pub count: Option<u32>,
     /// lay: the hours each mine stays live before it goes inert (mandatory).
     pub live_h: Option<f64>,
+    /// An orbit, patrol, transit, hold or rtl naming more than one vehicle is one group order: the
+    /// engine lays out and checks each member's share, the policy decides once, and a member that
+    /// can't take it waits or is left out, with its reason. How the members share it (absent: the
+    /// defaults).
+    pub group: Option<GroupParams>,
+    /// preview_intent of a group order: also every member's share, task and check (default: the
+    /// bottom line).
+    pub members: Option<bool>,
     /// Why this task, on these vehicles, now. Required for propose_intent (the operator
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
     /// Name the facts you relied on and any that were stale. Shape it so it reads in seconds:
@@ -432,6 +472,8 @@ impl IntentParams {
         put("weapon", self.weapon.map(Value::String));
         put("count", self.count.map(|v| json!(v)));
         put("live_h", self.live_h.map(|v| json!(v)));
+        // rules 34: refused under older rules, as the operator's would be
+        put("group", self.group.map(|g| json!(g)));
         put(
             "constraints",
             Some(json!(Constraints {
@@ -695,16 +737,22 @@ pub fn tools() -> Vec<Tool> {
              get_link_coverage answers an order: information only, never a check), and \
              routes: by uid, each leg the planner routed round land, water or a no-go area \
              (the waypoints it adds, how much longer it is, a sentence) or could not (why; \
-             that leg's check fails). Nothing moves; the preview is logged under your agent \
+             that leg's check fails). For an order to more than one vehicle, group: the bottom \
+             line (sent, waiting and left out with their reasons, the minimum, whether it \
+             re-forms) and the layout by domain; passing member checks are counted in \
+             checks_folded (members true: all). Nothing moves; the preview is logged under \
+             your agent \
              id (link_coverage is not). Use it before propose_intent."
                 .into(),
             true,
         ),
         tool::<IntentParams>(
             "propose_intent",
-            "Propose an intent: a task on one or more vehicles (orbit, patrol, hold, rtl, \
-             track), a satellite collection (collect: area, window, capability, and chosen \
-             from the options of a preview or get_satellite_tasking_options), a coverage \
+            "Propose an intent: a task on one or more vehicles (orbit, patrol, transit, hold, \
+             rtl, track; to more than one, one group order: group says how its members share it, \
+             member_orders lists their own orders), a satellite collection (collect: area, \
+             window, capability, and chosen from the options of a preview or \
+             get_satellite_tasking_options), a coverage \
              query (cover: area, window, service), or an engagement nomination (engage: \
              track_id of a track declared hostile (by an operator, or by rule on an observed \
              act: get_tracks says which), one armed platform in \
@@ -1043,29 +1091,43 @@ pub async fn call(
         }
         "preview_intent" => {
             let p = params!(IntentParams);
+            let members = p.members.unwrap_or(false);
             match p.request() {
-                Ok(req) => mcp.decision.agent_preview(agent, req).await,
+                // rules 34: a group order's bottom line, its members folded unless asked for
+                Ok(req) => mcp.decision.agent_preview(agent, req).await.map(|mut v| {
+                    world::group_view(&mut v, members);
+                    v
+                }),
                 Err(e) => return Ok(CallToolResult::structured_error(json!({ "error": e }))),
             }
         }
         "propose_intent" => {
             let p = params!(IntentParams);
+            let members = p.members.unwrap_or(false);
             let req = match p.request() {
                 Ok(req) => req,
                 Err(e) => return Ok(CallToolResult::structured_error(json!({ "error": e }))),
             };
             mcp.decision.agent_propose(agent, req).await.map(|o| {
                 let state = serde_json::to_value(o.state).unwrap_or(Value::Null);
-                json!({
+                let mut intent = o.intent.clone();
+                world::group_view(&mut intent, members);
+                // rules 34: a group order goes out as its member orders, each on its own
+                let group = mcp.decision.member_orders_json(o.id);
+                let mut out = json!({
                     "id": o.id.0,
                     "state": state,
-                    "dispatched": o.dispatched(),
-                    "intent": o.intent,
+                    "dispatched": o.dispatched() || (group.is_some() && o.state == murmur_decide::State::Dispatched),
+                    "intent": intent,
                     "tasking": o.tasking,
                     "space": o.space,
                     "summary": mcp.decision.explain_json(o.id.0)
                         .and_then(|v| v["summary"].as_str().map(str::to_string)),
-                })
+                });
+                if let Some(g) = group {
+                    out["member_orders"] = g;
+                }
+                out
             })
         }
         "explain_intent" => {

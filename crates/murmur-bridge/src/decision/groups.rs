@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use murmur_decide::{Clock, IntentId, Order, Routed, State, Task, Uid as DUid, WorldSnapshot};
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use super::snapshot::bridge_uid;
 use super::{Core, Decision, DecisionError, engine_err};
@@ -175,6 +176,26 @@ impl Decision {
                 }
             }
         }
+    }
+
+    /// Rules 34: a group order's member orders as an agent reads them (MCP `propose_intent`'s
+    /// `member_orders`): each one's id, vehicle and state, and how many are in each state. None for
+    /// anything but a group order. Display only.
+    pub fn member_orders_json(&self, id: IntentId) -> Option<Value> {
+        let core = self.lock();
+        core.engine.intent(id)?.spec().group()?;
+        let mut by_state: BTreeMap<String, u64> = BTreeMap::new();
+        let mut list = Vec::new();
+        for i in core.engine.intents().filter(|i| i.spec().parent() == Some(id)) {
+            let state = serde_json::to_value(i.state()).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            *by_state.entry(state.clone()).or_default() += 1;
+            list.push(json!({
+                "id": i.id().0,
+                "uid": i.spec().uids.first().and_then(bridge_uid),
+                "state": state,
+            }));
+        }
+        Some(json!({ "count": list.len(), "by_state": by_state, "orders": list }))
     }
 
     /// Rules 34: each group order in force as the console shows it (display only: `/api/swarms`'

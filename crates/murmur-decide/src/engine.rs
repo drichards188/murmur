@@ -8936,8 +8936,6 @@ impl Engine {
             )));
         }
         let created_t = self.now();
-        // rules 34: a group order is laid out and checked member by member, as its submission
-        // would be (its members' terrain sampled along their own shares)
         let grouping = self.grouping(&proposal)?;
         let spec = IntentSpec {
             id: IntentId(0),
@@ -8949,28 +8947,7 @@ impl Engine {
             rationale: proposal.rationale,
             grouping,
         };
-        let group = crate::group::is_group(&spec, &self.policy.rules);
-        let mut inputs = if group {
-            world.for_intent_with(&spec, &crate::terrain::NoTerrain, &self.policy.rules)
-        } else {
-            world.for_intent_with(&spec, terrain, &self.policy.rules)
-        };
-        self.identify(&mut inputs);
-        self.fill_engine_facts(&spec, &mut inputs);
-        if group {
-            inputs.terrain = crate::world::TerrainInputs::NotNeeded;
-            inputs.route_plans.clear();
-            for ms in crate::group::member_specs(&spec, &inputs, &self.policy.rules) {
-                let mw = world.for_intent_plan(&ms, terrain, &self.policy.rules, None);
-                inputs.terrain.merge(mw.terrain);
-                inputs.route_plans.extend(mw.route_plans);
-            }
-        }
-        let eval = group.then(|| crate::group::evaluate(&spec, &inputs, &self.policy.rules));
-        let checks = match &eval {
-            Some(e) => e.results.clone(),
-            None => rules::evaluate(&spec, &inputs, &self.policy.rules),
-        };
+        let (inputs, checks, eval) = self.dry_run_checks(&spec, world, terrain, None);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.policy));
         let would_reach = match &policy {
@@ -8979,13 +8956,7 @@ impl Engine {
             Some(d) if d.submitter_authorizes => State::Approved,
             Some(_) => State::PendingApproval,
         };
-        let group = eval.map(|e| {
-            Box::new(GroupPreview {
-                spec: spec.group().cloned().unwrap_or_default(),
-                layout: e.layout,
-                tasks: e.members.into_iter().filter_map(|(u, m)| Some((u, m.task?))).collect(),
-            })
-        });
+        let group = eval.map(|e| GroupPreview::of(&spec, e));
         Ok(Preview {
             kind: spec.kind(),
             uids: spec.uids,
@@ -8998,17 +8969,70 @@ impl Engine {
             group,
         })
     }
+
+    /// What a dry run checks of `spec`, and on what: the inputs its decision reads, its checks,
+    /// and for a group order (rules 34) its check's evaluation, laid out and checked member by
+    /// member as its submission would be, each member's terrain sampled along its own share. An
+    /// operator's dry run and an agent's preview share it, so neither judges an order to many all
+    /// or nothing where its submission would not. `space`: a collect's or cover's answer, asked
+    /// for the preview (none for a vehicle task).
+    fn dry_run_checks(
+        &self,
+        spec: &IntentSpec,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+        space: Option<SpaceInputs>,
+    ) -> (WorldSnapshot, Vec<CheckResult>, Option<crate::group::GroupEval>) {
+        let cfg = &self.policy.rules;
+        let group = crate::group::is_group(spec, cfg);
+        let mut inputs = if group {
+            world.for_intent_with(spec, &crate::terrain::NoTerrain, cfg)
+        } else {
+            world.for_intent_with(spec, terrain, cfg)
+        };
+        self.identify(&mut inputs);
+        if let Some(s) = space {
+            inputs.space = s;
+        }
+        self.fill_engine_facts(spec, &mut inputs);
+        if group {
+            inputs.terrain = crate::world::TerrainInputs::NotNeeded;
+            inputs.route_plans.clear();
+            for ms in crate::group::member_specs(spec, &inputs, cfg) {
+                let mw = world.for_intent_plan(&ms, terrain, cfg, None);
+                inputs.terrain.merge(mw.terrain);
+                inputs.route_plans.extend(mw.route_plans);
+            }
+        }
+        let eval = group.then(|| crate::group::evaluate(spec, &inputs, cfg));
+        let checks = match &eval {
+            Some(e) => e.results.clone(),
+            None => rules::evaluate(spec, &inputs, cfg),
+        };
+        (inputs, checks, eval)
+    }
 }
 
-/// Rules 34: what an operator's dry run of a group order shows of it (the order form draws it):
-/// its spec as it would be logged, the layout its check made (each member's share: slot, layer,
-/// altitude, point) and each member's own task as its member order would fly it. Each member's
-/// class (sent, waiting, excluded) and why is on its failing checks; the minimum on `spec`.
+/// Rules 34: what a dry run of a group order shows of it (the operator's order form draws it; an
+/// agent's preview reads its bottom line): its spec as it would be logged, the layout its check
+/// made (each member's share: slot, layer, altitude, point) and each member's own task as its
+/// member order would fly it. Each member's class (sent, waiting, excluded) and why is on its
+/// failing checks; the minimum on `spec`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GroupPreview {
     pub spec: crate::group::GroupSpec,
     pub layout: crate::group::Layout,
     pub tasks: BTreeMap<Uid, Task>,
+}
+
+impl GroupPreview {
+    fn of(spec: &IntentSpec, e: crate::group::GroupEval) -> Box<GroupPreview> {
+        Box::new(GroupPreview {
+            spec: spec.group().cloned().unwrap_or_default(),
+            layout: e.layout,
+            tasks: e.members.into_iter().filter_map(|(u, m)| Some((u, m.task?))).collect(),
+        })
+    }
 }
 
 /// What a dry run of a proposal would decide ([`AgentPort::preview`]): the checks, the
@@ -9033,8 +9057,8 @@ pub struct Preview {
     /// Engage: the intercept and the predicted effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engage: Option<Box<engage::EngagePreview>>,
-    /// Rules 34, an operator's dry run of a group order: its layout and its members' tasks (an
-    /// agent's preview carries none yet).
+    /// Rules 34, a dry run of a group order (an operator's or an agent's): its layout and its
+    /// members' tasks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<Box<GroupPreview>>,
 }
@@ -9198,7 +9222,21 @@ impl AgentPort<'_> {
         terrain: &dyn TerrainOracle,
     ) -> Result<Preview, EngineError> {
         proposal.validate()?;
+        // rules 34: refused as its submission would be under older rules
+        if proposal.group.is_some() && !self.engine.policy.rules.group_orders() {
+            return Err(EngineError::Proposal(ProposalError::BadParams(
+                "these decision rules take no group order (rules 34)".into(),
+            )));
+        }
+        if proposal.task.kind() == TaskKind::Transit && !self.engine.policy.rules.group_orders() {
+            return Err(EngineError::Proposal(ProposalError::BadParams(
+                "these decision rules take no transit (rules 34)".into(),
+            )));
+        }
         let created_t = self.engine.now();
+        // rules 34: an order to many is a group order, laid out and checked member by member as
+        // its proposal would be (none under older rules)
+        let grouping = self.engine.grouping(&proposal)?;
         let spec = IntentSpec {
             id: IntentId(0),
             created_t,
@@ -9209,16 +9247,15 @@ impl AgentPort<'_> {
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
-            grouping: Default::default(),
+            grouping,
         };
-        let mut inputs = world.for_intent_with(&spec, terrain, &self.engine.policy.rules);
-        self.engine.identify(&mut inputs);
-        if spec.task.is_space() {
-            inputs.space = self.engine.ask_space(&spec.task, inputs.t, CheckPhase::Submit)?;
-        }
+        let space = if spec.task.is_space() {
+            Some(self.engine.ask_space(&spec.task, world.t, CheckPhase::Submit)?)
+        } else {
+            None
+        };
         // what the proposal's decision would read, lost contacts included (rules 16)
-        self.engine.fill_engine_facts(&spec, &mut inputs);
-        let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
+        let (inputs, checks, eval) = self.engine.dry_run_checks(&spec, world, terrain, space);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));
         let would_reach = match &policy {
@@ -9243,6 +9280,7 @@ impl AgentPort<'_> {
             .then(|| engage::preview(&spec, &inputs, &self.engine.policy.rules).ok())
             .flatten()
             .map(Box::new);
+        let group = eval.map(|e| GroupPreview::of(&spec, e));
         Ok(Preview {
             kind: spec.kind(),
             uids: spec.uids,
@@ -9252,7 +9290,7 @@ impl AgentPort<'_> {
             would_reach,
             space: inputs.space.answer().map(|a| Box::new(a.clone())),
             engage,
-            group: None,
+            group,
         })
     }
 
