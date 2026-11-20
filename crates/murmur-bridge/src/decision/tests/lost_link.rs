@@ -532,3 +532,50 @@ fn configured_parameters_are_the_stand_ins_own() {
         assert_eq!(plan, Some((action, timer)), "{behavior} {link}");
     }
 }
+
+/// Stage 0 of docs/SWARMS.md (decided by the owner on 2026-11-10; section 1, fault 3): a fixed
+/// wing in the air and disarmed glides with its throttle off, so a hold that only set LOITER sent
+/// a search swarm of Pumas down into the sea. A stand-in Puma on station at 150 m, disarmed there
+/// (as an autopilot that disarmed in flight leaves it), is ordered to hold: the task layer arms it
+/// first, it holds in LOITER, and a minute later it still flies at its height.
+#[tokio::test(start_paused = true)]
+async fn a_puma_aloft_and_disarmed_holds_at_its_height() {
+    let rig = rig_rules(murmur_decide::RULES_VERSION);
+    let w = wire(&rig, 31, "puma", SATURATION_LINKS, station(AIR)).await;
+    // its status, GPS, navigation filter and position streamed (the world's telemetry plan asks
+    // for them on a running bridge)
+    for id in [1.0, 24.0, 33.0, 193.0] {
+        let p = [id, 500_000.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        w.cell.send(&mav::command_long(SYSID, apm::MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL, 0, p));
+    }
+    sleep(Duration::from_secs(2)).await;
+    lock(&w.standin).st.armed = false;
+    sleep(Duration::from_secs(2)).await;
+    let seen = w.cell.read(|v| (v.airborne(), v.armed, v.alt_rel, v.kind));
+    assert!(seen.0 && !seen.1, "the bridge sees it aloft and disarmed: {seen:?}");
+    let alt = || lock(&w.standin).st.alt;
+    let before = alt();
+    let fleet: std::collections::BTreeMap<Uid, Arc<VehicleCell>> = [(w.uid, w.cell.clone())].into();
+    let order = crate::tasks::TaskOrder::new(
+        crate::tasks::TaskRequest {
+            task: "hold".into(),
+            uids: vec![w.uid],
+            params: crate::tasks::TaskParams::default(),
+        },
+        &fleet,
+    )
+    .expect("a hold order");
+    let tm = crate::tasks::TaskManager::default();
+    let t = tm.dispatch(crate::decision::AuthorizedOrder::unchecked(order));
+    let s = crate::tasks::tests::settle(&t.ops[0], 60).await;
+    assert_eq!(s.state, crate::tasks::OpState::Done, "{s:?}");
+    assert_eq!(s.detail, "holding");
+    sleep(Duration::from_secs(60)).await;
+    let (mode, armed) = w.state();
+    assert_eq!((mode, armed), ("LOITER", true), "armed, holding in LOITER");
+    let after = alt();
+    assert!(
+        (after - before).abs() < 20.0,
+        "it holds at its height: {before:.0} m when ordered, {after:.0} m a minute later"
+    );
+}

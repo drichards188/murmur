@@ -1507,6 +1507,16 @@ impl Task<'_> {
             return Ok(());
         }
         self.mark_starting(&format!("commanding {}", self.caps.hold))?;
+        // a fixed wing in the air and disarmed (a stand-in Puma spawned aloft before its first
+        // order, one an autopilot disarmed in flight) glides with its throttle off: its hold
+        // mode alone sends it down into the sea, so it is armed first and holds at its height
+        // (docs/SWARMS.md section 1, fault 3; the owner's stage 0 of 2026-11-10). A copter on
+        // the ground holds on the ground, which is what hold says.
+        let fixed_wing = matches!(self.kind, Kind::Plane | Kind::Vtol);
+        if fixed_wing && self.v().read(|s| s.airborne() && !s.armed) {
+            self.op().narrate("airborne and disarmed: arming before it holds");
+            self.ensure_armed().await?;
+        }
         let mode = self.set_mode(self.caps.hold).await?;
         self.op().set(OpState::Acked, "accepted");
         self.wait_mode(mode).await?;
