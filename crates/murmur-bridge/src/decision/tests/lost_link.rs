@@ -19,12 +19,12 @@ use crate::telemetry::{self, PlanInput, Tier};
 use crate::vehicle::VehicleCell;
 
 /// The links file every fleet runs on, and Saturation's (its LOS radios' timer is a minute).
-const LINKS: &str = "sim/links.toml";
+pub(super) const LINKS: &str = "sim/links.toml";
 const SATURATION_LINKS: &str = "sim/situations/links/swarm-saturation-bay-region.toml";
 /// The stand-ins' system id on their links.
 const SYSID: u8 = 7;
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(super) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -77,14 +77,14 @@ fn to_bridge(cell: &VehicleCell, frames: &[Vec<u8>]) {
 }
 
 /// A stand-in wired to a rig's world.
-struct Wired {
-    standin: Arc<Mutex<Standin>>,
-    cell: Arc<VehicleCell>,
+pub(super) struct Wired {
+    pub(super) standin: Arc<Mutex<Standin>>,
+    pub(super) cell: Arc<VehicleCell>,
     stats: Arc<Mutex<LinkStats>>,
     /// The GCS's heartbeat, once a second while set (cleared: the link is cut).
     gcs: Arc<AtomicBool>,
     asked: Arc<Mutex<Vec<String>>>,
-    uid: Uid,
+    pub(super) uid: Uid,
     /// Its steps and the GCS's heartbeat.
     task: tokio::task::JoinHandle<()>,
 }
@@ -112,7 +112,7 @@ impl Wired {
     }
 
     /// The stand-in's mode and armed state.
-    fn state(&self) -> (&'static str, bool) {
+    pub(super) fn state(&self) -> (&'static str, bool) {
         let s = lock(&self.standin);
         (s.st.mode, s.st.armed)
     }
@@ -162,7 +162,7 @@ impl Wired {
 
 /// A rig deciding under rules 30 (the rules being built, docs/NODE-LOSS.md section 8), or under
 /// the default rules.
-fn rig_rules(rules: u32) -> Rig {
+pub(super) fn rig_rules(rules: u32) -> Rig {
     let mut p = Policy::load(&root().join("sim/policy.toml")).expect("policy");
     p.rules.rules_version = rules;
     rig_with(p)
@@ -182,7 +182,7 @@ fn timer_param(behavior: &str) -> Option<&'static str> {
 /// catalog entry, its `standin_params`, then its link profile's lost-link timer
 /// (`standin_params`); on station at `at` ([lat, lon, alt, heading]), armed in its hold mode,
 /// wired to `rig`'s world as `uid`.
-async fn wire(rig: &Rig, uid: Uid, platform: &str, links: &str, at: [f64; 4]) -> Wired {
+pub(super) async fn wire(rig: &Rig, uid: Uid, platform: &str, links: &str, at: [f64; 4]) -> Wired {
     let catalog: toml::Table = std::fs::read_to_string(root().join("sim/platforms.toml"))
         .expect("catalog")
         .parse()
@@ -287,8 +287,8 @@ fn station(alt: f64) -> [f64; 4] {
     [SEA.0, SEA.1, alt, 90.0]
 }
 
-const AIR: f64 = 150.0;
-const SURFACE: f64 = 0.0;
+pub(super) const AIR: f64 = 150.0;
+pub(super) const SURFACE: f64 = 0.0;
 const DEPTH: f64 = -20.0;
 
 /// One platform per firmware (and both kinds of ArduSub and of ArduRover's hulls): the fact the

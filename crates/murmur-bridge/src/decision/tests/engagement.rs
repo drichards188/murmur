@@ -292,6 +292,7 @@ impl Erig {
             live_h: None,
             constraints: Constraints::default(),
             rationale: None,
+            group: None,
         }
     }
 

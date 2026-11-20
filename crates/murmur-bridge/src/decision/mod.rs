@@ -65,6 +65,7 @@ pub mod blocking;
 mod civil;
 pub mod engage;
 mod failsafe;
+mod groups;
 pub mod ident;
 pub mod identify;
 mod message;
@@ -212,6 +213,11 @@ pub struct IntentRequest {
     pub constraints: Constraints,
     #[serde(default)]
     pub rationale: Option<String>,
+    /// Rules 34: a group order's spec (its spread, minimum, layer base, wait, whether it re-forms;
+    /// absent: the engine's defaults). From rules 34 an order of an ordinary kind to more than one
+    /// vehicle is a group order whether it gives one or not.
+    #[serde(default)]
+    pub group: Option<murmur_decide::group::GroupSpec>,
 }
 
 impl From<TaskRequest> for IntentRequest {
@@ -227,6 +233,7 @@ impl From<TaskRequest> for IntentRequest {
             live_h: None,
             constraints: Constraints::default(),
             rationale: None,
+            group: None,
         }
     }
 }
@@ -894,8 +901,10 @@ impl Decision {
             me: me.clone(),
             world,
             clock,
-            catalog_physical: p.catalog.reaching(murmur_decide::Reaches::Physical),
-            catalog: p.catalog,
+            // rules 34: each platform's group-order figures on its facts (a decision's fact from
+            // rules 34 only; older runs' facts as before)
+            catalog_physical: if rules.group_orders() { p.catalog.formed() } else { p.catalog.clone() }.reaching(murmur_decide::Reaches::Physical),
+            catalog: if rules.group_orders() { p.catalog.formed() } else { p.catalog },
             areas: p.areas,
             operators: p.operators,
             engage_operators: p.engage_operators,
@@ -2063,6 +2072,10 @@ impl Decision {
         if matches!(spec.task, Task::Engage { .. }) {
             return self.dispatch_engage(core, id);
         }
+        // rules 34: a group order goes out as its member orders, each on its own
+        if murmur_decide::group::is_group(&spec, &self.rules) {
+            return self.dispatch_group(core, id);
+        }
         // the task layer must accept it before the engine marks it dispatched (rules 21: an
         // identify order as the orbit its last passing check laid out)
         let task = match (&spec.task, core.engine.intent(id).and_then(|i| i.identify_plan())) {
@@ -2362,7 +2375,16 @@ impl Decision {
         if !self.needs_surface(uids) {
             return;
         }
-        self.prefetch_in(&self.snapshot(), task, uids).await;
+        let world = self.snapshot();
+        // rules 34: a group order's terrain is its members' shares' (each member's own way to its
+        // slot, ring or lane), laid out on the world now as its check will lay it out
+        if let Some(specs) = self.group_member_specs(task, uids, &world) {
+            for ms in specs {
+                self.prefetch_in(&world, &ms.task, &ms.uids).await;
+            }
+            return;
+        }
+        self.prefetch_in(&world, task, uids).await;
     }
 
     /// [`Self::prefetch`] of a vehicle task on a world snapshot already taken (the queued
@@ -2491,6 +2513,11 @@ impl Decision {
             loop {
                 interval.tick().await;
                 prefetcher.prefetch_engagements().await;
+                // rules 34: the shares a re-form due would move members to, laid out outside the
+                // lock, so the tick's step judges them from the cache
+                if prefetcher.rules.group_orders() {
+                    prefetcher.prefetch_groups().await;
+                }
                 // queued intents' waypoints: their dequeue re-check reads them from the cache (one
                 // world snapshot for all of them: rules 29 queues a fleet's thousands at the start)
                 if prefetcher.terrain.fetches() && !prefetcher.terrain.backing_off() {
@@ -2614,6 +2641,11 @@ impl Decision {
             // rules 27: the mines the layers reached are laid before their ops' ends finish them
             crate::perf::time("decision.step_lays", || self.step_lays(core));
             crate::perf::time("decision.follow_ops", || self.follow_ops(core));
+            // rules 34: the groups in force (drops, re-forms, suspensions), once their members'
+            // ends are logged (timed only then: an older run's /api/stats reads as before)
+            if self.rules.group_orders() {
+                crate::perf::time("decision.step_groups", || self.step_groups(core));
+            }
             crate::perf::time("decision.follow_space", || self.follow_space(core));
             // rules 9: observed acts to the engine, the weak-evidence rule, before the
             // pictures are held (they read the ledger it changes)
@@ -3291,6 +3323,7 @@ fn proposal(req: &IntentRequest) -> Result<Proposal, DecisionError> {
     };
     let mut proposal = Proposal::new(task, req.uids.iter().map(|u| duid(*u)).collect());
     proposal.constraints = req.constraints.clone();
+    proposal.group = req.group.clone();
     proposal.rationale = req
         .rationale
         .as_deref()

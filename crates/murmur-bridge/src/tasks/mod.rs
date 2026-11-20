@@ -106,6 +106,35 @@ pub struct TaskParams {
     /// the wrong surface or a no-go area, flown before the task (`murmur_decide::plan`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<BTreeMap<Uid, Vec<LngLat>>>,
+    /// Rules 34, a group's member order: its share of the group's task as the decision engine
+    /// laid it out and logged it (`murmur_decide::group::Share`): flown as it is, with no slot
+    /// arithmetic of the task layer's own
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share: Option<MemberShare>,
+}
+
+/// Rules 34: what the task layer flies of a member order's share (its member task carries the
+/// rest of its geometry: a surface ring's radius, its lane, the racetrack a two-point route
+/// becomes): the altitude (above home; negative, a depth; none on the surface), where it enters a
+/// ring (degrees clockwise from north of the centre) and how far along its route it enters (m).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MemberShare {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alt_m: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_deg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_m: Option<f64>,
+}
+
+impl From<&murmur_decide::group::Share> for MemberShare {
+    fn from(s: &murmur_decide::group::Share) -> MemberShare {
+        MemberShare {
+            alt_m: s.alt_m,
+            phase_deg: s.phase_deg,
+            entry_m: s.entry_m,
+        }
+    }
 }
 
 /// POST /api/tasks
@@ -156,6 +185,10 @@ pub struct TaskOrder {
     pub requeue: bool,
     /// rules 7: each vehicle's start is logged ahead of sending it through this (none: not)
     pub ahead: Option<WriteAhead>,
+    /// the task layer's own slots: same-kind vehicles of one order stacked apart in height and
+    /// spread round a ring by their place in it (rules 33 and before); rules 34 never (each
+    /// vehicle's order is its own, a group member's share says where it flies)
+    pub stack: bool,
 }
 
 impl TaskOrder {
@@ -208,6 +241,7 @@ impl TaskOrder {
             patience: std::time::Duration::ZERO,
             requeue: false,
             ahead: None,
+            stack: true,
         })
     }
 }
@@ -299,7 +333,7 @@ impl TaskManager {
                 order.kind,
                 v.uid,
                 v.sysid,
-                *slot,
+                if order.stack { *slot } else { 0 },
             );
             op.boot_epoch = *epoch;
             ops.push(Arc::new(op));
@@ -324,7 +358,7 @@ impl TaskManager {
                 v: v.clone(),
                 kind: order.kind,
                 params: order.params.clone(),
-                same_kind: counts.get(kind).copied().unwrap_or(1),
+                same_kind: if order.stack { counts.get(kind).copied().unwrap_or(1) } else { 1 },
                 target: order.target.clone(),
                 fleet: order.fleet.clone(),
                 resume: order.resume.get(&v.uid).copied().unwrap_or_default(),

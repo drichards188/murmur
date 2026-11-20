@@ -261,6 +261,7 @@ fn orbit(uid: Uid) -> IntentRequest {
         live_h: None,
         constraints: Constraints::default(),
         rationale: None,
+        group: None,
     }
 }
 
@@ -276,6 +277,7 @@ fn simple(task: &str, uid: Uid) -> IntentRequest {
         live_h: None,
         constraints: Constraints::default(),
         rationale: None,
+        group: None,
     }
 }
 
@@ -294,6 +296,7 @@ fn patrol(uid: Uid, route: Vec<[f64; 2]>) -> IntentRequest {
         live_h: None,
         constraints: Constraints::default(),
         rationale: None,
+        group: None,
     }
 }
 
@@ -806,6 +809,10 @@ mod scale;
 
 /// Rules 30's lost-link fact read from the stand-ins' own autopilots (`tests/lost_link.rs`).
 mod lost_link;
+
+/// Rules 34: group orders through the bridge, each member's share flown by the stand-ins as
+/// logged (`tests/groups.rs`).
+mod groups;
 
 /// Rules 30 through the bridge: the review, confirming and revoking a loss, what it ends and
 /// closes, its alerts (`tests/node_loss.rs`).

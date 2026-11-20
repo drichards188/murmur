@@ -1026,6 +1026,10 @@ impl Task<'_> {
     /// when the fleet manifest knows it (a Global Hawk at 18 km, an AUV at 40 m depth), else
     /// the per-autopilot default. Same-kind vehicles in one tasking are stacked apart.
     fn task_alt(&self) -> f64 {
+        // rules 34: a group member flies its share's altitude as logged (on the surface, none)
+        if let Some(share) = &self.ctx.params.share {
+            return share.alt_m.unwrap_or(self.caps.alt.0);
+        }
         let (cruise, home_alt) = self.v().read(|s| {
             (
                 s.identity.as_ref().and_then(|i| i.num("cruise_alt_m")),
@@ -1276,17 +1280,22 @@ impl Task<'_> {
             .read(|s| s.identity.as_ref().and_then(|i| i.num("min_turn_radius_m")));
         let (radius, widened, tol) = orbit_geometry(self.ctx.params.radius, min_r, self.caps.orbit);
         let alt = self.task_alt();
+        // rules 34: a group member enters the ring where its share says, a fixed wing too (a
+        // waypoint ring no tighter than its turn, never one loiter shared by the whole group)
+        let entry = self.ctx.params.share.as_ref().and_then(|s| s.phase_deg);
         let build = |takeoff: bool| {
             let mut items = self.mission_prefix(alt, takeoff);
-            let loop_from = if self.caps.orbit == Some(OrbitStyle::Loiter) {
+            let loop_from = if self.caps.orbit == Some(OrbitStyle::Loiter) && entry.is_none() {
                 let mut it = Item::nav(apm::MavCmd::MAV_CMD_NAV_LOITER_UNLIM, lat, lon, alt);
                 it.p[2] = radius as f32;
                 items.push(it);
                 None
             } else {
-                // same-kind vehicles start spread around the ring
-                let phase = 2.0 * std::f64::consts::PI * self.ctx.op.slot as f64
-                    / self.ctx.same_kind.max(1) as f64;
+                // same-kind vehicles start spread around the ring (rules 34: where the share says)
+                let phase = match entry {
+                    Some(deg) => deg.to_radians(),
+                    None => 2.0 * std::f64::consts::PI * self.ctx.op.slot as f64 / self.ctx.same_kind.max(1) as f64,
+                };
                 let from = items.len();
                 for (plat, plon) in geo::circle_points(lat, lon, radius, 12, phase) {
                     items.push(Item::waypoint(plat, plon, alt));
@@ -1320,6 +1329,15 @@ impl Task<'_> {
 
     async fn patrol(&self) -> Result {
         let route = self.ctx.params.route.clone().unwrap_or_default();
+        // rules 34: a group member enters its route (its lane, its racetrack) as far along as its
+        // share says, the loop measured as the layout measured it
+        let route = match self.ctx.params.share.as_ref().and_then(|s| s.entry_m) {
+            Some(entry) => {
+                let ll: Vec<murmur_decide::LonLat> = route.iter().map(|[lon, lat]| murmur_decide::LonLat::new(*lon, *lat)).collect();
+                murmur_decide::group::entered_route(&ll, entry).into_iter().map(|p| [p.lon, p.lat]).collect()
+            }
+            None => route,
+        };
         let alt = self.task_alt();
         let build = |takeoff: bool| {
             let mut items = self.mission_prefix(alt, takeoff);

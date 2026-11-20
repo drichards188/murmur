@@ -235,6 +235,9 @@ impl Decision {
         }
         // rules 22: each vehicle's transit as the engine routed it
         order.params.via = bridge_via(&released.via);
+        // rules 34: a group member's share as logged, and no slots of the task layer's own
+        order.params.share = released.share.as_deref().map(crate::tasks::MemberShare::from);
+        order.stack = !self.rules.group_orders();
         // rules 7: each vehicle's start in the audit log before it goes out, for the kinds the
         // engine takes a start ahead for (`queue::vehicle_task`): rules 27's lay order is not one
         // of them, and the engine refuses its start logged ahead, so a lay went out failed
@@ -262,7 +265,7 @@ impl Decision {
     /// Rules 7 (murmur-636): an engagement in play on them is stopped too, superseded by this
     /// order with no fallback commanded, as its dispatch would: before, the abandoned
     /// intercept stopped it as a system failure and its fallback flew over this order.
-    fn supersede_queued(&self, core: &mut Core, id: IntentId, uids: &[murmur_decide::Uid]) {
+    pub(super) fn supersede_queued(&self, core: &mut Core, id: IntentId, uids: &[murmur_decide::Uid]) {
         if self.rules.rules_version >= murmur_decide::QUEUE_FOLLOWUPS_SINCE {
             self.stop_superseded_engagements(core, id, uids);
         }
@@ -737,7 +740,7 @@ impl Decision {
 /// each op asks its vehicle what it holds first (`Verify`); where its start went out and
 /// nothing confirmed it, it is only followed if the vehicle runs it (`Confirm`: never
 /// started again on its own). The engine's `confirming` set is the same.
-fn resume_modes(intent: &Intent) -> HashMap<Uid, Resume> {
+pub(super) fn resume_modes(intent: &Intent) -> HashMap<Uid, Resume> {
     if !intent.dispatched_before() {
         return HashMap::new();
     }
