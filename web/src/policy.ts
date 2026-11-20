@@ -7,6 +7,8 @@ import { useEffect, useState } from 'react'
 export interface PolicyAnswer {
   t: number
   rules_version: number
+  /** rules 34: an order to many is a group order, and a transit can be ordered */
+  group_orders?: boolean
   policy: unknown
   watch: Record<string, unknown> | null
   engage_defaults: EngageDefaults
@@ -45,4 +47,21 @@ export function useEngageDefaults(): { defaults: EngageDefaults | null; error: s
     }
   }, [])
   return { defaults, error }
+}
+
+/** Rules 34: whether this run decides group orders (an order to many laid out member by member,
+ *  and the transit kind): read once; false until it comes or if it cannot be read (the order form
+ *  then offers what older rules take). */
+export function useGroupOrders(): boolean {
+  const [on, setOn] = useState(false)
+  useEffect(() => {
+    let gone = false
+    fetchPolicy()
+      .then((p) => !gone && setOn(p.group_orders === true))
+      .catch(() => {})
+    return () => {
+      gone = true
+    }
+  }, [])
+  return on
 }

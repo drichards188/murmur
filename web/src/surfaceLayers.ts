@@ -28,10 +28,11 @@ export interface SurfaceScale {
   mPerPx: number
 }
 
-/** A drafted orbit or patrol (MapView's Draft) */
+/** A drafted orbit, patrol or transit (MapView's Draft) */
 export interface DraftShape {
-  /** `identify` (rules 21): the target's orbit ring at `center`, a line from `from` */
-  mode: 'orbit' | 'patrol' | 'identify' | null
+  /** `identify` (rules 21): the target's orbit ring at `center`, a line from `from`; `transit`
+   *  (rules 34): an open route, held at its end */
+  mode: 'orbit' | 'patrol' | 'transit' | 'identify' | null
   center: LngLat | null
   radius: number
   route: LngLat[]
@@ -285,6 +286,11 @@ export function buildSurfaceLayers(input: SurfaceInput, scale: SurfaceScale) {
       const r = t.params.route
       line([...r, r[0]], lineColor, 2, dash)
       pts.push(...r)
+    } else if (t.task === 'transit' && t.params.route) {
+      // rules 34: flown once, held at its end (no loop back)
+      const r = t.params.route
+      if (r.length > 1) line(r, lineColor, 2, dash)
+      pts.push(...r)
     }
     for (const p of pts) d.marks.push({ at: at(p), color, radius: 4, stroke: 1.5 })
   }
@@ -304,6 +310,13 @@ export function buildSurfaceLayers(input: SurfaceInput, scale: SurfaceScale) {
   if (dr.mode === 'patrol' && dr.route.length) {
     line(dr.route.length > 2 ? [...dr.route, dr.route[0]] : dr.route, DRAFT, 2, [1, 1.5])
     dr.route.forEach((p, i) => d.marks.push({ at: at(p), color: DRAFT, radius: 9, stroke: 2, text: String(i + 1) }))
+  }
+  // rules 34: a transit's route, open, its end where it holds
+  if (dr.mode === 'transit' && dr.route.length) {
+    if (dr.route.length > 1) line(dr.route, DRAFT, 2, [1, 1.5])
+    dr.route.forEach((p, i) =>
+      d.marks.push({ at: at(p), color: DRAFT, radius: i === dr.route.length - 1 ? 11 : 9, stroke: 2, text: i === dr.route.length - 1 ? 'H' : String(i + 1) }),
+    )
   }
   return layersOf('surface', d)
 }

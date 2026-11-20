@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 import type { SwarmsFeed } from './swarms'
 import { ROLE_LABEL, ROLE_ORDER, type Swarm, type SwarmAlert, swarmColor, swarmTone, taskLine } from './swarmsModel'
+import { strengthLine, strengthTone, type GroupInForce } from './groupOrders'
+import { alertLabel } from './swarms'
 import './swarms.css'
 
 /** The Swarms panel (docs/DECISIONS.md, "Swarm units"): every swarm of the fleet from the bridge's
@@ -45,6 +47,14 @@ function Row({ s, selected, alerts, onSelect }: { s: Swarm; selected: boolean; a
           {alerts > 0 && <span className="sw-alerts" title="swarm alerts in the Inbox">{alerts} alert{alerts === 1 ? '' : 's'}</span>}
         </span>
         <span className="sw-task">{taskLine(s)}</span>
+        {/* rules 34: each group order in force over its members: its strength against its minimum */}
+        {(s.groups ?? []).map((g) => (
+          <span key={g.intent} className={`sw-gorder ${strengthTone(g)}`}>
+            {strengthLine(g)}
+            {g.members_here !== g.strength && <span className="dim"> ({g.members_here} of it here)</span>}
+            {g.refused && <span className="warn"> · re-form refused: {g.refused}</span>}
+          </span>
+        ))}
       </span>
       <span className="sw-nums">
         <span title="navigation-ready of all its members">
@@ -61,8 +71,45 @@ function Row({ s, selected, alerts, onSelect }: { s: Swarm; selected: boolean; a
   )
 }
 
+/** Rules 34: one group order in force, the panel's own line: its strength against its minimum,
+ *  what dropped and why, its re-forms, and its group alert (under strength: it re-forms no more;
+ *  re-form refused: why), as the Inbox raises it. */
+function GroupLine({ g, alerts }: { g: GroupInForce; alerts: SwarmAlert[] }) {
+  const dropped = Object.keys(g.dropped ?? {}).length
+  const tone = strengthTone({ ...g, dropped })
+  const why = new Map<string, number>()
+  for (const w of Object.values(g.dropped ?? {})) {
+    const k = w.split(':')[0]
+    why.set(k, (why.get(k) ?? 0) + 1)
+  }
+  const mine = alerts.filter((a) => a.id.startsWith(`group:${g.intent}:`))
+  return (
+    <div className={`sw-gline ${tone}`}>
+      <span className="sw-gmain">
+        <b>{strengthLine({ ...g, dropped, back: g.back?.length ?? 0 })}</b>
+        {g.swarm && <span className="dim"> · {g.swarm}</span>}
+      </span>
+      {dropped > 0 && (
+        <span className="dim">
+          dropped: {[...why.entries()].map(([k, n]) => `${n} ${k}`).join(', ')}
+        </span>
+      )}
+      {g.taken > 0 && <span className="dim">{g.taken} taken by a newer order</span>}
+      {mine.map((a) => (
+        <span key={a.id} className={`sw-galert ${a.severity}`}>
+          {alertLabel(a.kind)}
+        </span>
+      ))}
+      {g.suspended && <span className="bad">It re-forms no more: order it anew, or order its members.</span>}
+      {g.refused && <span className="warn">Last re-form refused: {g.refused}</span>}
+      {!g.reforming && !g.suspended && <span className="dim">does not re-form ({g.kind})</span>}
+    </div>
+  )
+}
+
 export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, banners }: Props) {
   const swarms = feed.doc?.swarms ?? []
+  const groups = feed.doc?.groups ?? []
   const total = swarms.reduce((n, s) => n + s.count, 0)
   const alertsBy = new Map<string, number>()
   for (const a of alerts) alertsBy.set(a.swarm, (alertsBy.get(a.swarm) ?? 0) + 1)
@@ -89,6 +136,17 @@ export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, banners
           </p>
         )}
         {feed.status === 'loading' && <p className="empty muted">Asking the bridge for its swarms...</p>}
+        {groups.length > 0 && (
+          <section className="sw-group sw-orders" aria-label="Group orders in force">
+            <h3 className="ix-h">
+              Group orders in force <span>{groups.length}</span>
+              <small>{groups.reduce((n, g) => n + g.selection, 0).toLocaleString()} vehicles</small>
+            </h3>
+            {groups.map((g) => (
+              <GroupLine key={g.intent} g={g} alerts={alerts} />
+            ))}
+          </section>
+        )}
         {feed.status === 'ok' && swarms.length === 0 && <p className="empty muted">This fleet has no swarms.</p>}
         {feed.status === 'ok' && feed.error && <p className="empty muted">Last summary kept: {feed.error}</p>}
         {roles.map((role) => {
@@ -107,7 +165,7 @@ export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, banners
           )
         })}
         {swarms.length > 0 && (
-          <p className="ix-foot">A click selects every member of a swarm: the order form then sends one order, one intent, to all of them.</p>
+          <p className="ix-foot">A click selects every member of a swarm: the order form then sends one order to all of them (under group orders, one group order laid out member by member).</p>
         )}
       </div>
     </aside>

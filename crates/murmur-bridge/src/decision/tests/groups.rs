@@ -345,3 +345,32 @@ async fn a_group_transit_flies_each_member_to_its_station() {
         assert!(metres(pos, (at.lat, at.lon)) < 5.0, "{}: holds at its station", w.uid);
     }
 }
+
+/// Rules 34, stage 6: the order form's dry run of a group order (`POST /api/intents/preview`)
+/// carries its layout for the map and the card: the spec as it would be logged, each member's
+/// share (slot, layer, altitude, point) and its own task; nothing is created. An agent's preview
+/// carries no group view (MCP's stage), and `/api/policy` tells the console group orders are on.
+#[tokio::test(start_paused = true)]
+async fn the_operators_dry_run_of_a_group_order_carries_its_layout() {
+    let rig = rig_rules(GROUP_ORDER_SINCE);
+    let ws = fleet(&rig, "x10", 3, AIR).await;
+    let uids: Vec<Uid> = ws.iter().map(|w| w.uid).collect();
+    let mut req = simple("transit", uids[0]);
+    req.uids = uids.clone();
+    req.params.route = Some(vec![[-122.4660, 37.8270], [-122.4600, 37.8270]]);
+    req.group = Some(murmur_decide::group::GroupSpec { spread: Some(murmur_decide::group::Spread::Block), ..Default::default() });
+    let v = rig.d.operator_dry_run(&op1(), req.clone()).await.expect("a dry run");
+    assert_eq!(v["passed"], true, "{v}");
+    let g = &v["group"];
+    assert_eq!(g["spec"]["spread"], "block");
+    assert_eq!(g["layout"]["shares"].as_object().map(|s| s.len()), Some(3), "{g}");
+    assert!(g["layout"]["shares"].as_object().is_some_and(|m| m.values().all(|s| s["at"].is_array())));
+    assert_eq!(g["tasks"].as_object().map(|t| t.len()), Some(3));
+    assert_eq!(v["uids"].as_array().map(Vec::len), Some(3));
+    assert!(rig.d.lock().engine.intents().next().is_none(), "nothing created");
+    // an agent's preview: no group view yet
+    let a = rig.d.agent_preview(&murmur_decide::AgentId::new("agent-planner"), orbit_req(&uids, LonLat::new(-122.4720, 37.8270), 200.0)).await.expect("a preview");
+    assert!(a.get("group").is_none(), "{a}");
+    assert_eq!(rig.d.policy_api_json()["group_orders"], true);
+    assert_eq!(rig_rules(GROUP_ORDER_SINCE - 1).d.policy_api_json()["group_orders"], false);
+}

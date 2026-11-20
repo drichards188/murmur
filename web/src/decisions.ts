@@ -6,6 +6,7 @@ import type { LngLat } from './types'
 import type { ObservedAct, Review } from './ident'
 import type { Blocking } from './blocking'
 import type { SwarmAlert } from './swarmsModel'
+import type { GroupSpec, Share } from './groupOrders'
 
 /** The decision layer as the bridge serves it: GET /api/inbox, GET /api/intents and the
  *  WebSocket `{"type":"decisions"}` message. Intent times are wall-clock milliseconds on the
@@ -35,6 +36,9 @@ export interface Check {
   outcome: CheckOutcome
   detail: string
   fix?: { fix: 'widen_radius'; radius_m: number }
+  /** rules 34, a group order's failing check of one member: what it makes of that member
+   *  (waiting: it joins if it passes in time; excluded: no member order) */
+  member?: 'waiting' | 'excluded'
 }
 
 export interface PolicyDecision {
@@ -135,6 +139,11 @@ export interface Intent {
   follow_pending?: boolean
   /** queued intents in the inbox message: each vehicle's reach on the world now */
   reach_now?: Reach[]
+  /** rules 34: a group order's spec (its spread, minimum, whether it re-forms) */
+  group?: GroupSpec
+  /** rules 34: a member order's group order, and its share of it */
+  parent?: number
+  share?: Share
 }
 
 /** Whether one vehicle can be reached for an order now, and why. */

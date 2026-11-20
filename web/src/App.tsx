@@ -785,7 +785,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       }
       // an orbit's centre or a patrol's waypoint is for the vehicles selected: none, no draft
       if (selected.size === 0) return
-      setDraft((d) => (d.mode === 'orbit' ? { ...d, center: p } : d.mode === 'patrol' ? { ...d, route: [...d.route, p] } : d))
+      setDraft((d) => (d.mode === 'orbit' ? { ...d, center: p } : d.mode === 'patrol' || d.mode === 'transit' ? { ...d, route: [...d.route, p] } : d))
     },
     [drawing, selected],
   )

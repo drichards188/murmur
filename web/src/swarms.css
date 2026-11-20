@@ -58,3 +58,16 @@
   font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .vlist-more:hover { color: var(--text); border-color: #33475d; }
+
+/* rules 34: group orders in force (SwarmsPanel.tsx): strength against the minimum, drops, alerts */
+.sw-gorder { font: 11px var(--mono); color: var(--muted); white-space: normal; }
+.sw-gorder.warn { color: var(--warn); }
+.sw-gorder.bad { color: var(--bad); }
+.sw-orders { display: flex; flex-direction: column; gap: 6px; }
+.sw-gline { display: flex; flex-direction: column; gap: 2px; background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--ok); border-radius: 4px; padding: 6px 10px; font: 11.5px var(--mono); }
+.sw-gline.warn { border-left-color: var(--warn); }
+.sw-gline.bad { border-left-color: var(--bad); }
+.sw-gline .dim { color: var(--muted); }
+.sw-gline .bad { color: var(--bad); }
+.sw-gline .warn { color: var(--warn); }
+.sw-galert { align-self: flex-start; font: 600 10px var(--mono); letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px; border: 1px solid #5a2a2a; color: var(--bad); }

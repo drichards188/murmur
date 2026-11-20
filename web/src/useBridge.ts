@@ -4,6 +4,7 @@ import { getOperator, setBridgeOperators, type Decisions, type Intent, type Auth
 import { perfPush, perfUpdateStart } from './perf'
 import type { TracksMessage } from './tracks'
 import type { BridgeState, Clusters, LngLat, TaskKind, Tasking, Vehicle, ViewSubscription } from './types'
+import type { GroupSpec } from './groupOrders'
 
 const TRAIL_MAX = 120 // same cap as the bridge keeps
 
@@ -164,6 +165,9 @@ export interface TaskRequest {
   target?: number
   track?: string
   standoff_m?: number
+  /** rules 34: how a group order's members share it (what the person set; the engine fills the
+   *  rest) */
+  group?: GroupSpec
 }
 
 /** What POST /api/tasks answers: 200 dispatched (with `authorization` when the task was in

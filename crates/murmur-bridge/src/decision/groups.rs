@@ -57,6 +57,9 @@ pub struct GroupView {
     /// Why its last re-form was refused, while that stands.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
+    /// Its member orders in force (intent ids): a swarm's task line counts them as the group's.
+    #[serde(skip)]
+    pub member_orders: Vec<u64>,
 }
 
 fn kind_name(t: &Task) -> &'static str {
@@ -119,15 +122,26 @@ impl Decision {
     }
 
     /// Rules 34: a group order's member orders as its check will lay them out on `world` (each
-    /// member's own task and share), for the terrain fetched before its decision; None for
-    /// anything but a group order under these rules.
-    pub(super) fn group_member_specs(&self, task: &Task, uids: &[DUid], world: &WorldSnapshot) -> Option<Vec<murmur_decide::IntentSpec>> {
+    /// member's own task and share, by its group spec: its spread, layer base and lanes; none, the
+    /// kind's defaults), for the terrain fetched before its decision; None for anything but a
+    /// group order under these rules, or a spec the engine will refuse.
+    pub(super) fn group_member_specs(
+        &self,
+        task: &Task,
+        uids: &[DUid],
+        world: &WorldSnapshot,
+        group: Option<&murmur_decide::group::GroupSpec>,
+    ) -> Option<Vec<murmur_decide::IntentSpec>> {
         if !self.rules.group_orders() || uids.len() < 2 {
             return None;
         }
         murmur_decide::group::Spread::default_for(task.kind())?;
+        let g = group.cloned().unwrap_or_default();
+        if g.invalid(task.kind(), uids.len()).is_some() {
+            return None;
+        }
         let mut spec = Self::prefetch_spec(self.clock.now(), task, uids);
-        spec.grouping.group = Some(murmur_decide::group::GroupSpec::default().normalized(task.kind(), uids.len(), murmur_decide::group::MIN_SHARE));
+        spec.grouping.group = Some(g.normalized(task.kind(), uids.len(), murmur_decide::group::MIN_SHARE));
         Some(murmur_decide::group::member_specs(&spec, world, &self.rules))
     }
 
@@ -179,6 +193,11 @@ impl Decision {
             let Some(g) = core.engine.intent(*gid) else { continue };
             let Some(gs) = g.spec().group() else { continue };
             let Some((st, cause)) = core.engine.group_standing(*gid, &world) else { continue };
+            // no longer in force once every member has a newer order that is not its (docs/SWARMS.md
+            // section 2.2): the swarms panel lists what still stands
+            if !force.members.is_empty() && st.taken.len() == force.members.len() {
+                continue;
+            }
             let bu = |u: &DUid| bridge_uid(u);
             let mut members: Vec<Uid> = force.members.keys().filter_map(bu).collect();
             members.sort_unstable();
@@ -202,6 +221,7 @@ impl Decision {
                 suspended: force.suspended,
                 last_t: force.last_attempt.map(|t| t.0 as f64 / 1000.0),
                 refused: force.refused_why.clone(),
+                member_orders: force.members.values().map(|i| i.0).collect(),
             });
         }
         out

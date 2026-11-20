@@ -10,6 +10,7 @@
 // FleetPanel.tsx the list grouped by swarm.
 import type { Alert, Severity } from './decisions'
 import type { LngLat, Vehicle } from './types'
+import type { GroupInForce, SwarmGroup } from './groupOrders'
 
 export type SwarmRole = 'picket' | 'search' | 'relay' | 'surface' | 'undersea' | 'reserve' | 'other'
 
@@ -34,11 +35,15 @@ export interface Swarm {
   centroid: LngLat | null
   hull: LngLat[] | null
   tasks: SwarmTask[]
+  /** rules 34: the group orders in force over its members, its share of each */
+  groups?: SwarmGroup[]
 }
 
 export interface SwarmsDoc {
   t: number
   swarms: Swarm[]
+  /** rules 34: every group order in force (only when there is one) */
+  groups?: GroupInForce[]
 }
 
 /** A swarm's members' alerts of one kind, folded into one (the inbox's `swarm_alerts`). */
@@ -94,7 +99,7 @@ export function rgba(hex: string, alpha = 255): RGBA {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255, alpha]
 }
 
-const KIND_VERB: Record<string, string> = { orbit: 'orbit', patrol: 'patrol', hold: 'hold', rtl: 'return home', track: 'track', identify: 'identify' }
+const KIND_VERB: Record<string, string> = { orbit: 'orbit', patrol: 'patrol', hold: 'hold', rtl: 'return home', track: 'track', identify: 'identify', transit: 'transit' }
 
 /** "orbit i12" for each task its members run, the largest first, with how many when not all;
  *  "no task" without one. */

@@ -379,3 +379,16 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .vd-msgs { list-style: none; margin: 0; padding: 0; font: 11.5px var(--mono); }
 .vd-msgs li { padding: 2px 0; }
 .vd-follow.on { color: var(--accent); border-color: #4a3a1f; }
+
+/* rules 34: a group order's options in the task form (TaskPanel.tsx): how its members share it */
+.grp { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; }
+.grp legend { padding: 0 4px; font: 600 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); }
+.grp legend .muted { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); margin-left: 4px; }
+.grp .seg { margin: 0; }
+.grp .seg button { flex: 1; }
+.grp .hint { font-size: 12px; }
+.grp-row { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.grp-row label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.grp-row input { width: 76px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 3px 6px; font: 12px var(--mono); }
+.grp-check { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.grp-check input { accent-color: var(--accent); }

@@ -15,6 +15,7 @@
 // not in it, and nothing here blocks an order.
 import { circle, distanceM } from './geo.ts'
 import type { LngLat, TaskKind } from './types.ts'
+import type { SlotMark } from './groupOrders.ts'
 
 export type LinkState = 'up' | 'degraded' | 'down'
 export type LinkReason = 'loss' | 'range' | 'terrain' | 'no_sat' | 'submerged' | 'surfaced'
@@ -445,6 +446,18 @@ export function legPaths(order: OrderShape, v: VehicleAt, plan?: PlannedLegView[
       if (i < order.route.length) task.push(...(via.path.get(i) ?? []))
     }
   }
+  // rules 34: a transit's route, open; the way home from its end
+  if (order.task === 'transit' && order.route?.length) {
+    const path: LngLat[] = []
+    for (const [i, p] of order.route.entries()) {
+      path.push(p)
+      if (i < order.route.length - 1) path.push(...(via.path.get(i) ?? []))
+    }
+    if (path.length > 1) out.task = path
+    if (v.position) out.transit = [v.position, ...via.transit, path[0]]
+    if (v.home) out.return = [path[path.length - 1], v.home]
+    return out
+  }
   if (task) {
     out.task = task
     if (v.position) out.transit = [v.position, ...via.transit, task[0]]
@@ -511,6 +524,8 @@ export interface LinkRouteDrawing {
   dots: RouteDot[]
   routed?: LngLat[][]
   waypoints?: LngLat[]
+  /** rules 34: a group order's layout, each member's slot (where it goes, its layer and class) */
+  slots?: SlotMark[]
 }
 
 export const EMPTY_ROUTE: LinkRouteDrawing = { lines: [], marks: [], dots: [] }

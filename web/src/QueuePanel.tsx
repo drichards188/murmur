@@ -48,6 +48,7 @@ function what(i: Intent) {
   const p = i.params
   if (i.kind === 'orbit' && p.center) return `orbit ${Math.round(p.radius_m ?? 0)} m`
   if (i.kind === 'patrol' && p.route) return `patrol ${p.route.length} waypoints`
+  if (i.kind === 'transit' && p.route) return `transit ${p.route.length} point${p.route.length === 1 ? '' : 's'}, held at the end`
   return i.kind
 }
 

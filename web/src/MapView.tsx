@@ -41,8 +41,9 @@ import { buildLinkRouteLayers } from './linkLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
 
 export interface Draft {
-  /** `identify` (rules 21): one vehicle sent to identify the track `track`, picked on the map */
-  mode: 'orbit' | 'patrol' | 'identify' | null
+  /** `identify` (rules 21): one vehicle sent to identify the track `track`, picked on the map;
+   *  `transit` (rules 34): a route flown once and held at its end */
+  mode: 'orbit' | 'patrol' | 'transit' | 'identify' | null
   center: LngLat | null
   radius: number
   route: LngLat[]

@@ -309,6 +309,9 @@ impl Decision {
         json!({
             "t": crate::clock::wall(),
             "rules_version": self.rules.rules_version,
+            // rules 34: whether an order to many is a group order (and a transit can be ordered):
+            // the console's order form reads it (MCP get_policy builds its own answer)
+            "group_orders": self.rules.group_orders(),
             "policy": self.policy_json(),
             "watch": self.watch_json(),
             "engage_defaults": {

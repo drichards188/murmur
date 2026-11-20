@@ -3,6 +3,8 @@ import { pct, REASON_WORDS, STATE_RGB, type VehicleLink } from './coverage'
 import type { DryRunAnswer, DryRunState } from './useDryRun'
 import type { Vehicle } from './types'
 import { callsign } from './types'
+import { counts, foldByRule, foldLine, foldTone, headline, layerColor, layoutLine, memberClasses, type GroupPreview } from './groupOrders'
+import type { Check } from './decisions'
 import './coverage.css'
 
 const LEG_WORDS: Record<string, string> = { transit: 'transit', task: 'task path', return: 'return', here: 'where it is' }
@@ -68,6 +70,126 @@ function LegBar({ label, leg, ret }: { label: string; leg: NonNullable<VehicleLi
   )
 }
 
+/** At most this many names in one line; the rest counted. */
+const NAMES = 6
+
+/** Rules 34: a group of more than this many has its predicted links folded. */
+const LINK_FOLD = 6
+
+/** Rules 34: a group's predicted links folded: how many hold, the worst failsafe chance, each
+ *  vehicle whose link does not hold in full, the rest one click away. Predicted along the group's
+ *  own task (the members' ways to their shares are not yet predicted one by one). */
+function GroupLinks({ vehicles }: { vehicles: VehicleLink[] }) {
+  const holds = vehicles.filter((v) => !v.error && v.holds)
+  const not = vehicles.filter((v) => v.error || !v.holds)
+  const worst = vehicles.reduce((w, v) => Math.max(w, v.p_failsafe ?? 0), 0)
+  return (
+    <>
+      <span className="lk-sentence">
+        {holds.length} of {vehicles.length} predicted to hold; the worst failsafe chance {pct(worst)}. Predicted along the group's task, not yet each member's way to its share.
+      </span>
+      {not.map((x) => (
+        <VehicleLinkView key={x.uid} v={x} />
+      ))}
+      <details className="grp-shares">
+        <summary>Each vehicle's link ({vehicles.length})</summary>
+        {vehicles.map((x) => (
+          <VehicleLinkView key={x.uid} v={x} />
+        ))}
+      </details>
+    </>
+  )
+}
+
+function names(uids: string[], nameOf: (uid: string) => string): string {
+  const shown = uids.slice(0, NAMES).map(nameOf).join(', ')
+  return uids.length > NAMES ? `${shown} and ${uids.length - NAMES} more` : shown
+}
+
+/** Rules 34: a group order's dry run, bottom line first (docs/SWARMS.md section 10): how many it
+ *  sends now, how many wait and join if heard in time, how many it leaves out and why, its
+ *  strength against its minimum, then the layout (each member's slot and layer, drawn on the map),
+ *  then the checks folded by rule. A hundred members read as a few lines. */
+export function GroupDry({ g, checks, uids, kind, nameOf }: { g: GroupPreview; checks: Check[]; uids: string[]; kind: string; nameOf: (uid: string) => string }) {
+  const lines = memberClasses(uids, checks)
+  const c = counts(lines, g.spec, kind)
+  const folds = foldByRule(checks)
+  const strength = checks.find((x) => x.rule === 'strength' && x.uid == null)
+  const byLayer = new Map<number, number>()
+  for (const s of Object.values(g.layout.shares ?? {})) byLayer.set(s.layer ?? 0, (byLayer.get(s.layer ?? 0) ?? 0) + 1)
+  const shares = Object.entries(g.layout.shares ?? {}).sort((a, b) => a[1].slot - b[1].slot)
+  return (
+    <div className="grp-dry" aria-label="Group order">
+      <div className="dry-head">
+        <h4>Group</h4>
+        <span className="muted">{g.layout.spread ?? g.spec.spread}</span>
+      </div>
+      <p className={c.sent + c.waiting >= c.min ? 'pass' : 'fail'}>{headline(c, g.spec, kind, g.spec.swarm ?? null)}.</p>
+      {strength && <p className={`grp-strength ${strength.outcome}`}>{strength.detail}</p>}
+      {g.layout.refused ? <p className="fail">The layout does not hold: {g.layout.refused}</p> : <p className="muted">{layoutLine(g.layout)}</p>}
+      {(g.layout.warnings ?? []).map((w, k) => (
+        <p key={k} className="warn">
+          {w}
+        </p>
+      ))}
+      {byLayer.size > 1 && (
+        <p className="grp-layers">
+          {[...byLayer.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([layer, n]) => (
+              <span key={layer} className="grp-layer">
+                <i style={{ background: `rgb(${layerColor(layer).slice(0, 3).join(',')})` }} aria-hidden />
+                layer {layer + 1}: {n}
+              </span>
+            ))}
+        </p>
+      )}
+      <ul className="grp-folds" aria-label="Checks by rule">
+        {folds
+          .filter((f) => f.rule !== 'strength')
+          .map((f) => (
+            <li key={f.rule} className={foldTone(f)}>
+              <b>{f.rule}</b> {foldLine(f)}
+              {f.reasons.map((r, k) => (
+                <span key={k} className={`grp-reason ${r.class ?? r.outcome}`}>
+                  {r.class ?? r.outcome.replace('_', ' ')} ×{r.uids.length}: {r.example} <span className="muted">({names(r.uids, nameOf)})</span>
+                </span>
+              ))}
+            </li>
+          ))}
+      </ul>
+      {shares.length > 0 && (
+        <details className="grp-shares">
+          <summary>Each member's share ({shares.length})</summary>
+          <table>
+            <thead>
+              <tr>
+                <th>member</th>
+                <th>slot</th>
+                <th>layer</th>
+                <th>altitude</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shares.map(([uid, s]) => (
+                <tr key={uid}>
+                  <td>{nameOf(uid)}</td>
+                  <td>{s.slot + 1}</td>
+                  <td>
+                    <i className="grp-dot" style={{ background: `rgb(${layerColor(s.layer ?? 0).slice(0, 3).join(',')})` }} aria-hidden />
+                    {(s.layer ?? 0) + 1}
+                  </td>
+                  <td>{s.alt_m == null ? 'surface' : s.alt_m < 0 ? `${Math.round(-s.alt_m)} m deep` : `${Math.round(s.alt_m)} m`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+    </div>
+  )
+}
+
 function verdictOf(a: DryRunAnswer): { cls: string; text: string } {
   if (!a.passed) return { cls: 'fail', text: 'The rules would refuse it:' }
   if (a.would_reach === 'approved' || a.submission_authorizes) {
@@ -88,7 +210,8 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
     const v = vehicles.find((x) => String(x.uid) === uid)
     return v ? callsign(v) : `vehicle ${uid}`
   }
-  const failed = a ? a.checks.filter((c) => c.outcome === 'fail') : []
+  // rules 34: a group order's failures are its members' (folded by rule below), and its own
+  const failed = a ? a.checks.filter((c) => c.outcome === 'fail' && (!a.group || c.uid == null)) : []
   const unverified = a ? a.checks.filter((c) => c.outcome === 'unverified').length : 0
   const v = a ? verdictOf(a) : null
   const link = a?.link_coverage
@@ -113,6 +236,7 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
         </ul>
       )}
       {a && unverified > 0 && <p className="muted">{unverified} check{unverified > 1 ? 's' : ''} could not be verified.</p>}
+      {a?.group && <GroupDry g={a.group} checks={a.checks} uids={a.uids ?? []} kind={st.order?.task ?? ''} nameOf={(u) => nameOf(u) ?? u} />}
       {routed.length > 0 && (
         <ul aria-label="Routed">
           {routed.map(({ uid, p }, k) => (
@@ -130,9 +254,11 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
             <span className="muted">information only</span>
           </div>
           {link.error && <span className="muted">No prediction: {link.error}</span>}
-          {(link.vehicles ?? []).map((x) => (
-            <VehicleLinkView key={x.uid} v={x} />
-          ))}
+          {a?.group && (link.vehicles?.length ?? 0) > LINK_FOLD ? (
+            <GroupLinks vehicles={link.vehicles ?? []} />
+          ) : (
+            (link.vehicles ?? []).map((x) => <VehicleLinkView key={x.uid} v={x} />)
+          )}
           <span className="lk-note">
             From the link emulator's geometry; its random loss and scripted events (jammers, cuts) are not in it. It never blocks the order.
             {link.sources?.terrain?.startsWith('not checked') && ' Terrain is not checked in this run.'}

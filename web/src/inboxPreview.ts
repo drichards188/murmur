@@ -32,6 +32,11 @@ export function previewFeatures(pending: Intent[], vehicles: Vehicle[], selected
       line(p.route.length > 2 ? [...p.route, p.route[0]] : p.route, 'path')
       p.route.forEach((q, k) => point(q, String(k + 1)))
       first = p.route[0]
+    } else if (i.kind === 'transit' && p.route && p.route.length) {
+      // rules 34: flown once, held at its end
+      if (p.route.length > 1) line(p.route, 'path')
+      p.route.forEach((q, k) => point(q, k === p.route!.length - 1 ? 'H' : String(k + 1)))
+      first = p.route[0]
     } else if (i.kind === 'track' && p.target) {
       first = byUid.get(p.target)?.position ?? null
     } else if (i.kind === 'collect' || i.kind === 'cover') {

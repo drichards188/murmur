@@ -126,6 +126,49 @@ fn a_groups_end_counts_its_members() {
     assert!(why.starts_with("failed: 2 reached their shares, 2 failed, 1 voided"), "{why}");
 }
 
+/// Rules 34, stage 6: an operator's dry run of a group order decides it as its submission would
+/// (laid out and checked member by member), shows its layout, spec and each member's task, and
+/// logs nothing; an agent's preview carries no group view yet; under rules 33 a dry run of the
+/// same order is one intent's, with no group view, and a transit is refused.
+#[test]
+fn an_operators_dry_run_of_a_group_order_shows_its_layout() {
+    let clock = ManualClock::new(T0);
+    let log = MemorySink::new();
+    let mut e = Engine::new(rules34(Policy::load(&sim_dir().join("policy.toml")).unwrap()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let w = four_quads();
+    let t = terrain();
+    let uids = ["sky-1", "sky-2", "sky-3", "sky-4"];
+    let before = log.text().len();
+    let p = e.dry_run_for_operator(&OperatorId::new("op-1"), orbit(RING, 150.0, &uids), &w, &t).unwrap();
+    assert_eq!(log.text().len(), before, "a dry run logs nothing");
+    assert!(p.passed, "{:?}", p.checks);
+    let g = p.group.as_ref().expect("a group view");
+    assert_eq!(g.layout.shares.len(), 4);
+    assert_eq!(g.spec.min_members, Some(4));
+    assert!(g.tasks.values().all(|t| matches!(t, Task::Orbit { .. })));
+    assert!(p.checks.iter().any(|c| c.rule == RuleId::Strength), "the group's own checks");
+    // a transit to stations: each member's own station
+    let route = vec![LonLat::new(-122.4600, 37.8100), LonLat::new(-122.4700, 37.8100)];
+    let mut tr = Proposal::new(Task::Transit { route }, uids.iter().map(|u| uid(u)).collect());
+    tr.group = Some(GroupSpec::default());
+    let p = e.dry_run_for_operator(&OperatorId::new("op-1"), tr.clone(), &w, &t).unwrap();
+    let g = p.group.as_ref().expect("a group view");
+    assert!(g.tasks.values().all(|t| matches!(t, Task::Transit { route } if route.len() == 1)), "{:?}", g.tasks);
+    assert_eq!(g.layout.spread, Some(group::Spread::Stations));
+    // an agent's preview: no group view yet (MCP's stage)
+    let a = e.agent_port(AgentId::new("agent-planner")).preview(orbit(RING, 150.0, &uids), &w, &t).unwrap();
+    assert!(a.group.is_none());
+    // rules 33: one intent's dry run, and no transit
+    let mut old = Engine::new(Policy::load(&sim_dir().join("policy.toml")).unwrap(), roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
+    let p = old.dry_run_for_operator(&OperatorId::new("op-1"), orbit(RING, 150.0, &uids), &w, &t).unwrap();
+    assert!(p.group.is_none() && !p.checks.iter().any(|c| c.rule == RuleId::Strength));
+    tr.group = None;
+    assert!(old.dry_run_for_operator(&OperatorId::new("op-1"), tr.clone(), &w, &t).is_err());
+    let s = old.open_operator_session(OperatorId::new("op-1")).unwrap();
+    let refused = old.submit(s.authority(), tr, &w, &t).expect_err("no transit under rules 33");
+    assert!(refused.to_string().contains("take no transit (rules 34)"), "{refused}");
+}
+
 /// Rules 34 (policy schema 9, staged): a transit is routed as a patrol is. Under the situations'
 /// watch policy an agent's transit waits for the operator in its agent tier, which names patrol;
 /// under the standing policy an agent's routine transit goes by the default tier, as a patrol does.

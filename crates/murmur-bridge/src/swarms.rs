@@ -200,6 +200,8 @@ fn on_task(op: &OpSnapshot) -> bool {
 /// strength against its minimum.
 pub fn summary(sw: &Swarms, members: &HashMap<Uid, Member>, ops: &[OpSnapshot], reserve_pct: f64, groups: &[GroupView]) -> Vec<Value> {
     let op_of: HashMap<Uid, &OpSnapshot> = ops.iter().filter(|o| on_task(o)).map(|o| (o.uid, o)).collect();
+    // rules 34: a member order counts as its group order (one task line for a hundred members)
+    let group_of: HashMap<u64, u64> = groups.iter().flat_map(|g| g.member_orders.iter().map(move |m| (*m, g.intent))).collect();
     sw.defs
         .iter()
         .map(|d| {
@@ -209,7 +211,8 @@ pub fn summary(sw: &Swarms, members: &HashMap<Uid, Member>, ops: &[OpSnapshot], 
             let mut tasks: BTreeMap<(u64, &'static str), usize> = BTreeMap::new();
             for uid in uids {
                 if let Some(op) = op_of.get(uid) {
-                    *tasks.entry((op.intent_id, op.task.name())).or_default() += 1;
+                    let intent = group_of.get(&op.intent_id).copied().unwrap_or(op.intent_id);
+                    *tasks.entry((intent, op.task.name())).or_default() += 1;
                 }
                 let Some(m) = members.get(uid) else {
                     unheard += 1;
@@ -638,6 +641,19 @@ mod tests {
         assert_eq!(loose["unheard"], 2);
         assert_eq!(loose["centroid"], Value::Null);
         assert_eq!(loose["hull"], json!([]));
+        // rules 34: member orders 21 and 22 of group order 20 count as the group's, one task line
+        let ops = vec![
+            op(103, 21, TaskKind::Transit, OpState::Done),
+            op(104, 22, TaskKind::Transit, OpState::Active),
+            op(105, 8, TaskKind::Hold, OpState::Acked),
+        ];
+        let g = GroupView { intent: 20, kind: "transit", member_orders: vec![21, 22], ..group(false, None) };
+        let all = summary(&sw, &members, &ops, 20.0, &[g]);
+        let relay = all.iter().find(|s| s["id"] == "RELAY-1").expect("relay");
+        assert_eq!(relay["tasks"], json!([
+            {"intent": 20, "kind": "transit", "count": 2},
+            {"intent": 8, "kind": "hold", "count": 1},
+        ]));
     }
 
     fn alert(uid: Uid, kind: &'static str, severity: Severity, since_t: f64) -> Alert {
@@ -698,6 +714,7 @@ mod tests {
             suspended,
             last_t: Some(100.0),
             refused: refused.map(str::to_string),
+            member_orders: (8..28).collect(),
         }
     }
 

@@ -1519,7 +1519,7 @@ impl Decision {
         }
         self.check_vehicle_task(&req)?;
         let proposal = proposal(&req)?;
-        self.prefetch(&proposal.task, &proposal.uids).await;
+        self.prefetch_grouped(&proposal.task, &proposal.uids, proposal.group.as_ref()).await;
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
@@ -1556,7 +1556,7 @@ impl Decision {
         }
         self.check_vehicle_task(&req)?;
         let proposal = proposal(&req)?;
-        self.prefetch(&proposal.task, &proposal.uids).await;
+        self.prefetch_grouped(&proposal.task, &proposal.uids, proposal.group.as_ref()).await;
         let (task, uids) = (proposal.task.clone(), proposal.uids.clone());
         let preview = {
             let guard = self.lock();
@@ -1827,13 +1827,13 @@ impl Decision {
         step: Option<crate::auth::StepUpChecked>,
     ) -> Result<Outcome, DecisionError> {
         let id = IntentId(id);
-        let (task, uids) = {
+        let (task, uids, group) = {
             let core = self.lock();
             let i = core
                 .engine
                 .intent(id)
                 .ok_or_else(|| DecisionError::new(404, format!("unknown intent {id}")))?;
-            (i.spec().task.clone(), i.spec().uids.clone())
+            (i.spec().task.clone(), i.spec().uids.clone(), i.spec().group().cloned())
         };
         if matches!(task, Task::Engage { .. }) {
             // the plan this signature would be on: the frozen one, or the token's
@@ -1852,7 +1852,7 @@ impl Decision {
             };
             self.prefetch_engage(&task, &uids, plan).await;
         } else {
-            self.prefetch(&task, &uids).await;
+            self.prefetch_grouped(&task, &uids, group.as_ref()).await;
         }
         let out = {
             let mut guard = self.lock_with_space(&task).await;
@@ -2364,6 +2364,12 @@ impl Decision {
     /// land (the engine's oracle then answers from the cache); rules 17: and the points along
     /// each leg of their routes, from where they are now.
     async fn prefetch(&self, task: &Task, uids: &[DUid]) {
+        self.prefetch_grouped(task, uids, None).await
+    }
+
+    /// [`Self::prefetch`] of an order with its group spec (rules 34: its spread, layer base and
+    /// lanes lay its members out; none: the kind's defaults).
+    async fn prefetch_grouped(&self, task: &Task, uids: &[DUid], group: Option<&murmur_decide::group::GroupSpec>) {
         // nothing to fetch with no tidewater (the baked grid answers under the lock as it is)
         if !self.terrain.fetches() {
             return;
@@ -2378,7 +2384,7 @@ impl Decision {
         let world = self.snapshot();
         // rules 34: a group order's terrain is its members' shares' (each member's own way to its
         // slot, ring or lane), laid out on the world now as its check will lay it out
-        if let Some(specs) = self.group_member_specs(task, uids, &world) {
+        if let Some(specs) = self.group_member_specs(task, uids, &world, group) {
             for ms in specs {
                 self.prefetch_in(&world, &ms.task, &ms.uids).await;
             }

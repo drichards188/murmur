@@ -4,6 +4,7 @@ import { getOperator, type Check, type PolicyDecision } from './decisions'
 import type { OrderLink, OrderShape, PlannedRoutes, VehicleAt } from './coverage'
 import type { Vehicle } from './types'
 import type { TaskRequest } from './useBridge'
+import type { GroupPreview } from './groupOrders'
 
 /** `POST /api/intents/preview`: the checks and the policy now, nothing created or logged, the
  *  legs the planner routes (rules 22, `routes`) and the predicted link along each vehicle's route
@@ -16,6 +17,10 @@ export interface DryRunAnswer {
   submission_authorizes?: boolean
   routes?: PlannedRoutes
   link_coverage?: OrderLink
+  /** the vehicles it names (bridge uids as strings) */
+  uids?: string[]
+  /** rules 34, a group order: its spec, layout and each member's task */
+  group?: GroupPreview
 }
 
 export interface DryRunState {

@@ -7,6 +7,7 @@
 // (surfaceLayers.ts), over the scene so neither the terrain nor the seabed hides it.
 import { PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { STATE_RGB, type GroundStation, type LinkRouteDrawing, type LinkState, type RouteMark } from './coverage'
+import { layerColor, type SlotMark } from './groupOrders'
 import { dashes, lift, type SurfaceScale } from './surfaceLayers'
 import type { LngLat } from './types'
 
@@ -73,7 +74,69 @@ export function buildStationLayers(stations: GroundStation[]) {
   ]
 }
 
-export function buildLinkRouteLayers(d: LinkRouteDrawing, { surfaceZ, mPerPx }: SurfaceScale) {
+/** Rules 34: a group order's layout from the dry run: each member's slot a ring coloured by its
+ *  layer (filled for a member sent, open for one waiting), a thin dashed line from where the member
+ *  is to its slot (through its own route's points, a block's transit), and, for a small group, its
+ *  name and altitude. On the surface, over the scene,
+ *  as the rest of the drafted order. */
+function slotLayers(slots: SlotMark[], { surfaceZ, mPerPx }: SurfaceScale) {
+  if (!slots.length) return []
+  const at = (p: LngLat): XYZ => [p[0], p[1], surfaceZ(p)]
+  const ways: Line[] = []
+  for (const s of slots) {
+    if (!s.from) continue
+    for (const p of dashes(lift([s.from, ...s.via, s.at], surfaceZ), 4 * mPerPx, 4 * mPerPx)) ways.push({ path: p, color: [...layerColor(s.layer).slice(0, 3), 150] as RGBA, width: 1.5 })
+  }
+  const pts = slots.map((s) => ({ s, at: at(s.at) }))
+  const labelled = pts.filter((p) => p.s.label)
+  return [
+    new PathLayer<Line>({
+      id: 'group-slot-ways',
+      data: ways,
+      getPath: (l) => l.path,
+      getColor: (l) => l.color,
+      getWidth: (l) => l.width,
+      widthUnits: 'pixels',
+      parameters: onTop,
+    }),
+    new ScatterplotLayer<{ s: SlotMark; at: XYZ }>({
+      id: 'group-slots',
+      data: pts,
+      getPosition: (p) => p.at,
+      getRadius: 6,
+      radiusUnits: 'pixels',
+      billboard: true,
+      stroked: true,
+      filled: true,
+      getFillColor: (p) => (p.s.class === 'sent' ? layerColor(p.s.layer) : DARK),
+      getLineColor: (p) => (p.s.class === 'sent' ? DARK : layerColor(p.s.layer)),
+      getLineWidth: 2,
+      lineWidthUnits: 'pixels',
+      parameters: onTop,
+    }),
+    new TextLayer<{ s: SlotMark; at: XYZ }>({
+      id: 'group-slot-labels',
+      data: labelled,
+      getPosition: (p) => p.at,
+      getText: (p) => p.s.label,
+      getSize: 11,
+      getColor: WHITE,
+      getTextAnchor: 'start',
+      getAlignmentBaseline: 'center',
+      getPixelOffset: [10, 0],
+      fontFamily: FONT,
+      fontWeight: 600,
+      outlineWidth: 3,
+      outlineColor: [11, 15, 20, 255],
+      fontSettings: { sdf: true, fontSize: 48, buffer: 6 },
+      characterSet: 'auto',
+      parameters: onTop,
+    }),
+  ]
+}
+
+export function buildLinkRouteLayers(d: LinkRouteDrawing, scale: SurfaceScale) {
+  const { surfaceZ, mPerPx } = scale
   const casing: Line[] = []
   const lines: Line[] = []
   for (const l of d.lines) {
@@ -97,6 +160,7 @@ export function buildLinkRouteLayers(d: LinkRouteDrawing, { surfaceZ, mPerPx }: 
   const markFill = (m: Mark): RGBA => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? rgba('down') : WHITE)
   const markLine = (m: Mark): RGBA => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? WHITE : m.mark.kind === 'routed' ? DARK : rgba('down'))
   return [
+    ...slotLayers(d.slots ?? [], scale),
     new PathLayer<XYZ[]>({
       id: 'link-route-planned',
       data: routed,

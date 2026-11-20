@@ -69,6 +69,8 @@ function pathOf(i: Intent): LngLat[] | null {
   const p = i.params
   if (i.kind === 'orbit' && p.center) return circle(p.center, p.radius_m ?? 200, 72)
   if (i.kind === 'patrol' && p.route && p.route.length > 1) return [...p.route, p.route[0]]
+  // rules 34: a transit's route, open
+  if (i.kind === 'transit' && p.route && p.route.length > 1) return p.route
   return null
 }
 
@@ -119,6 +121,7 @@ function anchorOf(i: Intent, vehicles: Vehicle[]): { at: LngLat; uid?: number } 
   const p = i.params
   if (i.kind === 'orbit' && p.center) return { at: p.center }
   if (i.kind === 'patrol' && p.route?.length) return { at: p.route[0] }
+  if (i.kind === 'transit' && p.route?.length) return { at: p.route[p.route.length - 1] }
   const v = vehicles.find((x) => i.uids.includes(String(x.uid)))
   return v?.position ? { at: v.position, uid: v.uid } : null
 }

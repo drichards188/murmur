@@ -7794,23 +7794,7 @@ impl Engine {
                 "these decision rules take no transit (rules 34)".into(),
             )));
         }
-        // rules 34: an order of an ordinary kind to more than one vehicle is a group order, its
-        // spec as logged with the defaults filled (a tracker's track, which has no group meaning,
-        // names one vehicle)
-        let n = proposal.uids.len();
-        let kind = proposal.task.kind();
-        let grouping = if self.policy.rules.group_orders() && n > 1 && kind.targets() == crate::intent::Targets::Vehicles {
-            let g = proposal.group.clone().unwrap_or_default();
-            if let Some(why) = g.invalid(kind, n) {
-                return Err(EngineError::Proposal(ProposalError::BadParams(why)));
-            }
-            crate::group::Grouping {
-                group: Some(g.normalized(kind, n, self.policy.group().min_share)),
-                ..Default::default()
-            }
-        } else {
-            crate::group::Grouping::default()
-        };
+        let grouping = self.grouping(&proposal)?;
         let id = IntentId(self.next_intent);
         let created_t = self.now();
         let spec = IntentSpec {
@@ -8905,6 +8889,25 @@ fn summarize_failures(results: &[CheckResult]) -> String {
 }
 
 impl Engine {
+    /// Rules 34: an order of an ordinary kind to more than one vehicle is a group order, its spec
+    /// as logged with the defaults filled (a tracker's track, which has no group meaning, names
+    /// one vehicle); none under older rules or for one vehicle.
+    fn grouping(&self, proposal: &Proposal) -> Result<crate::group::Grouping, EngineError> {
+        let n = proposal.uids.len();
+        let kind = proposal.task.kind();
+        if !(self.policy.rules.group_orders() && n > 1 && kind.targets() == crate::intent::Targets::Vehicles) {
+            return Ok(crate::group::Grouping::default());
+        }
+        let g = proposal.group.clone().unwrap_or_default();
+        if let Some(why) = g.invalid(kind, n) {
+            return Err(EngineError::Proposal(ProposalError::BadParams(why)));
+        }
+        Ok(crate::group::Grouping {
+            group: Some(g.normalized(kind, n, self.policy.group().min_share)),
+            ..Default::default()
+        })
+    }
+
     /// A dry run for an operator: the checks and the policy decision a vehicle task from
     /// `operator` would get right now. Nothing is created and nothing is logged: it decides
     /// nothing, as the nomination form's dry run decides nothing. Its `would_reach` is
@@ -8927,7 +8930,15 @@ impl Engine {
                 proposal.task.kind().as_str()
             ))));
         }
+        if proposal.task.kind() == TaskKind::Transit && !self.policy.rules.group_orders() {
+            return Err(EngineError::Proposal(ProposalError::BadParams(
+                "these decision rules take no transit (rules 34)".into(),
+            )));
+        }
         let created_t = self.now();
+        // rules 34: a group order is laid out and checked member by member, as its submission
+        // would be (its members' terrain sampled along their own shares)
+        let grouping = self.grouping(&proposal)?;
         let spec = IntentSpec {
             id: IntentId(0),
             created_t,
@@ -8936,12 +8947,30 @@ impl Engine {
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
-            grouping: Default::default(),
+            grouping,
         };
-        let mut inputs = world.for_intent_with(&spec, terrain, &self.policy.rules);
+        let group = crate::group::is_group(&spec, &self.policy.rules);
+        let mut inputs = if group {
+            world.for_intent_with(&spec, &crate::terrain::NoTerrain, &self.policy.rules)
+        } else {
+            world.for_intent_with(&spec, terrain, &self.policy.rules)
+        };
         self.identify(&mut inputs);
         self.fill_engine_facts(&spec, &mut inputs);
-        let checks = rules::evaluate(&spec, &inputs, &self.policy.rules);
+        if group {
+            inputs.terrain = crate::world::TerrainInputs::NotNeeded;
+            inputs.route_plans.clear();
+            for ms in crate::group::member_specs(&spec, &inputs, &self.policy.rules) {
+                let mw = world.for_intent_plan(&ms, terrain, &self.policy.rules, None);
+                inputs.terrain.merge(mw.terrain);
+                inputs.route_plans.extend(mw.route_plans);
+            }
+        }
+        let eval = group.then(|| crate::group::evaluate(&spec, &inputs, &self.policy.rules));
+        let checks = match &eval {
+            Some(e) => e.results.clone(),
+            None => rules::evaluate(&spec, &inputs, &self.policy.rules),
+        };
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.policy));
         let would_reach = match &policy {
@@ -8950,6 +8979,13 @@ impl Engine {
             Some(d) if d.submitter_authorizes => State::Approved,
             Some(_) => State::PendingApproval,
         };
+        let group = eval.map(|e| {
+            Box::new(GroupPreview {
+                spec: spec.group().cloned().unwrap_or_default(),
+                layout: e.layout,
+                tasks: e.members.into_iter().filter_map(|(u, m)| Some((u, m.task?))).collect(),
+            })
+        });
         Ok(Preview {
             kind: spec.kind(),
             uids: spec.uids,
@@ -8959,8 +8995,20 @@ impl Engine {
             would_reach,
             space: None,
             engage: None,
+            group,
         })
     }
+}
+
+/// Rules 34: what an operator's dry run of a group order shows of it (the order form draws it):
+/// its spec as it would be logged, the layout its check made (each member's share: slot, layer,
+/// altitude, point) and each member's own task as its member order would fly it. Each member's
+/// class (sent, waiting, excluded) and why is on its failing checks; the minimum on `spec`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct GroupPreview {
+    pub spec: crate::group::GroupSpec,
+    pub layout: crate::group::Layout,
+    pub tasks: BTreeMap<Uid, Task>,
 }
 
 /// What a dry run of a proposal would decide ([`AgentPort::preview`]): the checks, the
@@ -8985,6 +9033,10 @@ pub struct Preview {
     /// Engage: the intercept and the predicted effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engage: Option<Box<engage::EngagePreview>>,
+    /// Rules 34, an operator's dry run of a group order: its layout and its members' tasks (an
+    /// agent's preview carries none yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<Box<GroupPreview>>,
 }
 
 /// What agent code is given (Phase F's MCP server holds one per agent). It can propose
@@ -9200,6 +9252,7 @@ impl AgentPort<'_> {
             would_reach,
             space: inputs.space.answer().map(|a| Box::new(a.clone())),
             engage,
+            group: None,
         })
     }
 

@@ -167,7 +167,8 @@ export interface Op {
   history: { state: OpState; t: number }[]
 }
 
-export type TaskKind = 'orbit' | 'patrol' | 'hold' | 'rtl' | 'track'
+/** rules 34: `transit`, a route flown once and held at its end by the vehicle's type */
+export type TaskKind = 'orbit' | 'patrol' | 'hold' | 'rtl' | 'track' | 'transit'
 
 export interface Tasking {
   id: number

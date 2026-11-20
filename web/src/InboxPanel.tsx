@@ -29,6 +29,7 @@ import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { alertLabel } from './swarms'
 import { causeLines, foldedInto, type SwarmAlert, unfolded } from './swarmsModel'
+import { approvalMeans, counts, foldByRule, foldLine, foldTone, headline, memberClasses } from './groupOrders'
 import type { LngLat, Vehicle } from './types'
 import { callsign } from './types'
 import './inbox.css'
@@ -125,6 +126,12 @@ function taskSummary(i: Intent, vehicles: Vehicle[]) {
       for (let k = 0; k < r.length; k++) len += distanceM(r[k], r[(k + 1) % r.length])
       return `Patrol, ${r.length} waypoint${r.length === 1 ? '' : 's'}, loop ${km(len)}`
     }
+    case 'transit': {
+      const r = p.route ?? []
+      let len = 0
+      for (let k = 1; k < r.length; k++) len += distanceM(r[k - 1], r[k])
+      return r.length > 1 ? `Transit, ${r.length} points, ${km(len)}, held at its end` : `Transit to ${r[0] ? ll(r[0]) : '?'}, held there`
+    }
     case 'track':
       return `Track ${p.target ? nameOf(vehicles, p.target) : '?'}`
     case 'rtl':
@@ -207,6 +214,83 @@ function CollectDetails({ intent: i }: { intent: Intent }) {
         </>
       )}
     </dl>
+  )
+}
+
+// ---- a group order (rules 34) --------------------------------------------------------------------
+
+/** At most this many names in one line of a group's card; the rest counted. */
+const GROUP_NAMES = 8
+
+/** Rules 34: a group order's card body (docs/SWARMS.md section 5; bd murmur-3kqi fault 12): one
+ *  card however many members, its bottom line first (how many it sends now, how many join if
+ *  heard in time, how many it leaves out, its minimum and whether it re-forms), then its checks
+ *  folded by rule with counts and each reason once, the members one click away, and what approving
+ *  does. Never one line per member per rule. */
+function GroupBody({ intent: i, vehicles }: { intent: Intent; vehicles: Vehicle[] }) {
+  const lines = memberClasses(i.uids, i.checks)
+  const c = counts(lines, i.group, i.kind)
+  const folds = foldByRule(i.checks)
+  const strength = i.checks.find((x) => x.rule === 'strength' && x.uid == null)
+  const armed = new Set(i.policy?.facts.armed ?? [])
+  const name = (u: string) => nameOf(vehicles, u)
+  const listed = (uids: string[]) =>
+    uids.length > GROUP_NAMES ? `${uids.slice(0, GROUP_NAMES).map(name).join(', ')} and ${uids.length - GROUP_NAMES} more` : uids.map(name).join(', ')
+  const left = lines.filter((l) => l.class !== 'sent')
+  return (
+    <>
+      <p className="ix-group-head">
+        <b>Group of {c.n}</b>
+        {i.group?.spread && <span className="ix-tag">{i.group.spread}</span>}
+        {i.group?.swarm && <span className="ix-tag">{i.group.swarm}</span>}
+        {armed.size > 0 && <span className="ix-tag warn">{armed.size} armed</span>}
+        <span>{headline(c, i.group, i.kind, null)}</span>
+      </p>
+      {strength && <p className={`ix-group-strength ${strength.outcome}`}>{strength.detail}</p>}
+      {left.length > 0 && (
+        <ul className="ix-group-left">
+          {left.map((l) => (
+            <li key={l.uid} className={l.class}>
+              <b>{name(l.uid)}</b> {l.class}: {l.why[0] ?? ''}
+              {l.why.length > 1 && <span className="muted"> (+{l.why.length - 1})</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <details className="ix-group-members" onClick={(e) => e.stopPropagation()}>
+        <summary>
+          {c.n} members ({c.sent} sent{c.waiting ? `, ${c.waiting} waiting` : ''}
+          {c.excluded ? `, ${c.excluded} left out` : ''})
+        </summary>
+        <p className="ix-group-names">{i.uids.map(name).join(', ')}</p>
+      </details>
+      <section className="ix-checks">
+        <span className="ix-label">Checks, by rule</span>
+        <ChecksFold
+          checks={i.checks}
+          line={{
+            text: `${folds.length} rules over ${c.n} members: ${folds.filter((f) => foldTone(f) !== 'ok').map((f) => f.rule).join(', ') || 'every one passes'}`,
+            tone: folds.some((f) => foldTone(f) === 'bad') ? 'bad' : folds.some((f) => foldTone(f) === 'warn') ? 'warn' : 'ok',
+          }}
+        >
+          {folds.map((f) => (
+            <div key={f.rule} className={`ix-check ${foldTone(f) === 'ok' ? 'pass' : foldTone(f) === 'bad' ? 'fail' : 'unverified'}`}>
+              <span className="ix-mark">{foldTone(f) === 'ok' ? 'PASS' : foldTone(f) === 'bad' ? 'FAIL' : 'SEE'}</span>
+              <span className="ix-text">
+                <span className="ix-rule">{f.rule}</span>
+                <span className="ix-detail">{foldLine(f)}</span>
+                {f.reasons.map((r, k) => (
+                  <span key={k} className="ix-detail">
+                    {r.class ?? r.outcome.replace('_', ' ')} ×{r.uids.length}: {r.example} ({listed(r.uids)})
+                  </span>
+                ))}
+              </span>
+            </div>
+          ))}
+        </ChecksFold>
+      </section>
+      <p className="ix-group-means">{approvalMeans(c, i.group, i.kind)}</p>
+    </>
   )
 }
 
@@ -316,7 +400,8 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
 
       <div className="ix-task">{taskSummary(i, vehicles)}</div>
       {i.kind === 'collect' && <CollectDetails intent={i} />}
-      <ul className="ix-vehicles">
+      {i.group && <GroupBody intent={i} vehicles={vehicles} />}
+      {!i.group && <ul className="ix-vehicles">
         {i.uids.map((u) => {
           const v = vehicleOf(vehicles, u)
           const age = v?.link.since_last_ms
@@ -336,7 +421,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
             </li>
           )
         })}
-      </ul>
+      </ul>}
 
       <section className="ix-why">
         <span className="ix-label">Why this needs a human</span>
@@ -359,7 +444,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
         )}
       </section>
 
-      <section className="ix-checks">
+      {!i.group && <section className="ix-checks">
         <span className="ix-label">Checks</span>
         <ChecksFold checks={i.checks}>
           {checks.map((c, k) => (
@@ -375,7 +460,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
             </div>
           ))}
         </ChecksFold>
-      </section>
+      </section>}
 
       {selfApproval && (
         <p className="ix-self">
