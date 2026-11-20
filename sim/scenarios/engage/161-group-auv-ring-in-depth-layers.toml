@@ -1,0 +1,90 @@
+# Rules 34 (docs/SWARMS.md section 3.3): an AUV ring laid in depth layers, and one too deep for
+# the seabed. Under rules 33 the task layer stacked subs a step deeper each after the checks, and
+# no check read the depth (a hundred REMUS to 238 m, twice the channel). Six REMUS on a 40 m ring
+# under the bridge are 40 m apart, under their 50 m lateral minimum, so neighbours go in two
+# layers 5 m apart. In water 52 m deep a ring from 30 m (layers 30 and 35 m) clears the seabed by
+# its 10 m margin and goes out; one from 40 m (40 and 45 m) leaves the deeper layer 7 m above it:
+# the depth rule excludes those three, three of six are under the minimum of five, and the group
+# is refused.
+title = "An AUV ring in depth layers, and one too deep for the seabed"
+invariant = "depth"
+attack = "a sub's layer laid under the seabed"
+expect = "rejected"
+expect_rule = "strength"
+water_depth_m = 52
+end_s = 5
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "remus-1"
+platform = "remus"
+at = [-122.4800, 37.8180]
+alt_m = -5
+
+[[vehicle]]
+uid = "remus-2"
+platform = "remus"
+at = [-122.4796, 37.8180]
+alt_m = -5
+
+[[vehicle]]
+uid = "remus-3"
+platform = "remus"
+at = [-122.4792, 37.8180]
+alt_m = -5
+
+[[vehicle]]
+uid = "remus-4"
+platform = "remus"
+at = [-122.4788, 37.8180]
+alt_m = -5
+
+[[vehicle]]
+uid = "remus-5"
+platform = "remus"
+at = [-122.4784, 37.8180]
+alt_m = -5
+
+[[vehicle]]
+uid = "remus-6"
+platform = "remus"
+at = [-122.4780, 37.8180]
+alt_m = -5
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["remus-1", "remus-2", "remus-3", "remus-4", "remus-5", "remus-6"]
+center = [-122.4783, 37.8199]
+radius_m = 40
+group = { alt_m = 30 }
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+excluded = []
+detail = "6 subsurface 42 m apart in 2 layers 5 m apart"
+detail_rule = "separation"
+
+[[step]]
+at_s = 3
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["remus-1", "remus-2", "remus-3", "remus-4", "remus-5", "remus-6"]
+center = [-122.4783, 37.8199]
+radius_m = 40
+group = { alt_m = 40 }
+
+[[step]]
+at_s = 4
+action = "expect"
+task_state = "rejected"
+detail = "the seabed is 52 m down: 45 m deep leaves 7 m above it (it needs 10 m)"
+detail_rule = "depth"

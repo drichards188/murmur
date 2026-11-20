@@ -199,6 +199,21 @@ impl QueueConfig {
         (by_kind.max(now), false)
     }
 
+    /// Rules 34: [`QueueConfig::bound`] for `spec`: a member order waits as any order does, but
+    /// no longer than its group's `wait_s` from `now` (when the group sets one), and never goes to
+    /// the inbox on its own: at its deadline it expires (its group counts it not sent).
+    pub fn bound_for(&self, spec: &IntentSpec, wait_s: Option<u32>, by_kind: Time, basis: &Basis, now: Time) -> (Time, bool) {
+        let (t, inbox) = self.bound(by_kind, basis, now);
+        if spec.parent().is_none() {
+            return (t, inbox);
+        }
+        let t = match wait_s {
+            Some(w) => t.min(now.plus_ms(i64::from(w) * 1000)).max(now),
+            None => t,
+        };
+        (t, false)
+    }
+
     /// How long an op that lost its link after the vehicle started the order may wait for it.
     pub fn in_flight_patience_s(&self, kind: TaskKind) -> u32 {
         self.expire_s(kind).min(IN_FLIGHT_PATIENCE_S)
@@ -576,6 +591,10 @@ pub fn assess(
     now: &WorldSnapshot,
 ) -> Recheck {
     let basis = since.basis;
+    // rules 34: a member order, under its group's approval
+    if spec.parent().is_some() {
+        return assess_member(basis, results, passed, decision, now);
+    }
     let mut changes: Vec<String> = Vec::new();
     // rules 29: the previous watch's order (no basis of checks, no policy decision of this
     // run): the checks on the world now decide. A failing one voids it, saying why; one nobody
@@ -679,6 +698,68 @@ pub fn assess(
         }
     }
     Recheck { verdict, changes }
+}
+
+/// Rules 34: a member order's re-check (docs/SWARMS.md section 2.2). Its group's approval covers
+/// it only as the group's check saw it: it goes when its own checks pass on the world now, no
+/// engagement holds its vehicle, and its own facts do not raise the tier its group went out on
+/// (armed under a group approved unarmed, its way leaving the approved area where the group's did
+/// not, a check nobody could verify, a person's tier under the policy's auto). Otherwise it is
+/// voided, saying why, and its group counts it: a member order never goes to the inbox on its own.
+fn assess_member(basis: &Basis, results: &[CheckResult], passed: bool, decision: Option<&PolicyDecision>, now: &WorldSnapshot) -> Recheck {
+    let mut changes: Vec<String> = Vec::new();
+    for r in results.iter().filter(|r| r.outcome == Outcome::Fail) {
+        let who = r.uid.as_ref().map(|u| format!(" {u}")).unwrap_or_default();
+        changes.push(format!("{}{who} fails: {}", r.rule.as_str(), r.detail));
+    }
+    let verdict = if !passed {
+        Verdict::Void
+    } else if let Some((u, e)) = now.engaged.iter().next() {
+        changes.push(format!("engagement {e} now in play on vehicle {u}: a member order never stops an engagement"));
+        Verdict::Void
+    } else {
+        match (decision, basis.policy.as_ref()) {
+            (Some(d), Some(g)) => {
+                let raised = raised(d, g);
+                if raised.is_empty() {
+                    Verdict::Dispatch
+                } else {
+                    changes.extend(raised);
+                    Verdict::Void
+                }
+            }
+            _ => {
+                changes.push("no policy decision to judge it against its group's".into());
+                Verdict::Void
+            }
+        }
+    };
+    Recheck { verdict, changes }
+}
+
+/// Rules 34: what a member's own policy decision adds to its group's, which its group's approval
+/// does not cover.
+fn raised(member: &PolicyDecision, group: &PolicyDecision) -> Vec<String> {
+    let mut v = Vec::new();
+    if !member.facts.armed.is_empty() && group.facts.armed.is_empty() {
+        v.push("would raise the tier: armed, under a group order approved unarmed".to_string());
+    }
+    if member.facts.leaves_approved_area && !group.facts.leaves_approved_area {
+        v.push(format!(
+            "would raise the tier: its way leaves the approved area ({}), its group's did not",
+            member.facts.area_detail
+        ));
+    }
+    if !member.facts.unverified.is_empty() && group.facts.unverified.is_empty() {
+        v.push(format!("would raise the tier: a check nobody could verify ({})", member.facts.unverified.join("; ")));
+    }
+    if v.is_empty() && member.tier == Tier::Human && group.tier == Tier::Auto {
+        v.push(format!(
+            "would raise the tier: its own facts route it to a person ({}), its group went out on the policy's {}",
+            member.rule, group.rule
+        ));
+    }
+    v
 }
 
 fn outcome_name(o: Outcome) -> &'static str {

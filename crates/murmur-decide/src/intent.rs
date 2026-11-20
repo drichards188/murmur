@@ -921,6 +921,13 @@ pub struct Intent {
     /// Rules 22, an identify order: the identity its track had at its last passing check.
     #[serde(skip)]
     identity_before: Option<String>,
+    /// Rules 34, a group order: its last passing check (its layout, each member's class), what it
+    /// is dispatched with.
+    #[serde(skip)]
+    group_eval: Option<Box<crate::group::GroupEval>>,
+    /// Rules 34, a group order once dispatched: its member orders, by uid.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    members: BTreeMap<Uid, IntentId>,
 }
 
 /// An intent carried over from the previous run: where from, and each vehicle's last op
@@ -968,6 +975,8 @@ impl Intent {
             identify: None,
             route_plans: BTreeMap::new(),
             identity_before: None,
+            group_eval: None,
+            members: BTreeMap::new(),
         }
     }
 
@@ -1120,6 +1129,24 @@ impl Intent {
 
     pub(crate) fn set_identity_before(&mut self, identity: Option<String>) {
         self.identity_before = identity;
+    }
+
+    /// Rules 34, a group order: its last passing check (layout and member classes).
+    pub fn group_eval(&self) -> Option<&crate::group::GroupEval> {
+        self.group_eval.as_deref()
+    }
+
+    pub(crate) fn set_group_eval(&mut self, eval: Option<crate::group::GroupEval>) {
+        self.group_eval = eval.map(Box::new);
+    }
+
+    /// Rules 34, a group order once dispatched: its member orders, by uid.
+    pub fn members(&self) -> &BTreeMap<Uid, IntentId> {
+        &self.members
+    }
+
+    pub(crate) fn set_members(&mut self, members: BTreeMap<Uid, IntentId>) {
+        self.members = members;
     }
 
     /// Rules 22: the routed legs its last passing check planned.

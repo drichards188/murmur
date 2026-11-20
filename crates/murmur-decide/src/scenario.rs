@@ -177,6 +177,10 @@ pub struct Scenario {
     /// everything else in the runner's coverage is water 20 m deep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub land: Option<Vec<Vec<[f64; 2]>>>,
+    /// Rules 34: how deep the runner's water is, m (20 when absent): a sub's layer must clear it
+    /// by its band's margin (the `depth` rule).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_depth_m: Option<f64>,
     /// Rules 22: the routed legs the decisions must have planned, in order (substrings of each
     /// passing domain or geofence check's detail, e.g. `"routed around land at"`, or of a failing
     /// one's, e.g. `"no route around"`).
@@ -668,6 +672,18 @@ pub enum Action {
         track: Option<String>,
         #[serde(default)]
         standoff_m: Option<f64>,
+        /// Rules 34: a group order's spec (its spread, minimum, layer base, wait); from rules 34
+        /// an order to more than one vehicle is a group order whether it gives one or not.
+        #[serde(default)]
+        group: Option<crate::group::GroupSpec>,
+    },
+    /// Rules 34: the newest order dispatched to vehicle `uid` ends, as the bridge reports its
+    /// tasking's end: done (an orbit on station), or failed saying why (`failed`: its failsafe
+    /// took it home on the way, say).
+    Finish {
+        uid: String,
+        #[serde(default)]
+        failed: Option<String>,
     },
     /// The loop stalls: no engagement step for `seconds` (a bridge that stopped holding the
     /// picture).
@@ -871,6 +887,27 @@ pub enum Action {
         /// passed or failed.
         #[serde(default)]
         identify: Option<String>,
+        /// Rules 34, the last `task` step's group order: the members its last check sent, kept
+        /// waiting and left out (each list in full, uid order).
+        #[serde(default)]
+        sent: Option<Vec<String>>,
+        #[serde(default)]
+        waiting: Option<Vec<String>>,
+        #[serde(default)]
+        excluded: Option<Vec<String>>,
+        /// Rules 34: the state of each member's member order under the last `task` step's group
+        /// order, by uid (`none`: it has none).
+        #[serde(default)]
+        member_states: Option<BTreeMap<String, String>>,
+        /// Rules 34: a substring of a warning on the last `task` step's checks.
+        #[serde(default)]
+        warning: Option<String>,
+        /// Rules 34: a substring of the last `task` step's checks of this rule (`rule_detail`),
+        /// passed or failed.
+        #[serde(default)]
+        detail: Option<String>,
+        #[serde(default)]
+        detail_rule: Option<String>,
     },
 }
 
@@ -1580,13 +1617,16 @@ pub fn run(
         Box::new(log.clone()),
     )
     .map_err(|e| setup(e.to_string()))?;
-    let terrain = match &sc.land {
+    let mut terrain = match &sc.land {
         Some(land) => PolygonTerrain {
             land: land.iter().map(|r| crate::geo::Polygon::new(r.iter().map(|p| LonLat::new(p[0], p[1])).collect())).collect(),
             ..terrain()
         },
         None => terrain(),
     };
+    if let Some(d) = sc.water_depth_m {
+        terrain.water_depth_m = d;
+    }
 
     let mut sessions: BTreeMap<String, OperatorSession> = BTreeMap::new();
     for o in &sc.operators {
@@ -3313,6 +3353,7 @@ fn act(
             route,
             track,
             standoff_m,
+            group,
         } => {
             let t = match (task.as_str(), center, route) {
                 ("identify", _, _) => match track {
@@ -3337,7 +3378,8 @@ fn act(
                     ));
                 }
             };
-            let proposal = Proposal::new(t, uids.iter().map(Uid::new).collect());
+            let mut proposal = Proposal::new(t, uids.iter().map(Uid::new).collect());
+            proposal.group = group.clone();
             let w = world(tracks, vehicles);
             let out = match (by, agent) {
                 (Some(by), _) => match session(by) {
@@ -3359,6 +3401,24 @@ fn act(
             match out {
                 Ok(id) => extra.last_task = Some(id),
                 Err(e) => refusals.push(e.to_string()),
+            }
+        }
+        Action::Finish { uid, failed } => {
+            let u = Uid::new(uid);
+            let newest = engine
+                .intents()
+                .filter(|i| i.state() == State::Dispatched && i.spec().uids == [u.clone()])
+                .map(|i| i.id())
+                .max();
+            let Some(id) = newest else {
+                return failures.push(format!("t={s}: finish: no order under way on {uid}"));
+            };
+            let outcome = match failed {
+                Some(detail) => TaskOutcome::Failed { detail: detail.clone() },
+                None => TaskOutcome::Done,
+            };
+            if let Err(e) = engine.finish(id, outcome) {
+                failures.push(format!("t={s}: finish {id}: {e}"));
             }
         }
         Action::Stall { seconds } => extra.stall_until = s + seconds,
@@ -3803,7 +3863,72 @@ fn act(
             task_reason,
             weapon,
             identify,
+            sent,
+            waiting,
+            excluded,
+            member_states,
+            warning,
+            detail,
+            detail_rule,
         } => {
+            // rules 34: the last task's group order, its members and their orders
+            let task_intent = extra.last_task.and_then(|id| engine.intent(id));
+            for (want, class, name) in [
+                (sent, None, "sent"),
+                (waiting, Some(crate::group::MemberClass::Waiting), "waiting"),
+                (excluded, Some(crate::group::MemberClass::Excluded), "excluded"),
+            ] {
+                let Some(want) = want else { continue };
+                let got: Vec<String> = task_intent
+                    .map(|i| {
+                        i.spec()
+                            .uids
+                            .iter()
+                            .filter(|u| {
+                                let c = i.checks().iter().filter(|r| r.uid.as_ref() == Some(*u)).filter_map(|r| r.class).max();
+                                c == class
+                            })
+                            .map(ToString::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if &got != want {
+                    failures.push(format!("t={s}: expected the group's {name} members {want:?}, got {got:?}"));
+                }
+            }
+            if let (Some(want), Some(i)) = (member_states, task_intent) {
+                for (uid, state) in want {
+                    let got = engine
+                        .intents()
+                        .filter(|m| m.spec().parent() == Some(i.id()) && m.spec().uids == [Uid::new(uid)])
+                        .map(|m| state_str(m.state()))
+                        .last()
+                        .unwrap_or_else(|| "none".into());
+                    if &got != state {
+                        failures.push(format!("t={s}: expected {uid}'s member order {state}, got {got}"));
+                    }
+                }
+            }
+            if let Some(want) = warning {
+                let got: Vec<String> = task_intent.map(|i| i.checks().iter().filter_map(|c| c.warning.clone()).collect()).unwrap_or_default();
+                if !got.iter().any(|w| w.contains(want.as_str())) {
+                    failures.push(format!("t={s}: expected a warning saying {want:?}, got {got:?}"));
+                }
+            }
+            if let Some(want) = detail {
+                let got: Vec<String> = task_intent
+                    .map(|i| {
+                        i.checks()
+                            .iter()
+                            .filter(|c| detail_rule.as_deref().is_none_or(|r| c.rule.as_str() == r))
+                            .map(|c| c.detail.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !got.iter().any(|d| d.contains(want.as_str())) {
+                    failures.push(format!("t={s}: expected a {} check saying {want:?}, got {got:?}", detail_rule.as_deref().unwrap_or("")));
+                }
+            }
             if let Some(want) = identify {
                 let details: Vec<String> = extra
                     .last_task
@@ -4604,6 +4729,22 @@ fn dispatch_approved(
         .map(|i| (i.id(), matches!(i.spec().task, Task::Engage { .. }), i.spec().uids.clone()))
         .collect();
     for (id, is_engage, uids) in ready {
+        // rules 34: a group order goes out as its member orders, each dispatched or queued on its
+        // own; a member an engagement holds was left out, so none stops one
+        if engine.intent(id).is_some_and(|i| crate::group::is_group(i.spec(), &engine.policy().rules)) {
+            match engine.dispatch_group(id, world) {
+                Ok(routed) => {
+                    for (_, r) in routed {
+                        if let Routed::Dispatched(Order::Vehicles(o)) = r {
+                            report_started(engine, &o, failures, s);
+                            fly(vehicles, &o);
+                        }
+                    }
+                }
+                Err(e) => failures.push(format!("t={s}: dispatch group {id}: {e}")),
+            }
+            continue;
+        }
         if !is_engage {
             // another order on these vehicles: as on the bridge, dispatched if the link
             // reaches them, else queued; either way it stands and supersedes any engagement
@@ -4810,6 +4951,114 @@ fn follow_queue(
 
 // ---- log attacks ------------------------------------------------------------------------
 
+/// Rules 34: the attacks on a group order (None for another `kind`): `move_member_slot` (the first
+/// member order's altitude moved 30 m after the layout, in its order and its dispatch alike),
+/// `member_without_group` (the group order's approval cut, so its member orders are created and
+/// dispatched while it waits for one), `admit_raised_member` (a member order added for a member the
+/// group's check left out, an armed platform an engagement holds, under the group's approval).
+fn forge_group(events: &mut Vec<crate::audit::Event>, kind: &str) -> Option<Result<(), String>> {
+    if !matches!(kind, "move_member_slot" | "member_without_group" | "admit_raised_member") {
+        return None;
+    }
+    let group: Option<IntentId> = events.iter().find_map(|e| match &e.body {
+        EventBody::IntentCreated { intent, .. } if intent.group().is_some() => Some(intent.id),
+        _ => None,
+    });
+    let Some(group) = group else {
+        return Some(Err("no group order in the log".into()));
+    };
+    let first_member: Option<IntentId> = events.iter().find_map(|e| match &e.body {
+        EventBody::IntentCreated { intent, .. } if intent.parent() == Some(group) => Some(intent.id),
+        _ => None,
+    });
+    let Some(member) = first_member else {
+        return Some(Err("no member order in the log".into()));
+    };
+    match kind {
+        "move_member_slot" => {
+            let mut done = false;
+            for e in events.iter_mut() {
+                match &mut e.body {
+                    EventBody::IntentCreated { intent, .. } if intent.id == member => {
+                        if let Some(sh) = intent.grouping.share.as_mut() {
+                            sh.alt_m = Some(sh.alt_m.unwrap_or(0.0) + 30.0);
+                            done = true;
+                        }
+                    }
+                    EventBody::IntentDispatched { intent, share: Some(sh), .. } if *intent == member => {
+                        sh.alt_m = Some(sh.alt_m.unwrap_or(0.0) + 30.0);
+                    }
+                    _ => {}
+                }
+            }
+            Some(if done { Ok(()) } else { Err("the member order has no share".into()) })
+        }
+        "member_without_group" => {
+            let before = events.len();
+            events.retain(|e| {
+                !matches!(&e.body,
+                    EventBody::ApprovalAtSubmission { intent, .. } | EventBody::ApprovalGranted { intent, .. } if *intent == group)
+                    && !matches!(&e.body,
+                        EventBody::IntentState { intent, to: State::Approved | State::AutoApproved, .. } if *intent == group)
+            });
+            Some(if events.len() < before { Ok(()) } else { Err("the group order's approval is not in the log".into()) })
+        }
+        _ => {
+            // the member the group's check left out: the first uid of the group's selection with no
+            // member order
+            let (selection, members): (Vec<Uid>, BTreeMap<Uid, IntentId>) = (
+                events
+                    .iter()
+                    .find_map(|e| match &e.body {
+                        EventBody::IntentCreated { intent, .. } if intent.id == group => Some(intent.uids.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                events
+                    .iter()
+                    .find_map(|e| match &e.body {
+                        EventBody::GroupDispatched { intent, members } if *intent == group => Some(members.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+            );
+            let Some(left_out) = selection.iter().find(|u| !members.contains_key(*u)).cloned() else {
+                return Some(Err("every member of the group has a member order".into()));
+            };
+            let Some(at) = events.iter().position(|e| matches!(&e.body, EventBody::GroupDispatched { intent, .. } if *intent == group)) else {
+                return Some(Err("the group order was not dispatched".into()));
+            };
+            let Some(template) = events.iter().find_map(|e| match &e.body {
+                EventBody::IntentCreated { intent, .. } if intent.id == member => Some(intent.clone()),
+                _ => None,
+            }) else {
+                return Some(Err("no member order to copy".into()));
+            };
+            let forged = IntentId(9_999);
+            let mut spec = template;
+            spec.id = forged;
+            spec.uids = vec![left_out.clone()];
+            let base = events[at].clone();
+            let mut created = base.clone();
+            created.body = EventBody::IntentCreated { intent: spec, session: None };
+            let mut under = base.clone();
+            under.body = EventBody::IntentState {
+                intent: forged,
+                transition: crate::intent::Transition::Under,
+                from: State::Proposed,
+                to: State::Approved,
+                reason: format!("approved under group order {group}"),
+            };
+            if let EventBody::GroupDispatched { members, .. } = &mut events[at].body {
+                members.insert(left_out, forged);
+            }
+            events.insert(at, under);
+            events.insert(at, created);
+            Some(Ok(()))
+        }
+    }
+}
+
 /// Rules 16: every decision's inputs an event logs.
 /// Rules 30: the attacks on a confirmed loss (none for another `kind`): `lost_by_agent` (a
 /// confirmation credited to an agent, under the confirming operator's session), `hide_loss_revoked`
@@ -4998,6 +5247,10 @@ pub fn tamper(text: &str, kind: &str) -> Result<Tampered, String> {
 
 fn forge(text: &str, kind: &str) -> Result<String, String> {
     let mut events = parse_log(text).map_err(|e| format!("log: {e}"))?;
+    // rules 34: a group order's members forged (no engagement needed)
+    if let Some(r) = forge_group(&mut events, kind) {
+        return r.and_then(|()| rechained(&mut events));
+    }
     // rules 27: a lay order's record forged (no engagement needed)
     if kind == "move_mine" {
         // the first mine's place recorded 40 m east of where the order's line puts it

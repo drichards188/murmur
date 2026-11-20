@@ -3214,8 +3214,12 @@ impl Engine {
             return Err(EngineError::ChecksFailedAtApproval(id));
         }
         // dispatching it stops the engagements in play on its vehicles: only if the approver
-        // says so
-        let mut supersedes: Vec<IntentId> = inputs.engaged.values().copied().collect();
+        // says so (rules 34: a group order stops none: a member an engagement holds is left out)
+        let mut supersedes: Vec<IntentId> = if crate::group::is_group(&spec, &self.policy.rules) {
+            Vec::new()
+        } else {
+            inputs.engaged.values().copied().collect()
+        };
         supersedes.sort();
         supersedes.dedup();
         if !supersedes.is_empty() && !acknowledge {
@@ -5485,6 +5489,24 @@ impl Engine {
         self.policy.rules.rules_version >= 5 && self.policy.queue().queues(spec.kind())
     }
 
+    /// Rules 34: a group order goes out only as its member orders ([`Engine::dispatch_group`]).
+    fn refuse_group(&self, id: IntentId) -> Result<(), EngineError> {
+        if crate::group::is_group(self.get(id)?.spec(), &self.policy.rules) {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "a group order goes out as its member orders (dispatch_group)".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Rules 34: how long a member order of a group may wait in the queue, s (its group's
+    /// `wait_s`; none: the queue's own wait).
+    fn member_wait(&self, spec: &IntentSpec) -> Option<u32> {
+        let g = self.intents.get(&spec.parent()?)?;
+        g.spec().group()?.wait_s
+    }
+
     /// A queued intent leaves the queue only through [`Engine::dequeue`] (its re-check).
     fn refuse_queued(&self, id: IntentId) -> Result<(), EngineError> {
         if self.get(id)?.state() == State::Queued {
@@ -5503,6 +5525,7 @@ impl Engine {
     /// [`Engine::dispatch`] or [`Engine::dispatch_or_queue`] (the link's reach is logged with
     /// it), and a queued intent through [`Engine::dequeue`]: refused here.
     pub fn dispatch_order(&mut self, id: IntentId) -> Result<Order, EngineError> {
+        self.refuse_group(id)?;
         let spec = self.get(id)?.spec().clone();
         if self.reach_needed(&spec) {
             return Err(EngineError::NotDispatchable {
@@ -5629,6 +5652,94 @@ impl Engine {
         Ok(order)
     }
 
+    /// Rules 34 ([`crate::rules::GROUP_ORDER_SINCE`]): send an approved (or auto-approved) group
+    /// order out as its member orders (docs/SWARMS.md section 2.2): for each member its last
+    /// passing check counted (sent or waiting), in uid order, a one-vehicle intent of its own task
+    /// and share, its `parent` the group (`intent.created`), approved under the group's approval
+    /// (the transition `under`, its basis the group's decision); then `group.dispatched` and the
+    /// group's own dispatch; then each member order dispatched or queued on its own, as any
+    /// approved order is ([`Engine::dispatch_or_queue`]: a waiting member waits in the queue until
+    /// its link and its facts are back, then its re-check decides). A member an engagement holds
+    /// was left out by the check: a group order never stops an engagement. Returns each member
+    /// order and what became of it.
+    pub fn dispatch_group(&mut self, id: IntentId, world: &WorldSnapshot) -> Result<Vec<(IntentId, Routed)>, EngineError> {
+        let intent = self.get(id)?;
+        let spec = intent.spec().clone();
+        if !crate::group::is_group(&spec, &self.policy.rules) {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "not a group order".into(),
+            });
+        }
+        if !matches!(intent.state(), State::Approved | State::AutoApproved) {
+            let err = next_state(intent.state(), Transition::Dispatch).err().unwrap_or(IllegalTransition {
+                from: intent.state(),
+                transition: Transition::Dispatch,
+            });
+            return Err(EngineError::Illegal { id, err });
+        }
+        let Some(eval) = intent.group_eval().cloned() else {
+            return Err(EngineError::NotDispatchable {
+                id,
+                why: "no passing check laid its members out".into(),
+            });
+        };
+        let basis = intent.basis().cloned().unwrap_or_else(|| no_basis(self.now()));
+        let decision = intent.policy().cloned();
+        let who = match intent.approval() {
+            Some(a) if a.at_submission => format!("authorized at submission by {}", a.by),
+            Some(a) => format!("approved by {}", a.by),
+            None => format!("auto-approved by the policy's {} tier", decision.as_ref().map_or("", |d| d.rule.as_str())),
+        };
+        let plans = intent.route_plans().clone();
+        let mut members: BTreeMap<Uid, IntentId> = BTreeMap::new();
+        for uid in eval.counted() {
+            let Some(mut ms) = eval.member_spec(&spec, &uid) else { continue };
+            let mid = IntentId(self.next_intent);
+            ms.id = mid;
+            ms.created_t = self.now();
+            self.emit(EventBody::IntentCreated {
+                intent: ms.clone(),
+                session: None,
+            })?;
+            self.next_intent += 1;
+            let mut member = Intent::new(ms.clone());
+            // rules 22: the way its group's check planned for its share
+            if let Some(p) = plans.get(&uid) {
+                member.set_route_plans(BTreeMap::from([(uid.clone(), p.clone())]));
+            }
+            self.intents.insert(mid, member);
+            let waits = eval.members.get(&uid).and_then(|m| m.class) == Some(crate::group::MemberClass::Waiting);
+            self.transition(
+                mid,
+                Transition::Under,
+                format!(
+                    "approved under group order {id} ({who}){}",
+                    if waits { "; it waits for fresh facts" } else { "" }
+                ),
+            )?;
+            self.get_mut(mid)?.set_basis(crate::group::member_basis(&basis, decision.as_ref()));
+            members.insert(uid, mid);
+        }
+        let excluded = spec.uids.len() - members.len();
+        self.emit(EventBody::GroupDispatched {
+            intent: id,
+            members: members.clone(),
+        })?;
+        self.transition(
+            id,
+            Transition::Dispatch,
+            format!("dispatched as {} member order(s); {excluded} left out by its check", members.len()),
+        )?;
+        self.get_mut(id)?.set_members(members.clone());
+        self.get_mut(id)?.mark_dispatched();
+        let mut out = Vec::new();
+        for mid in members.values() {
+            out.push((*mid, self.dispatch_or_queue(*mid, world)?));
+        }
+        Ok(out)
+    }
+
     /// Rules 5: dispatch an approved (or auto-approved) vehicle intent if the link can carry
     /// it to every one of its vehicles now ([`queue::reach`] on `world`), else hold it in the
     /// queue (`intent.queued`, with the vehicle facts that judgement read and its deadline,
@@ -5639,6 +5750,7 @@ impl Engine {
         id: IntentId,
         world: &WorldSnapshot,
     ) -> Result<Routed, EngineError> {
+        self.refuse_group(id)?;
         let intent = self.get(id)?;
         let state = intent.state();
         if !matches!(state, State::Approved | State::AutoApproved) {
@@ -5687,7 +5799,8 @@ impl Engine {
             .basis()
             .cloned()
             .unwrap_or_else(|| no_basis(now));
-        let (expires_t, inbox) = cfg.bound(cfg.wait_end(spec.kind(), now), &basis, now);
+        // rules 34: a member order waits at most its group's wait, and never goes to the inbox
+        let (expires_t, inbox) = cfg.bound_for(&spec, self.member_wait(&spec), cfg.wait_end(spec.kind(), now), &basis, now);
         self.emit_at(
             now,
             EventBody::IntentQueued {
@@ -5973,8 +6086,9 @@ impl Engine {
         let cfg = self.policy.queue();
         let now = self.now();
         let basis = intent.basis().cloned().unwrap_or_else(|| no_basis(now));
+        let wait = self.member_wait(&spec);
         let (expires_t, inbox) = if not_running.is_empty() {
-            cfg.bound(cfg.wait_end(spec.kind(), basis.t), &basis, now)
+            cfg.bound_for(&spec, wait, cfg.wait_end(spec.kind(), basis.t), &basis, now)
         } else {
             (now, true)
         };
@@ -7017,9 +7131,41 @@ impl Engine {
         if to.is_terminal() {
             self.restores.intent_ended(id);
         }
-        self.get_mut(id)?
+        let state = self
+            .get_mut(id)?
             .apply(transition, t, reason)
-            .map_err(|err| EngineError::Illegal { id, err })
+            .map_err(|err| EngineError::Illegal { id, err })?;
+        // rules 34: a member order's end may end its group
+        if to.is_terminal()
+            && let Some(parent) = self.get(id)?.spec().parent()
+        {
+            self.settle_group(parent)?;
+        }
+        Ok(state)
+    }
+
+    /// Rules 34: a dispatched group order ends once every member order it sent has ended: done
+    /// if at least its minimum reached their shares (a member a newer order took counts neither
+    /// way, the minimum less one for each), else failed, the reason counting each end
+    /// ([`crate::group::outcome`]).
+    fn settle_group(&mut self, gid: IntentId) -> Result<(), EngineError> {
+        let Some(g) = self.intents.get(&gid) else { return Ok(()) };
+        if g.state() != State::Dispatched || g.members().is_empty() {
+            return Ok(());
+        }
+        let min = g.spec().group().map_or(1, crate::group::GroupSpec::min_members);
+        let mut ends = Vec::new();
+        for (uid, mid) in g.members() {
+            let Some(m) = self.intents.get(mid) else { return Ok(()) };
+            if !m.state().is_terminal() {
+                return Ok(());
+            }
+            let taken = self.newest_on.get(uid).is_some_and(|n| n > mid);
+            ends.push((m.state(), taken));
+        }
+        let (done, reason) = crate::group::outcome(min, &ends);
+        self.transition(gid, if done { Transition::Complete } else { Transition::Fail }, reason)?;
+        Ok(())
     }
 
     /// [`Self::transition`], returning the time the state change was logged at.
@@ -7084,13 +7230,33 @@ impl Engine {
     ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
         // rules 27: our live fields go in before the route plans read them
         let world = self.with_fields(spec, world);
-        let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
+        // rules 34: a group order's terrain and routes are its members' shares', sampled once the
+        // layout is known (below), never the group's own task's
+        let group = crate::group::is_group(spec, &self.policy.rules);
+        let mut inputs = if group {
+            world.for_intent_plan(spec, &crate::terrain::NoTerrain, &self.policy.rules, plan)
+        } else {
+            world.for_intent_plan(spec, terrain, &self.policy.rules, plan)
+        };
         self.identify(&mut inputs);
         if spec.task.is_space() {
             inputs.space = self.ask_space(&spec.task, inputs.t, phase)?;
         }
         self.fill_engine_facts(spec, &mut inputs);
-        let results = rules::evaluate(spec, &inputs, &self.policy.rules);
+        if group {
+            inputs.terrain = crate::world::TerrainInputs::NotNeeded;
+            inputs.route_plans.clear();
+            for ms in crate::group::member_specs(spec, &inputs, &self.policy.rules) {
+                let mw = world.for_intent_plan(&ms, terrain, &self.policy.rules, None);
+                inputs.terrain.merge(mw.terrain);
+                inputs.route_plans.extend(mw.route_plans);
+            }
+        }
+        let eval = group.then(|| crate::group::evaluate(spec, &inputs, &self.policy.rules));
+        let results = match &eval {
+            Some(e) => e.results.clone(),
+            None => rules::evaluate(spec, &inputs, &self.policy.rules),
+        };
         let passed = rules::passed(&results, spec.kind());
         let preview = (spec.kind() == TaskKind::Engage)
             .then(|| {
@@ -7119,11 +7285,15 @@ impl Engine {
                 results: results.clone(),
                 passed,
                 preview: preview.clone().map(Box::new),
-                layout: None,
+                layout: eval.as_ref().map(|e| Box::new(e.layout.clone())),
             },
         )?;
         let intent = self.get_mut(spec.id)?;
         intent.set_checks(results.clone());
+        // rules 34: what a group order is dispatched with: its passing check's layout and classes
+        if group {
+            intent.set_group_eval(eval.filter(|_| passed));
+        }
         if spec.task.is_space() {
             intent.set_space(inputs.space.answer().map(|a| Box::new(a.clone())));
         }
@@ -7293,6 +7463,23 @@ impl Engine {
                 "these decision rules lay no mines (rules 27)".into(),
             )));
         }
+        // rules 34: an order of an ordinary kind to more than one vehicle is a group order, its
+        // spec as logged with the defaults filled (a tracker's track, which has no group meaning,
+        // names one vehicle)
+        let n = proposal.uids.len();
+        let kind = proposal.task.kind();
+        let grouping = if self.policy.rules.group_orders() && n > 1 && kind.targets() == crate::intent::Targets::Vehicles {
+            let g = proposal.group.clone().unwrap_or_default();
+            if let Some(why) = g.invalid(kind, n) {
+                return Err(EngineError::Proposal(ProposalError::BadParams(why)));
+            }
+            crate::group::Grouping {
+                group: Some(g.normalized(kind, n, self.policy.group().min_share)),
+                ..Default::default()
+            }
+        } else {
+            crate::group::Grouping::default()
+        };
         let id = IntentId(self.next_intent);
         let created_t = self.now();
         let spec = IntentSpec {
@@ -7303,7 +7490,7 @@ impl Engine {
             uids: proposal.uids,
             constraints: proposal.constraints,
             rationale: proposal.rationale,
-            grouping: Default::default(),
+            grouping,
         };
         self.emit(EventBody::IntentCreated {
             intent: spec.clone(),

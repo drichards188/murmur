@@ -1,0 +1,95 @@
+# Rules 34 (docs/SWARMS.md section 2.2; bd murmur-4nik, murmur-3kqi fault 5): one member's
+# failsafe on the way does not fail its group. Under rules 33 one member leaving its mission's mode
+# failed the whole order although the rest reached the ring. Here five quadcopters' group orbit
+# (the minimum four) goes out as five member orders; four reach their shares and one's failsafe
+# takes it home on the way. The group ends when every member order it sent has ended: four
+# reached their shares, at the minimum, so it is done, the reason counting each end. The log is
+# then attacked: one member's altitude is moved 30 m after the layout (its order and its
+# dispatch alike), and replay, which recomputes the layout from the group's check, must catch it.
+title = "A group done at strength though one member's failsafe took it home"
+invariant = "group_order"
+attack = "a member's altitude moved after the layout (move_member_slot)"
+expect = "done"
+tamper = "move_member_slot"
+end_s = 8
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-5"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5"]
+center = [-122.4700, 37.8150]
+radius_m = 150
+
+[[step]]
+at_s = 3
+action = "finish"
+uid = "sky-1"
+
+[[step]]
+at_s = 3
+action = "finish"
+uid = "sky-2"
+
+[[step]]
+at_s = 3
+action = "finish"
+uid = "sky-3"
+
+[[step]]
+at_s = 3
+action = "finish"
+uid = "sky-4"
+
+[[step]]
+at_s = 4
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 5
+action = "finish"
+uid = "sky-5"
+failed = "left the task: its lost-link failsafe took it home (RTL)"
+
+[[step]]
+at_s = 6
+action = "expect"
+task_state = "done"
+task_reason = "done: 4 reached their shares, 1 failed; the minimum is 4"
+member_states = { "sky-1" = "done", "sky-5" = "failed" }

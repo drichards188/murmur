@@ -1182,6 +1182,25 @@ pub fn leaves_approved_area(
     )
 }
 
+/// Rules 34: whether a group order's share of any member sent or waiting leaves the approved
+/// area, and why (each member's own route, as [`leaves_approved_area`] judges one order's).
+fn group_leaves(spec: &IntentSpec, g: &crate::group::GroupEval, world: &WorldSnapshot, cfg: &RulesConfig) -> (bool, String) {
+    let mut any_path = false;
+    for uid in g.counted() {
+        let Some(ms) = g.member_spec(spec, &uid) else { continue };
+        let (leaves, why) = leaves_approved_area(&ms, world, cfg);
+        if leaves {
+            return (true, why);
+        }
+        any_path |= why != "no path";
+    }
+    if any_path {
+        (false, "inside the approved area (each member's transit, share and return)".into())
+    } else {
+        (false, "no path".into())
+    }
+}
+
 fn segment_leaves(
     seg: &Segment,
     inside: &dyn Fn(crate::geo::LonLat) -> bool,
@@ -1200,15 +1219,21 @@ fn segment_leaves(
 }
 
 pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
-    let mut d = decide_by_file(spec, world, policy);
+    // rules 34: a group order is routed on the members sent or waiting, never on one left out
+    // (which is not sent: a member an engagement holds is left out, so it never stops it)
+    let group = crate::group::is_group(spec, &policy.rules).then(|| crate::group::evaluate(spec, world, &policy.rules));
+    let counted: Option<std::collections::BTreeSet<crate::ids::Uid>> = group.as_ref().map(|g| g.counted().into_iter().collect());
+    let counts = |u: &crate::ids::Uid| counted.as_ref().is_none_or(|c| c.contains(u));
+    let mut d = decide_by_file(spec, world, policy, group.as_ref());
     // rules 27: a lay order is signed as an engagement is (a lay exists from rules 27 only)
     if !spec.kind().needs_engagement_authority() {
         // An agent's order on a vehicle with an engagement in play (pending, approved or
         // dispatched) goes to a human: a hold or an rtl would otherwise run on its own and
         // supersede, so stop, the engagement. An operator's own order is a human decision.
-        if spec.source.is_agent() && d.tier == Tier::Auto && !world.engaged.is_empty() {
-            let list: Vec<String> = world
-                .engaged
+        let engaged: BTreeMap<&crate::ids::Uid, &crate::ids::IntentId> = world.engaged.iter().filter(|(u, _)| counts(u)).collect();
+        let waiting: BTreeMap<&crate::ids::Uid, &crate::ids::IntentId> = world.waiting.iter().filter(|(u, _)| counts(u)).collect();
+        if spec.source.is_agent() && d.tier == Tier::Auto && !engaged.is_empty() {
+            let list: Vec<String> = engaged
                 .iter()
                 .map(|(u, i)| format!("{u} ({i})"))
                 .collect();
@@ -1226,10 +1251,9 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         if policy.rules.rules_version >= 5
             && spec.source.is_agent()
             && d.tier == Tier::Auto
-            && !world.waiting.is_empty()
+            && !waiting.is_empty()
         {
-            let list: Vec<String> = world
-                .waiting
+            let list: Vec<String> = waiting
                 .iter()
                 .map(|(u, i)| format!("{u} ({i})"))
                 .collect();
@@ -1272,10 +1296,14 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
 /// The fewest distinct approvers an engagement may have, whatever the policy file says.
 pub const ENGAGE_MIN_APPROVERS: u32 = 2;
 
-fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
+fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy, group: Option<&crate::group::GroupEval>) -> PolicyDecision {
+    // rules 34: a group's facts are its members' sent or waiting
+    let counted: Option<std::collections::BTreeSet<Uid>> = group.map(|g| g.counted().into_iter().collect());
+    let counts = |u: &Uid| counted.as_ref().is_none_or(|c| c.contains(u));
     let armed: Vec<Uid> = spec
         .uids
         .iter()
+        .filter(|u| counts(u))
         .filter(|u| {
             world
                 .vehicles
@@ -1285,9 +1313,21 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> 
         })
         .cloned()
         .collect();
-    let (leaves, area_detail) = leaves_approved_area(spec, world, &policy.rules);
-    // The same pure rules the engine ran on the same inputs: which checks need a human.
-    let checks = rules::evaluate(spec, world, &policy.rules);
+    let (leaves, area_detail) = match group {
+        Some(g) => group_leaves(spec, g, world, &policy.rules),
+        None => leaves_approved_area(spec, world, &policy.rules),
+    };
+    // The same pure rules the engine ran on the same inputs: which checks need a human (a
+    // group's: those of its members sent or waiting).
+    let checks: Vec<rules::CheckResult> = match group {
+        Some(g) => g
+            .results
+            .iter()
+            .filter(|r| r.class.is_none() && r.uid.as_ref().is_none_or(counts))
+            .cloned()
+            .collect(),
+        None => rules::evaluate(spec, world, &policy.rules),
+    };
     let facts = PolicyFacts {
         kind: spec.kind(),
         source: match spec.source {

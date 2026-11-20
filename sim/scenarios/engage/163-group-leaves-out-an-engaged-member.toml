@@ -1,0 +1,98 @@
+# Rules 34 (docs/SWARMS.md decision 6, section 6): a group order never stops an engagement. Under
+# rules 33 an operator's own order to a swarm with one engaging member ran at once and superseded
+# that engagement as a side effect of a click on the swarm. Here BLADE 1 is nominated against a
+# declared hostile and waits for its signers; op-1 then orders it and four quadcopters to orbit
+# together. The group's check leaves BLADE 1 out ("held by engagement"), routes the policy on the
+# four it sends (none armed), and the nomination still waits, untouched. The log is then attacked:
+# a member order for BLADE 1 is added under the group's approval, an armed platform admitted to an
+# unarmed group's approval, which replay, binding each member order to the group's check, catches.
+title = "A group order leaves out a member an engagement holds"
+invariant = "group_order"
+attack = "an armed member admitted to an unarmed group's approval (admit_raised_member)"
+expect = "pending_approval"
+tamper = "admit_raised_member"
+end_s = 6
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["blade-1", "sky-1", "sky-2", "sky-3", "sky-4"]
+center = [-122.4700, 37.8150]
+radius_m = 150
+
+[[step]]
+at_s = 3
+action = "expect"
+state = "pending_approval"
+task_state = "dispatched"
+sent = ["sky-1", "sky-2", "sky-3", "sky-4"]
+excluded = ["blade-1"]
+detail = "held by engagement"
+detail_rule = "platform_free"
+member_states = { "blade-1" = "none", "sky-1" = "dispatched" }

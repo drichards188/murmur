@@ -101,6 +101,16 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   with what blocks it), `reacquired` (`t=<s> T-0002 is T-0005 again, confirmed by op-2`),
   `reinstated` (`t=<s> T-0002 counts again: why`).
 
+- Rules 34 (being built: `min_rules = 34`; docs/SWARMS.md, bd murmur-4nik): an order to more
+  than one vehicle is a group order (its `task` step's optional `group`: `spread`, `min_members`,
+  `alt_m`, `wait_s`, `reform`, `lanes`, `lane_spacing_m`). Once approved the runner sends it out as
+  the bridge will (`Engine::dispatch_group`): its member orders, each dispatched or queued on its
+  own and flown as any order; a `finish` step ends the newest order under way on one vehicle, done
+  or failed, as the bridge reports a tasking's end, and a group ends once each member order it
+  sent has. Each type's group-order figures are on its facts (`Catalog::formed`); a file's
+  `water_depth_m` sets the runner's water (20 m) for a sub's `depth` rule. Tampers
+  `move_member_slot`, `member_without_group`, `admit_raised_member`.
+
 ## Format
 
 ```toml
@@ -340,8 +350,9 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `struck` | `uid`, `text` (optional) | rules 30: one of ours reports itself struck (`vehicle.event` struck, as the bridge logs a hit): evidence that presumes it lost once it is silent, within 30 s of its last report |
 | `confirm_lost` | `by`, `uid`, `since_s` (optional), `note` (optional) | rules 30: an operator with engagement authority confirms one of ours lost on its silence since its last report (or since `since_s`, scenario seconds: the engine refuses another), with a note when nothing presumes it lost (`node.lost`); its waiting orders are voided, its dispatched ones end, the values owed it close; without engagement authority it is refused (a scenario has no credentials: no step-up) |
 | `revoke_lost` | `by`, `uid`, `note` | rules 30: any operator revokes the loss of one of ours, saying why (`node.loss_revoked`, cause operator) |
+| `finish` | `uid`, `failed` (optional: why) | rules 34: the newest order under way on that vehicle ends, done or failed, as the bridge reports a tasking's end (its group, if it has one, ends once every member order it sent has) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m`, `damage` (rules 25: `{ mobility = true }`, `{ firepower = true }`) | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either); `damage` is a damage report of its own (never healed) |
-| `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason`, `weapon`, `identify` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state; `weapon`: of the last nomination's weapon check; `identify`: of the last `task` step's identify check, passed or failed) |
+| `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason`, `weapon`, `identify`, rules 34 `sent`, `waiting`, `excluded`, `member_states`, `warning`, `detail` with `detail_rule` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state; `weapon`: of the last nomination's weapon check; `identify`: of the last `task` step's identify check, passed or failed; rules 34, the last `task` step's group order: the uids its last check sent, kept waiting and left out, each list whole; `member_states`, each member's member order's state by uid, `none` for no order; `warning`, a substring of a warning on its checks; `detail`, of a check of `detail_rule`'s) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner
 calls `Engine::step_engagements` (hold the picture, release, observe, assess) and, from rules
@@ -520,3 +531,11 @@ logged evidence presumed lost.
 | 155-identified-below-the-bar | target_identity | rules 33: a small fast boat identified at 0.55 nominated | rejected (target_identity: below the bar, 0.6, an engagement needs identification at 0.6 or more) |
 | 156-a-stricter-bar-holds-both | target_identity | rules 33: a policy whose bar is 0.75 (policies/bar-075.toml); PUMA 1's look at 0.70, then 0.80; the boat nominated at 0.70 | rejected (target_identity: below the bar, 0.75); the identify order's naming at 0.70 says the bar of 0.75 and its end at 0.80 too |
 | 157-a-named-loosening-and-its-name-dropped | audit | rules 33: a drill's policy lowers the engagement bar to 0.5, named in `loosened` (policies/drill-bar-050.toml); a boat identified at 0.55 engaged; tamper `drop_loosened` | done (ceased): the check passes at the drill's bar, saying it; the loosening's name cut from the logged policy is caught |
+| 158-group-ring-one-member-waits | group_order | rules 34: ten X10s ordered to orbit together, SKY 10 silent a minute (its facts a minute old) | dispatched: laid out ten slots 94 m apart, SKY 10 waiting, ten of ten counted (the minimum eight); nine member orders dispatched, SKY 10's queued until it is heard, then re-checked and dispatched, never in the inbox |
+| 159-group-done-at-strength-despite-a-failsafe | group_order | rules 34: five X10s' group orbit; four reach their shares, one's failsafe takes it home on the way; tamper `move_member_slot` | done: four of five at the minimum of four, the reason counting each end; a member's altitude moved 30 m after the layout caught |
+| 160-group-below-its-minimum-refused | strength | rules 34: five X10s, two too low on battery to orbit and keep their reserve | rejected (strength): 3 of 5 can take it, 2 excluded (reserves), the minimum 4 |
+| 161-group-auv-ring-in-depth-layers | depth | rules 34: six REMUS on a 40 m ring in water 52 m deep, from 30 m, then from 40 m | the first dispatched in two layers 5 m apart (30 and 35 m); the second rejected (strength): its 45 m layer leaves 7 m above the seabed (depth), three of six under the minimum of five |
+| 162-group-ring-too-tight-for-its-band | separation | rules 34: twelve X10s on an 8 m ring at 100 m (section 8 sets it with fixed-wing stations, the transit kind a later stage's) | rejected (separation): the ring holds 6 in 3 layers (100, 110, 120 m) at least 15 m apart; 12 do not fit |
+| 163-group-leaves-out-an-engaged-member | group_order | rules 34: BLADE 1 nominated and waiting; op-1 orders it and four X10s to orbit together; tamper `admit_raised_member` | the group dispatched to the four, BLADE 1 left out (platform_free: held by its engagement), the nomination untouched (pending_approval); a member order added for BLADE 1 caught |
+| 164-group-waiting-member-that-would-raise-the-tier | group_order | rules 34: four Pumas; PUMA 4 silent, so waiting; heard again on dead reckoning; tamper `member_without_group` | dispatched: PUMA 4's member order voided at its re-check (would raise the tier: a check nobody could verify), never sent to the inbox; member orders created while their group waits for approval caught |
+| 165-group-hold-overlapping-fixed-wing-circles | group_order | rules 34: three Pumas about 100 m apart told to hold | dispatched, every member sent; the separation check warns that their loiter circles overlap at one height |

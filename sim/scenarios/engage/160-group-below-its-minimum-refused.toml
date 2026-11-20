@@ -1,0 +1,67 @@
+# Rules 34 (docs/SWARMS.md sections 4.1 and 2.2, decision 3): members that can't take the order
+# are left out, each with its reason, against a minimum the order states, and the order is
+# refused only when fewer than that can take it. Five quadcopters, two of them too low on battery
+# to orbit and keep their reserve: they are excluded (reserves), three can take it, under the
+# minimum of four, so the group is refused, its strength rule saying how many pass and why the
+# rest do not.
+title = "A group below its minimum is refused, counting why"
+invariant = "strength"
+attack = "a group order sent with too few members able to take it"
+expect = "rejected"
+expect_rule = "strength"
+end_s = 4
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+battery = 12                       # too low to orbit and keep its reserve
+
+[[vehicle]]
+uid = "sky-5"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+battery = 12                       # too low to orbit and keep its reserve
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5"]
+center = [-122.4700, 37.8150]
+radius_m = 150
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "rejected"
+sent = ["sky-1", "sky-2", "sky-3"]
+waiting = []
+excluded = ["sky-4", "sky-5"]
+detail = "3 of 5 can take it (3 sent, 2 excluded (reserves 2)); the minimum is 4"
+detail_rule = "strength"

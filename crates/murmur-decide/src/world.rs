@@ -539,6 +539,32 @@ pub struct SampleFrom {
 }
 
 impl TerrainInputs {
+    /// Rules 34: a group order's terrain, each member's own answers (its share's waypoints and
+    /// legs) put together: unavailable if any member's was, else every sample and leg once.
+    pub fn merge(&mut self, other: TerrainInputs) {
+        match (std::mem::take(self), other) {
+            (TerrainInputs::Unavailable { reason }, _) | (_, TerrainInputs::Unavailable { reason }) => {
+                *self = TerrainInputs::Unavailable { reason };
+            }
+            (TerrainInputs::Sampled { mut samples, mut along }, TerrainInputs::Sampled { samples: s2, along: a2 }) => {
+                for x in s2 {
+                    if !samples.iter().any(|y| y.lon_e7 == x.lon_e7 && y.lat_e7 == x.lat_e7) {
+                        samples.push(x);
+                    }
+                }
+                for l in a2 {
+                    if !along.iter().any(|m| m.from_e7 == l.from_e7 && m.to_e7 == l.to_e7) {
+                        along.push(l);
+                    }
+                }
+                *self = TerrainInputs::Sampled { samples, along };
+            }
+            (a @ TerrainInputs::Sampled { .. }, _) | (_, a @ TerrainInputs::Sampled { .. }) => *self = a,
+            (TerrainInputs::NotQueried, b) => *self = b,
+            (a, _) => *self = a,
+        }
+    }
+
     pub fn lookup(&self, p: LonLat) -> Option<&Surface> {
         let (lon_e7, lat_e7) = p.e7();
         match self {

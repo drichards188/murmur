@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 use crate::catalog::{AutopilotKind, Domain, PlatformFacts};
 use crate::geo::LonLat;
 use crate::ids::{IntentId, Uid};
-use crate::intent::{Task, TaskKind};
+use crate::intent::{IntentSpec, Task, TaskKind};
+use crate::rules::{CheckResult, Outcome, RuleId, RulesConfig};
+use crate::world::{VehicleFacts, WorldSnapshot};
 
 /// How a group's members share its task (docs/SWARMS.md section 3.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1618,6 +1620,397 @@ fn largest_gap(placed: &[(f64, &Member)], len: f64) -> Option<(usize, f64)> {
 /// back, but a member whose link is not healthy now keeps its slot.
 pub fn movable(on_share: &BTreeSet<Uid>, back: &BTreeSet<Uid>, unhealthy: &BTreeSet<Uid>) -> BTreeSet<Uid> {
     on_share.union(back).filter(|u| !unhealthy.contains(*u)).cloned().collect()
+}
+
+// ---- the group's check (rules 34) ----------------------------------------------------------
+
+/// How one member came out of its group's check.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberOutcome {
+    /// Sent (None), waiting or excluded.
+    pub class: Option<MemberClass>,
+    /// Its member order's task and share, when it was laid out.
+    pub task: Option<Task>,
+    pub share: Option<Share>,
+}
+
+/// A group order's check on one world (docs/SWARMS.md section 2.2): its layout, each member's
+/// outcome, and the results in rule order (each member's own results, then the group's
+/// `separation` and `strength`). [`crate::rules::evaluate`] returns its results; the engine logs
+/// its layout with them, and replay recomputes both from the logged inputs.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct GroupEval {
+    pub layout: Layout,
+    pub members: BTreeMap<Uid, MemberOutcome>,
+    pub results: Vec<CheckResult>,
+}
+
+impl GroupEval {
+    /// The members that can take it (sent or waiting), in uid order.
+    pub fn counted(&self) -> Vec<Uid> {
+        self.members
+            .iter()
+            .filter(|(_, m)| m.class != Some(MemberClass::Excluded))
+            .map(|(u, _)| u.clone())
+            .collect()
+    }
+
+    /// A member's own order's spec as its group's check judged it (`id` and `created_t` the
+    /// group's), when it was laid out.
+    pub fn member_spec(&self, group: &IntentSpec, uid: &Uid) -> Option<IntentSpec> {
+        let m = self.members.get(uid)?;
+        Some(member_spec(group, m.task.clone()?, uid, m.share.clone()?))
+    }
+}
+
+/// A member order of `group` for `uid`: one vehicle, its own task and share, the group's source,
+/// constraints and rationale, its `parent` the group.
+pub fn member_spec(group: &IntentSpec, task: Task, uid: &Uid, share: Share) -> IntentSpec {
+    IntentSpec {
+        id: group.id,
+        created_t: group.created_t,
+        source: group.source.clone(),
+        task,
+        uids: vec![uid.clone()],
+        constraints: group.constraints.clone(),
+        rationale: group.rationale.clone(),
+        grouping: Grouping {
+            group: None,
+            parent: Some(group.id),
+            share: Some(share),
+        },
+    }
+}
+
+/// Whether `spec` is decided as a group order under `cfg`.
+pub fn is_group(spec: &IntentSpec, cfg: &RulesConfig) -> bool {
+    cfg.group_orders() && spec.group().is_some()
+}
+
+/// One of ours `uid` alone on `task` (the checks of one member that do not depend on its share).
+fn alone(spec: &IntentSpec, task: Task, uid: &Uid) -> IntentSpec {
+    IntentSpec {
+        task,
+        uids: vec![uid.clone()],
+        grouping: Grouping::default(),
+        ..spec.clone()
+    }
+}
+
+/// Whether a vehicle's navigation status or position is missing or older than the checks trust:
+/// what makes a member wait (it may report again) rather than be left out.
+fn stale(v: &VehicleFacts, world: &WorldSnapshot, cfg: &RulesConfig) -> bool {
+    let (limit, _) = cfg.fact_age_limit_ms(v.report_interval_ms);
+    [v.nav_ready.as_ref().map(|f| f.t), v.position.as_ref().map(|f| f.t)]
+        .into_iter()
+        .any(|t| t.is_none_or(|t| world.t.ms_since(t) > limit))
+}
+
+/// The members a group order lays out (the selection less those a hard reason leaves out before
+/// any share: no such vehicle, a type that can't do the task, spent, lost, propulsion damaged,
+/// held by an engagement), with those reasons' results by uid, and the layout over them.
+fn first_pass(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> (Layout, BTreeMap<Uid, Vec<CheckResult>>, Vec<Member>) {
+    let mut early: BTreeMap<Uid, Vec<CheckResult>> = BTreeMap::new();
+    let mut laid: Vec<Member> = Vec::new();
+    let hold = Task::Hold {};
+    for uid in &spec.uids {
+        let mut out = Vec::new();
+        let cap = crate::rules::capability(&alone(spec, spec.task.clone(), uid), world);
+        let capable = cap.iter().all(|r| r.outcome == Outcome::Pass);
+        out.extend(cap);
+        let mut hard = false;
+        if capable {
+            // spent and lost: readiness's own verdict on a safety command, which judges nothing else
+            for r in crate::rules::readiness(&alone(spec, hold.clone(), uid), world, cfg) {
+                if r.outcome == Outcome::Fail {
+                    out.push(r);
+                    hard = true;
+                }
+            }
+            let v = world.vehicles.get(uid);
+            if !hard
+                && cfg.damage()
+                && let Some(d) = v.and_then(|v| v.damage.as_ref()).filter(|d| d.value.mobility)
+            {
+                out.push(CheckResult::new(
+                    RuleId::Readiness,
+                    Some(uid),
+                    Outcome::Fail,
+                    format!("{} (its own report): a member without propulsion is left out of a group order", d.value.describe()),
+                ));
+                hard = true;
+            }
+            if !hard && let Some(e) = world.engaged.get(uid) {
+                out.push(CheckResult::new(
+                    RuleId::PlatformFree,
+                    Some(uid),
+                    Outcome::Fail,
+                    format!("held by engagement {e}: a group order never stops an engagement (order it alone to stop it)"),
+                ));
+                hard = true;
+            }
+        }
+        if capable && !hard
+            && let Some(m) = world.vehicles.get(uid).and_then(|v| Member::from_facts(uid, v))
+        {
+            laid.push(m);
+        }
+        early.insert(uid.clone(), out);
+    }
+    let group = spec.group().cloned().unwrap_or_default();
+    let lay = layout(&spec.task, &group, &laid);
+    (lay, early, laid)
+}
+
+/// Each laid-out member's own order's spec (the engine samples the terrain along each share and
+/// plans each one's way before the checks read them).
+pub fn member_specs(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<IntentSpec> {
+    let (lay, _, laid) = first_pass(spec, world, cfg);
+    let group = spec.group().cloned().unwrap_or_default();
+    laid.iter()
+        .filter_map(|m| {
+            let task = member_task(&spec.task, &group, &lay, &m.uid)?;
+            Some(member_spec(spec, task, &m.uid, lay.shares.get(&m.uid)?.clone()))
+        })
+        .collect()
+}
+
+/// A group order's check (docs/SWARMS.md sections 2.2 and 4.1): the members a hard reason leaves
+/// out first, then the layout over the rest, then every vehicle rule on each member's own share
+/// (and `depth` on a sub's), each failing result classing its member waiting (its facts too old
+/// or not reported) or excluded; then `separation` (the layout holds) and `strength` (sent and
+/// waiting at least the minimum). Results in rule order, each rule's in the selection's order.
+pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> GroupEval {
+    let group = spec.group().cloned().unwrap_or_default();
+    let (lay, early, laid) = first_pass(spec, world, cfg);
+    let laid_out: BTreeSet<&Uid> = laid.iter().map(|m| &m.uid).collect();
+    let mut by_rule: BTreeMap<RuleId, Vec<CheckResult>> = BTreeMap::new();
+    let mut members: BTreeMap<Uid, MemberOutcome> = BTreeMap::new();
+    for uid in &spec.uids {
+        let mut own: Vec<CheckResult> = early.get(uid).cloned().unwrap_or_default();
+        let mut task = None;
+        let mut share = None;
+        if laid_out.contains(uid) && lay.refused.is_none()
+            && let (Some(t), Some(sh)) = (member_task(&spec.task, &group, &lay, uid), lay.shares.get(uid))
+        {
+            let ms = member_spec(spec, t.clone(), uid, sh.clone());
+            own.extend(crate::rules::readiness(&ms, world, cfg));
+            own.extend(crate::rules::platform_limits(&ms, world, cfg));
+            own.extend(crate::rules::domain(&ms, world, cfg));
+            own.extend(crate::rules::geofence(&ms, world, cfg));
+            own.extend(crate::rules::reserves(&ms, world, cfg));
+            if let Some(d) = depth(&ms, world, sh) {
+                own.push(d);
+            }
+            task = Some(t);
+            share = Some(sh.clone());
+        }
+        // a member whose facts are too old waits: what its share's checks could not judge on them
+        // is judged again when it reports (its member order's re-check); a hard reason before its
+        // share leaves it out whatever
+        let waits = task.is_some() && world.vehicles.get(uid).is_some_and(|v| stale(v, world, cfg));
+        let n_early = early.get(uid).map_or(0, Vec::len);
+        for (i, r) in own.iter_mut().enumerate() {
+            if r.outcome == Outcome::Fail {
+                r.class = Some(if waits && i >= n_early { MemberClass::Waiting } else { MemberClass::Excluded });
+            }
+        }
+        let class = own.iter().filter_map(|r| r.class).max();
+        // a member left out before its share has no order; one laid out but excluded neither
+        members.insert(
+            uid.clone(),
+            MemberOutcome {
+                class: class.or(if task.is_none() { Some(MemberClass::Excluded) } else { None }),
+                task: task.filter(|_| class != Some(MemberClass::Excluded)),
+                share: share.filter(|_| class != Some(MemberClass::Excluded)),
+            },
+        );
+        for r in own {
+            by_rule.entry(r.rule).or_default().push(r);
+        }
+    }
+    let mut results: Vec<CheckResult> = Vec::new();
+    for rule in [
+        RuleId::Capability,
+        RuleId::Readiness,
+        RuleId::PlatformLimits,
+        RuleId::Domain,
+        RuleId::Geofence,
+        RuleId::Reserves,
+        RuleId::PlatformFree,
+        RuleId::Depth,
+    ] {
+        results.extend(by_rule.remove(&rule).unwrap_or_default());
+    }
+    // the layout
+    let sep = match &lay.refused {
+        Some(why) => CheckResult::new(RuleId::Separation, None, Outcome::Fail, why.clone()),
+        None => {
+            let mut c = CheckResult::new(RuleId::Separation, None, Outcome::Pass, describe(&lay, &group));
+            if let Some(w) = lay.warnings.first() {
+                c.warning = Some(w.clone());
+            }
+            c
+        }
+    };
+    results.push(sep);
+    // the strength
+    let min = group.min_members();
+    let n = spec.uids.len();
+    let waiting: Vec<&Uid> = members.iter().filter(|(_, m)| m.class == Some(MemberClass::Waiting)).map(|(u, _)| u).collect();
+    let sent = members.values().filter(|m| m.class.is_none()).count();
+    let counted = sent + waiting.len();
+    let mut reasons: BTreeMap<&str, u32> = BTreeMap::new();
+    for r in results.iter().filter(|r| r.class == Some(MemberClass::Excluded)) {
+        *reasons.entry(r.rule.as_str()).or_default() += 1;
+    }
+    let excluded = n - counted;
+    let why_out = if excluded == 0 {
+        String::new()
+    } else {
+        let list: Vec<String> = reasons.iter().map(|(k, v)| format!("{k} {v}")).collect();
+        format!(", {excluded} excluded ({})", list.join(", "))
+    };
+    let why_wait = if waiting.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<String> = waiting.iter().map(|u| u.to_string()).collect();
+        format!(", {} waiting for fresh facts ({})", waiting.len(), list.join(", "))
+    };
+    let detail = format!("{counted} of {n} can take it ({sent} sent{why_wait}{why_out}); the minimum is {min}");
+    let ok = counted as u32 >= min && lay.refused.is_none();
+    results.push(CheckResult::new(RuleId::Strength, None, if ok { Outcome::Pass } else { Outcome::Fail }, detail));
+    GroupEval {
+        layout: lay,
+        members,
+        results,
+    }
+}
+
+/// The layout in words (the `separation` rule's detail).
+fn describe(lay: &Layout, group: &GroupSpec) -> String {
+    let spread = lay.spread.or(group.spread).map_or("", Spread::as_str);
+    if lay.domains.is_empty() {
+        return format!("{} member(s), {spread}: each by its type", lay.shares.len());
+    }
+    let parts: Vec<String> = lay
+        .domains
+        .iter()
+        .map(|d| {
+            let mut p = format!("{} {}", d.members, d.domain.as_str());
+            if let Some(s) = d.spacing_m {
+                p.push_str(&format!(" {s:.0} m apart"));
+            }
+            if !d.rings_m.is_empty() {
+                let r: Vec<String> = d.rings_m.iter().map(|r| format!("{r:.0}")).collect();
+                p.push_str(&format!(" on rings of {} m", r.join(", ")));
+            }
+            if d.layers > 1 {
+                p.push_str(&format!(" in {} layers {:.0} m apart", d.layers, d.vertical_m.unwrap_or(0.0)));
+            }
+            if let Some(w) = d.racetrack_m {
+                p.push_str(&format!(", a racetrack {w:.0} m wide"));
+            }
+            p
+        })
+        .collect();
+    format!("{spread}: {}; at least {} apart", parts.join("; "), lay.domains.iter().map(|d| format!("{:.0} m", d.lateral_m)).collect::<Vec<_>>().join(" and "))
+}
+
+/// The `depth` rule on a sub member's share: its layer clears the seabed by its band's margin at
+/// every waypoint of its task, on the terrain's samples there (None for anything but a sub with a
+/// layer); not evaluated where a waypoint has no sample.
+fn depth(ms: &IntentSpec, world: &WorldSnapshot, share: &Share) -> Option<CheckResult> {
+    let uid = ms.uids.first()?;
+    let p = world.vehicles.get(uid)?.platform.as_ref()?;
+    let Band::Depth { seabed_m, .. } = figures(p).band else { return None };
+    let deep = -share.alt_m?;
+    let path = ms.task.path()?;
+    let mut shallowest: Option<f64> = None;
+    for (i, pt) in path.points.iter().enumerate() {
+        match world.terrain.lookup(*pt) {
+            Some(crate::terrain::Surface::Water { depth_m }) => {
+                shallowest = Some(shallowest.map_or(*depth_m, |s: f64| s.min(*depth_m)));
+                if *depth_m < deep + seabed_m {
+                    return Some(CheckResult::new(
+                        RuleId::Depth,
+                        Some(uid),
+                        Outcome::Fail,
+                        format!(
+                            "at waypoint {} the seabed is {depth_m:.0} m down: {deep:.0} m deep leaves {:.0} m above it (it needs {seabed_m:.0} m)",
+                            i + 1,
+                            depth_m - deep
+                        ),
+                    ));
+                }
+            }
+            Some(_) => {}
+            None => {
+                return Some(CheckResult::new(
+                    RuleId::Depth,
+                    Some(uid),
+                    Outcome::NotEvaluated,
+                    format!("not evaluated: no depth at waypoint {} (no terrain answer there)", i + 1),
+                ));
+            }
+        }
+    }
+    Some(CheckResult::new(
+        RuleId::Depth,
+        Some(uid),
+        Outcome::Pass,
+        format!(
+            "{deep:.0} m deep clears the seabed by {seabed_m:.0} m at every waypoint (the shallowest {:.0} m)",
+            shallowest.unwrap_or(0.0)
+        ),
+    ))
+}
+
+/// Rules 34: what a member order's approval rests on: its group's (when and by whom it was
+/// approved, the group's policy decision, which a member's own re-check is judged against).
+pub fn member_basis(group: &crate::queue::Basis, decision: Option<&crate::policy::PolicyDecision>) -> crate::queue::Basis {
+    crate::queue::Basis {
+        t: group.t,
+        by_human: group.by_human,
+        checks: Vec::new(),
+        policy: decision.cloned(),
+        engaged: BTreeMap::new(),
+    }
+}
+
+/// Rules 34: a dispatched group order's outcome once every member order it sent has ended
+/// (`ends`: each one's state, and whether a newer order took its vehicle): done when at least the
+/// minimum reached their shares (done), the minimum less one for each member a newer order took
+/// (which counts neither way), else failed; the reason counts each end. The engine and replay
+/// both decide it here.
+pub fn outcome(min: u32, ends: &[(crate::intent::State, bool)]) -> (bool, String) {
+    use crate::intent::State;
+    let done = ends.iter().filter(|(s, _)| *s == State::Done).count();
+    let taken = ends.iter().filter(|(s, t)| *s != State::Done && *t).count();
+    let mut others: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for (s, t) in ends {
+        if *s != State::Done && !*t {
+            let name = match s {
+                State::Failed => "failed",
+                State::Voided => "voided",
+                State::Expired => "never sent (its wait ran out)",
+                State::Aborted => "aborted",
+                State::Rejected => "rejected",
+                _ => "ended",
+            };
+            *others.entry(name).or_default() += 1;
+        }
+    }
+    let need = (min as usize).saturating_sub(taken);
+    let mut parts = vec![format!("{done} reached their shares")];
+    parts.extend(others.iter().map(|(k, v)| format!("{v} {k}")));
+    if taken > 0 {
+        parts.push(format!("{taken} taken by a newer order"));
+    }
+    let ok = done >= need;
+    let verdict = if ok { "done" } else { "failed" };
+    let min_text = if taken > 0 { format!("{need} ({min} less {taken} taken)") } else { min.to_string() };
+    (ok, format!("{verdict}: {}; the minimum is {min_text}", parts.join(", ")))
 }
 
 // ---- the policy's figures ---------------------------------------------------------------------

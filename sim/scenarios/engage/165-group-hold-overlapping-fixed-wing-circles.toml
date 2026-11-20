@@ -1,0 +1,47 @@
+# Rules 34 (docs/SWARMS.md sections 3.2 and 3.3): a hold is the safety command, never refused for
+# its layout: each member holds where it is, by its type. Three Pumas about 100 m apart are told to
+# hold; each loiters on a 150 m circle, so their circles overlap at one height. The group goes out,
+# every member sent, and its separation check says so as a warning a person sees, as an rtl whose
+# way home crosses land passes with one (rules 17).
+title = "A group hold with overlapping fixed-wing circles goes, warned"
+invariant = "group_order"
+attack = "a safety command refused for its layout"
+expect = "dispatched"
+end_s = 3
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"
+at = [-122.4700, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-2"
+platform = "puma"
+at = [-122.4688, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-3"
+platform = "puma"
+at = [-122.4676, 37.8150]
+alt_m = 150
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "hold"
+uids = ["puma-1", "puma-2", "puma-3"]
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+sent = ["puma-1", "puma-2", "puma-3"]
+warning = "3 pair(s) of fixed wings hold on loiter circles that overlap at one height"
+member_states = { "puma-1" = "dispatched", "puma-3" = "dispatched" }

@@ -1896,6 +1896,13 @@ struct Tracked {
     route_plans: BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>,
     /// Rules 22, an identify order: its track's identity at its last passing check.
     identity_before: Option<String>,
+    /// Rules 34, a group order: its last passing check, recomputed (what its member orders are
+    /// bound to).
+    group_eval: Option<Box<crate::group::GroupEval>>,
+    /// Rules 34, a group order: the member orders created under it, by uid.
+    members_created: BTreeMap<Uid, IntentId>,
+    /// Rules 34, a group order: its member orders once dispatched (`group.dispatched`).
+    group_members: BTreeMap<Uid, IntentId>,
 }
 
 impl Tracked {
@@ -1983,6 +1990,9 @@ impl Tracked {
             identify_run: None,
             route_plans: BTreeMap::new(),
             identity_before: None,
+            group_eval: None,
+            members_created: BTreeMap::new(),
+            group_members: BTreeMap::new(),
             preload: None,
             preload_set: None,
             restore_confirmed: false,
@@ -3062,6 +3072,31 @@ fn replay_inner<S: AsRef<str>>(
                     );
                     continue;
                 }
+                // rules 34: a member order is made by its group's dispatch, under the group's
+                // approval, never by a session: it is bound to its group's check instead
+                if intent.parent().is_some() || intent.share().is_some() {
+                    if let Some(why) = member_created_mismatch(intent, session.is_some(), &intents, policy.as_ref()) {
+                        bad(&mut r, e, Some(intent.id), why, json(&(intent.parent(), &intent.uids, &intent.task, intent.share())), String::new());
+                    }
+                    if let Some(g) = intent.parent().and_then(|p| intents.get_mut(&p))
+                        && let Some(u) = intent.uids.first()
+                    {
+                        g.members_created.insert(u.clone(), intent.id);
+                    }
+                    intents.insert(intent.id, Tracked::new(intent.clone(), State::Proposed));
+                    if let Some(g) = intent.parent().and_then(|p| intents.get(&p))
+                        && let Some(u) = intent.uids.first()
+                    {
+                        let plans = g.route_plans.get(u).cloned();
+                        if let (Some(p), Some(tr)) = (plans, intents.get_mut(&intent.id)) {
+                            tr.route_plans = BTreeMap::from([(u.clone(), p)]);
+                        }
+                    }
+                    continue;
+                }
+                if intent.group().is_some() && !policy.as_ref().is_some_and(|p| p.rules.group_orders()) {
+                    bad(&mut r, e, Some(intent.id), "a group order's spec under rules that take no group order", String::new(), String::new());
+                }
                 // rules 8: a human's intent is made in a live session of theirs (an ended one
                 // is caught above), an agent's in none
                 let bound = policy.as_ref().is_some_and(|p| p.rules.rules_version >= OPERATOR_AUTH_SINCE);
@@ -3118,8 +3153,6 @@ fn replay_inner<S: AsRef<str>>(
                 preview,
                 layout: logged_layout,
             } => {
-                // rules 34: a group order's layout, recomputed below once group orders are decided
-                let _ = logged_layout;
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
@@ -3169,8 +3202,25 @@ fn replay_inner<S: AsRef<str>>(
                         json(&tr.plan),
                     );
                 }
-                let again = rules::evaluate(&tr.spec, &inputs, &pol.rules);
+                // rules 34: a group order's check is its layout and its members' results, both
+                // recomputed; any other check logs no layout
+                let group_eval = crate::group::is_group(&tr.spec, &pol.rules).then(|| crate::group::evaluate(&tr.spec, &inputs, &pol.rules));
+                let again = match &group_eval {
+                    Some(g) => g.results.clone(),
+                    None => rules::evaluate(&tr.spec, &inputs, &pol.rules),
+                };
+                if group_eval.as_ref().map(|g| &g.layout) != logged_layout.as_deref() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        if group_eval.is_some() { "a group order's layout differs from the one its facts give" } else { "a layout logged with the check of an intent that is not a group order" },
+                        json(logged_layout),
+                        json(&group_eval.as_ref().map(|g| &g.layout)),
+                    );
+                }
                 let again_passed = rules::passed(&again, tr.spec.kind());
+                tr.group_eval = group_eval.filter(|_| again_passed).map(Box::new);
                 r.checks_recomputed += 1;
                 if &again != results || again_passed != *passed {
                     bad(
@@ -3861,6 +3911,54 @@ fn replay_inner<S: AsRef<str>>(
                         want.clone(),
                     );
                 }
+                // rules 34: a member order goes under only its own group's approval, the group
+                // approved and the member created under it; a group order ends only on its members'
+                // ends, as their count says
+                let member_basis = match (*transition, intents.get(intent)) {
+                    (Transition::Under, Some(tr)) => {
+                        let parent = tr.spec.parent().and_then(|p| intents.get(&p));
+                        match parent {
+                            Some(g)
+                                if matches!(g.state, State::Approved | State::AutoApproved)
+                                    && tr.spec.uids.first().is_some_and(|u| g.members_created.get(u) == Some(intent)) =>
+                            {
+                                Some(crate::group::member_basis(
+                                    &g.basis.clone().unwrap_or_else(|| crate::engine::no_basis(e.t)),
+                                    g.decision.as_ref(),
+                                ))
+                            }
+                            _ => {
+                                bad(&mut r, e, Some(*intent), "a member order approved under a group order that is not approved, or not created under it", json(&tr.spec.parent()), json(&parent.map(|g| g.state)));
+                                None
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                if matches!(transition, Transition::Complete | Transition::Fail)
+                    && let Some(tr) = intents.get(intent)
+                    && !tr.group_members.is_empty()
+                {
+                    let min = tr.spec.group().map_or(1, crate::group::GroupSpec::min_members);
+                    let ends: Option<Vec<(State, bool)>> = tr
+                        .group_members
+                        .iter()
+                        .map(|(u, m)| {
+                            let st = intents.get(m)?.state;
+                            st.is_terminal().then(|| (st, newest_on.get(u).is_some_and(|n| n > m)))
+                        })
+                        .collect();
+                    match ends {
+                        None => bad(&mut r, e, Some(*intent), "a group order ended before every member order it sent ended", reason.clone(), String::new()),
+                        Some(ends) => {
+                            let (done, want) = crate::group::outcome(min, &ends);
+                            let tr_want = if done { Transition::Complete } else { Transition::Fail };
+                            if (*transition, reason) != (tr_want, &want) {
+                                bad(&mut r, e, Some(*intent), "a group order's end differs from its members' count", json(&(transition, reason)), json(&(tr_want, &want)));
+                            }
+                        }
+                    }
+                }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(
                         &mut r,
@@ -3872,6 +3970,13 @@ fn replay_inner<S: AsRef<str>>(
                     );
                     continue;
                 };
+                if let Some(b) = member_basis {
+                    tr.basis = Some(b);
+                    tr.basis_carried = false;
+                }
+                if *transition == Transition::Under && tr.spec.parent().is_none() {
+                    bad(&mut r, e, Some(*intent), "under a group's approval, but not a member order", String::new(), String::new());
+                }
                 r.transitions_verified += 1;
                 if *from != tr.state {
                     bad(
@@ -3996,6 +4101,13 @@ fn replay_inner<S: AsRef<str>>(
                     tr.dispatch_logged = None;
                 }
                 match transition {
+                    // rules 34: a group order's dispatch sends no order to a vehicle itself (its
+                    // member orders do)
+                    Transition::Dispatch if !tr.group_members.is_empty() || tr.spec.group().is_some() => {
+                        tr.dispatch_logged = None;
+                        tr.dispatched = true;
+                        tr.dispatched_before = true;
+                    }
                     Transition::Dispatch => {
                         tr.dispatch_logged = None;
                         tr.dispatched = true;
@@ -6337,6 +6449,8 @@ fn replay_inner<S: AsRef<str>>(
                 reach,
                 expires_t,
             } => {
+                // rules 34: a member order waits at most its group's wait
+                let wait = member_wait(&intents, *intent);
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
@@ -6394,7 +6508,7 @@ fn replay_inner<S: AsRef<str>>(
                     .basis
                     .clone()
                     .unwrap_or_else(|| crate::engine::no_basis(e.t));
-                let (want, inbox) = cfg.bound(cfg.wait_end(tr.spec.kind(), e.t), &basis, e.t);
+                let (want, inbox) = cfg.bound_for(&tr.spec, wait, cfg.wait_end(tr.spec.kind(), e.t), &basis, e.t);
                 if *expires_t != want {
                     bad(
                         &mut r,
@@ -6559,6 +6673,7 @@ fn replay_inner<S: AsRef<str>>(
                 expires_t,
                 inbox,
             } => {
+                let wait = member_wait(&intents, *intent);
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "requeued without run.started or intent.created", String::new(), String::new());
                     continue;
@@ -6605,7 +6720,7 @@ fn replay_inner<S: AsRef<str>>(
                     .unwrap_or_else(|| crate::engine::no_basis(e.t));
                 // a delivery that only confirmed it found a vehicle not running it: to a human
                 let (want, want_inbox) = if queue::confirm_failed(&tr.confirming, &tr.ops).is_empty() {
-                    cfg.bound(cfg.wait_end(tr.spec.kind(), basis.t), &basis, e.t)
+                    cfg.bound_for(&tr.spec, wait, cfg.wait_end(tr.spec.kind(), basis.t), &basis, e.t)
                 } else {
                     (e.t, true)
                 };
@@ -6733,8 +6848,33 @@ fn replay_inner<S: AsRef<str>>(
                 resumed.push((e.seq, from.clone(), open, *state));
                 intents.insert(spec.id, tr);
             }
-            EventBody::GroupDispatched { intent, .. } => {
-                bad(&mut r, e, Some(*intent), "a group order's dispatch, which this build does not replay yet", String::new(), String::new());
+            EventBody::GroupDispatched { intent, members } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "a group dispatch of an unknown intent", String::new(), String::new());
+                    continue;
+                };
+                if !(policy.as_ref().is_some_and(|p| p.rules.group_orders()) && tr.spec.group().is_some()) {
+                    bad(&mut r, e, Some(*intent), "a group dispatch of an intent that is not a group order", String::new(), String::new());
+                }
+                if !matches!(tr.state, State::Approved | State::AutoApproved) {
+                    bad(&mut r, e, Some(*intent), "a group order dispatched without approval", json(&tr.state), "auto_approved|approved".into());
+                }
+                // its member orders: exactly those created under it, one for each member its
+                // last passing check counted (sent or waiting)
+                let counted: Vec<Uid> = tr.group_eval.as_ref().map(|g| g.counted()).unwrap_or_default();
+                let keys: Vec<Uid> = members.keys().cloned().collect();
+                if *members != tr.members_created || keys != counted {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a group order's member orders are not one for each member its check counted, created under it",
+                        json(members),
+                        json(&(&tr.members_created, &counted)),
+                    );
+                }
+                tr.group_members = members.clone();
+                tr.dispatch_logged = Some(e.seq);
             }
             EventBody::IntentHandedOver {
                 intent: spec,
@@ -7626,6 +7766,8 @@ fn replay_inner<S: AsRef<str>>(
     r.next_intent = intents.keys().map(|i| i.0 + 1).max().unwrap_or(1);
     r.open = intents
         .values()
+        // rules 34: a group order carries over as its member orders, each a one-vehicle intent
+        .filter(|t| t.spec.group().is_none())
         .filter(|t| {
             queue::queueable(t.spec.kind())
                 && matches!(
@@ -10002,6 +10144,62 @@ struct Dispatched<'a> {
 /// Rules 22: every routed leg in a decision's inputs is what the planner gives on its own logged
 /// grid (and the no-go areas the decision read): the same waypoints, or no route for the same
 /// reason; none before rules 22.
+/// Rules 34: how long member order `id` may wait in the queue, s (its group's `wait_s`).
+fn member_wait(intents: &BTreeMap<IntentId, Tracked>, id: IntentId) -> Option<u32> {
+    let g = intents.get(&intents.get(&id)?.spec.parent()?)?;
+    g.spec.group()?.wait_s
+}
+
+/// Rules 34: why a member order's `intent.created` is not one its group's dispatch makes, if it is
+/// not: its group a group order, approved, whose last passing check counted this member (sent or
+/// waiting), one member order per member, its task and share the layout's, its source, constraints
+/// and rationale its group's, made in no session.
+fn member_created_mismatch(m: &IntentSpec, has_session: bool, intents: &BTreeMap<IntentId, Tracked>, policy: Option<&Policy>) -> Option<&'static str> {
+    if !policy.is_some_and(|p| p.rules.group_orders()) {
+        return Some("a member order under rules that take no group order");
+    }
+    if has_session {
+        return Some("a member order made in a session (its group's dispatch makes it)");
+    }
+    let Some(gid) = m.parent() else {
+        return Some("a share without a group order");
+    };
+    let Some(g) = intents.get(&gid) else {
+        return Some("a member order of an unknown group order");
+    };
+    if m.group().is_some() || g.spec.group().is_none() {
+        return Some("a member order whose parent is not a group order, or that is one itself");
+    }
+    if !matches!(g.state, State::Approved | State::AutoApproved) {
+        return Some("a member order created while its group order is not approved");
+    }
+    let [uid] = m.uids.as_slice() else {
+        return Some("a member order names one vehicle");
+    };
+    if g.members_created.contains_key(uid) {
+        return Some("a second member order for one member");
+    }
+    let Some(eval) = &g.group_eval else {
+        return Some("a member order of a group order with no passing check");
+    };
+    let Some(out) = eval.members.get(uid) else {
+        return Some("a member order to a vehicle outside its group's selection");
+    };
+    if out.class == Some(crate::group::MemberClass::Excluded) {
+        return Some("a member order to a member its group's check left out");
+    }
+    let Some(want) = eval.member_spec(&g.spec, uid) else {
+        return Some("a member order to a member its group's layout gave no share");
+    };
+    if m.task != want.task || m.share() != want.share() {
+        return Some("a member order's task or share is not its group's layout's");
+    }
+    if m.source != g.spec.source || m.constraints != g.spec.constraints || m.rationale != g.spec.rationale {
+        return Some("a member order's source, constraints or rationale are not its group's");
+    }
+    None
+}
+
 fn check_plans(r: &mut ReplayReport, e: &Event, id: IntentId, w: &WorldSnapshot, pol: &Policy) {
     if w.route_plans.is_empty() {
         return;

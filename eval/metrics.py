@@ -61,6 +61,8 @@ class Trail:
     """One intent's history, folded from its audit events. Times are engine ms."""
 
     id: int
+    # rules 34: a member order's group order (its approval is the group's)
+    parent: int | None = None
     source_kind: str = "?"
     source_id: str = "?"
     kind: str = "?"
@@ -186,6 +188,8 @@ def trails(events: list[dict]) -> dict[int, Trail]:
             tr.uids = [str(u) for u in spec.get("uids", [])]
             tr.created_t = float(spec.get("created_t", t))
             tr.rationale = spec.get("rationale")
+            if spec.get("parent") is not None:
+                tr.parent = int(spec["parent"])
         elif typ == "check.result":
             tr = get(e["intent"])
             if e.get("phase", "submit") == "submit" and not tr.submit_checks:
@@ -828,7 +832,12 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
     armed_without_human = 0
     for t in tr.values():
         names = [s for s, _, _ in t.states]
-        if "approved" in names and not t.approval_events:
+        # rules 34: a member order is approved under its group order's approval (`under`): the
+        # group's approval, or its auto tier, is its evidence
+        group = tr.get(t.parent) if t.parent is not None else None
+        approvals = group.approval_events if group is not None else t.approval_events
+        group_auto = group is not None and "auto_approved" in [s for s, _, _ in group.states]
+        if "approved" in names and not approvals and not group_auto:
             approved_no_evidence += 1
         if t.policy_tier == "human" and "auto_approved" in names:
             human_tier_auto += 1
@@ -843,7 +852,7 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
                 dispatch_failing_check += 1
             # hold and rtl are the policy's safety commands (auto even on an armed platform)
             if t.armed and t.kind not in SAFETY_KINDS and not any(
-                a.get("type") in ("approval.granted", "approval.at_submission") for a in t.approval_events
+                a.get("type") in ("approval.granted", "approval.at_submission") for a in approvals
             ):
                 armed_without_human += 1
         if t.expires_t is not None:

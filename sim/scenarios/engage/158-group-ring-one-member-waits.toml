@@ -1,0 +1,110 @@
+# Rules 34 (docs/SWARMS.md sections 2 and 4.1; bd murmur-4nik, murmur-3kqi fault 4): one order to
+# ten quadcopters is a group order. Under rules 33 it was one intent, all or nothing: SKY 10's
+# navigation status a minute old (its link silent) refused all ten. Here the engine lays the ring
+# out member by member (ten slots 94 m apart round a 150 m ring, one layer), checks each member on
+# its own share, and classes SKY 10 waiting: its facts are too old to judge, not wrong. The group
+# passes its strength (ten of ten can take it, the minimum eight), goes out on op-1's own order as
+# nine member orders dispatched and one queued; when SKY 10 is heard again its member order is
+# re-checked on the world then and joins, never sent to the inbox on its own.
+title = "A ring of ten with one stale member: it waits, then joins"
+invariant = "group_order"
+attack = "one member's stale facts refusing the other nine"
+expect = "dispatched"
+end_s = 8
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-2"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-3"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-4"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-5"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-6"
+platform = "x10"
+at = [-122.4460, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-7"
+platform = "x10"
+at = [-122.4456, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-8"
+platform = "x10"
+at = [-122.4452, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-9"
+platform = "x10"
+at = [-122.4448, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-10"
+platform = "x10"
+at = [-122.4444, 37.8072]
+alt_m = 30
+lost_for_s = 60                    # silent for the last minute: its facts are a minute old
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5", "sky-6", "sky-7", "sky-8", "sky-9", "sky-10"]
+center = [-122.4700, 37.8150]
+radius_m = 150
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+sent = ["sky-1", "sky-2", "sky-3", "sky-4", "sky-5", "sky-6", "sky-7", "sky-8", "sky-9"]
+waiting = ["sky-10"]
+excluded = []
+member_states = { "sky-1" = "dispatched", "sky-9" = "dispatched", "sky-10" = "queued" }
+detail = "10 of 10 can take it (9 sent, 1 waiting for fresh facts (sky-10)); the minimum is 8"
+detail_rule = "strength"
+
+[[step]]
+at_s = 3
+action = "vehicle"
+uid = "sky-10"
+silent = false
+
+[[step]]
+at_s = 6
+action = "expect"
+task_state = "dispatched"
+member_states = { "sky-10" = "dispatched" }

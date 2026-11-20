@@ -213,7 +213,7 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
-    pub(crate) fn new(rule: RuleId, uid: Option<&Uid>, outcome: Outcome, detail: impl Into<String>) -> Self {
+    pub fn new(rule: RuleId, uid: Option<&Uid>, outcome: Outcome, detail: impl Into<String>) -> Self {
         CheckResult {
             rule,
             uid: uid.cloned(),
@@ -1101,6 +1101,10 @@ impl Default for RulesConfig {
 
 /// All rules, in order.
 pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
+    // rules 34: a group order's check, member by member on each one's own share
+    if crate::group::is_group(spec, cfg) {
+        return crate::group::evaluate(spec, world, cfg).results;
+    }
     let mut out = Vec::new();
     match spec.task.targets() {
         Targets::Vehicles if spec.kind() == TaskKind::Identify => {

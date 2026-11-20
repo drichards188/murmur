@@ -1,0 +1,72 @@
+# Rules 34 (docs/SWARMS.md sections 2.2 and 5): a waiting member whose own facts would raise the
+# tier its group went out on is voided and counted on the group, never sent to the inbox on its
+# own. Four Pumas are ordered to orbit together; PUMA 4 has been silent a minute, so it waits. It is
+# heard again navigating on dead reckoning, which no check can verify (a person judges a fixed
+# wing's drifting position): under rules 33 that order would go back to the inbox, here the
+# member's re-check finds what its group's approval did not cover, and voids it. The log is then
+# attacked: the group's approval is cut, so its member orders go out while it waits for one,
+# which replay, binding each member order to an approved group, catches.
+title = "A waiting member that would raise the tier is voided, never sent to the inbox"
+invariant = "group_order"
+attack = "member orders dispatched while their group waits for approval (member_without_group)"
+expect = "dispatched"
+tamper = "member_without_group"
+end_s = 8
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"
+at = [-122.4700, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-2"
+platform = "puma"
+at = [-122.4660, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-3"
+platform = "puma"
+at = [-122.4620, 37.8150]
+alt_m = 150
+
+[[vehicle]]
+uid = "puma-4"
+platform = "puma"
+at = [-122.4580, 37.8150]
+alt_m = 150
+lost_for_s = 60                    # silent for the last minute: its facts are a minute old
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["puma-1", "puma-2", "puma-3", "puma-4"]
+center = [-122.4800, 37.8200]
+radius_m = 300
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+waiting = ["puma-4"]
+member_states = { "puma-1" = "dispatched", "puma-4" = "queued" }
+
+[[step]]
+at_s = 3
+action = "vehicle"
+uid = "puma-4"
+silent = false
+nav = "dead_reckoning"
+
+[[step]]
+at_s = 6
+action = "expect"
+task_state = "dispatched"
+member_states = { "puma-4" = "voided" }

@@ -1,0 +1,105 @@
+# Rules 34 (docs/SWARMS.md section 3.3, the separation rule): where the layout cannot keep members
+# apart inside their band, the group is refused with the most that fit. Twelve quadcopters on an
+# 8 m ring at 100 m are 4 m apart; to keep 15 m apart five neighbours in a row need five layers 10 m
+# apart (six round the wrap from the last to the first), but their band ends at 120 m above the
+# ground: three layers, two a layer, six in all. Section 8 sets this case with fixed-wing stations
+# along a route, whose transit kind is a later stage's; the rule is the same.
+title = "A ring too tight for its band is refused with the most that fit"
+invariant = "separation"
+attack = "more members than the band's layers hold"
+expect = "rejected"
+expect_rule = "separation"
+end_s = 3
+min_rules = 34
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-01"
+platform = "x10"
+at = [-122.4460, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-02"
+platform = "x10"
+at = [-122.4456, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-03"
+platform = "x10"
+at = [-122.4452, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-04"
+platform = "x10"
+at = [-122.4448, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-05"
+platform = "x10"
+at = [-122.4444, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-06"
+platform = "x10"
+at = [-122.4440, 37.8068]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-07"
+platform = "x10"
+at = [-122.4460, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-08"
+platform = "x10"
+at = [-122.4456, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-09"
+platform = "x10"
+at = [-122.4452, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-10"
+platform = "x10"
+at = [-122.4448, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-11"
+platform = "x10"
+at = [-122.4444, 37.8072]
+alt_m = 30
+
+[[vehicle]]
+uid = "sky-12"
+platform = "x10"
+at = [-122.4440, 37.8072]
+alt_m = 30
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["sky-01", "sky-02", "sky-03", "sky-04", "sky-05", "sky-06", "sky-07", "sky-08", "sky-09", "sky-10", "sky-11", "sky-12"]
+center = [-122.4700, 37.8150]
+radius_m = 8
+group = { alt_m = 100 }
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "rejected"
+detail = "a 8 m ring holds 6 air members in 3 layer(s) (100 m, 110 m, 120 m) at least 15 m apart; 12 do not fit"
+detail_rule = "separation"

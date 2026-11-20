@@ -3810,3 +3810,55 @@ file's line and the stand-ins' board), the bridge's engagement test (the FPV's e
 and a live autoplay run of hostile-act-fpv (2026-11-20): released at 4:37, WASP 1 last heard 1 s
 later, `node.presumed` on its spent mark at 4:49, op-2's `node.lost` at 4:51, "ceased" at 4:53 on
 HUNTER 1's camera (WASP 1's counted in the first 10 s of cover, as headless).
+
+## 2026-11-20: Group orders for the ordinary tasks, stages 0 to 3 (rules 34, murmur-4nik, murmur-3kqi)
+
+docs/SWARMS.md, picked up for orbit, patrol, hold and rtl (the owner: "finish what we can"), built
+behind `RULES_NEWEST = 34` with `RULES_VERSION` 33 and policy schema 9 staged, so no fixture or
+digest moves until the flip. Decisions 0 to 3, 5, 7 to 9 as decided or recommended; decision 6 as
+the rule that a group order never stops an engagement (a member one holds is excluded, saying so).
+Section 7 (declaring a hostile swarm) and any salvo are out. Built:
+
+- **Stage 0, decided**: the task layer's hold arms a fixed wing that is airborne and disarmed before
+  its LOITER (a stand-in Puma aloft holds at its height; it glided into the sea).
+- **Stage 1**: the gate, the group spec, a member order's `parent` and `share`, the transition
+  `under`, the catalog's figures (`sep_m`, `alt_band_m`, `depth_band_m`, each GUESS, on the facts
+  only under rules 34) and `[group] min_share` (0.8, GUESS).
+- **Stage 2**: `group::layout`, a pure function of the members' facts and figures (slots, the
+  minimum-distance pairing, layers inside each band, concentric rings on the surface, racetracks,
+  lanes, stations and a block for the later transit kind, a hold's warnings) and the re-form's
+  layout for stage 4.
+- **Stage 3**: the group's check (members left out by a hard reason first, the layout, every
+  vehicle rule on each member's own share, `depth`, `separation`, `strength`), the policy over the
+  members sent or waiting, one approval, member orders dispatched or queued on their own, a member's
+  re-check voiding what would raise the tier (never the inbox), the group's end by its minimum, and
+  replay binding each member order to its group's check. Scenarios 158 to 165, tampers
+  `move_member_slot`, `member_without_group`, `admit_raised_member`.
+
+Where the build departs from the draft, and why:
+
+- **The share beside the task, not inside its params.** A member order's `share` (slot, layer,
+  altitude, phase or entry, slot point, its ring's radius on the surface, its lane, its
+  racetrack's width) is a field of the intent and of its `intent.dispatched`; its task is the
+  group's with the member's own geometry (a surface ring's radius, a lane, the racetrack a
+  two-point patrol becomes). Every task built elsewhere stays as it was.
+- **A member order is approved, not auto-approved.** `under` goes from proposed to approved for a
+  member of an auto-approved group too; its approval is the group's, which replay checks, and its
+  basis says whether a person gave it.
+- **A waiting member counts as leaving the approved area.** Its route can't be built on stale
+  facts, so the policy, which counts it, routes the group as it routes any order it can't place:
+  to a person, or the submitter's own authority. Conservative; a later stage may choose otherwise.
+- **The wrap round a closed path takes a layer more.** Neighbours in a row go in different layers
+  round the ring and from the last slot to the first; where the count is not a multiple of the
+  layers one block takes one more. Saturation's UNDERSEA-1 (100 REMUS, 300 m) is three layers at
+  40, 45 and 50 m for 99 and a fourth, 55 m, for one, where section 3.3 has three.
+- **A dispatched group whose members a newer order took is done, not void**: the state machine
+  voids nothing dispatched, so its end says each member was taken by a newer order.
+- **Scenario 145's case (fixed-wing stations too dense) is 162 on a ring of quadcopters**, the
+  transit kind being stage 7's; **147's armed member** is 163's tamper (the check never admits
+  one), and 164 shows a member's own facts raising the tier (dead reckoning, a check nobody could
+  verify).
+- **Left for stage 5**: the bridge refuses to dispatch a group order under rules 34 (it goes out
+  through `Engine::dispatch_group`), and its dry run samples the group's own task, not the
+  members'. A member requeued after a delivery that found its vehicle not running it goes to a
+  person, as any order does (it may be running).
