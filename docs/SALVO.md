@@ -1,11 +1,10 @@
 # One decision, many releases: the salvo
 
 > **Spec (bd murmur-4nik), revised 2026-11-20.** The first version planned a replica of the US
-> Army's HIV3 demo with new platforms and a new munition; two build attempts on it were stopped by
-> safety safeguards, and the owner narrowed the scope to the command and control on weapons Murmur
-> already has ("do what you can, put placeholders where you have to"). Stage 1, the salvo,
-> was stopped by the safeguards too (section 10); the group control of ordinary tasks (stages 2
-> and 3, docs/SWARMS.md) is being built as rules 34. Every invented number is marked [E].
+> Army's HIV3 demo with new platforms and a new munition; the owner narrowed the scope to the
+> command and control on weapons Murmur already has ("do what you can, put placeholders where you
+> have to"). Stage 1, the salvo, is paused (section 10); the group control of ordinary tasks
+> (stages 2 and 3, docs/SWARMS.md) is being built as rules 34. Every invented number is marked [E].
 
 On 12 November 2026 the US Army launched about 18 drones from an unmanned ground vehicle in what it
 called an "autonomous strike", and nobody has said whether that was one human decision or eighteen
@@ -178,7 +177,7 @@ Murmur adds.
 | stage | what | moves decisions | state |
 |---|---|---|---|
 | 0 | spent one-way strikers leave the world live | no | done (58ee062) |
-| 1 | the salvo (sections 1 to 6) and Salvo range (section 7) | a later version | stopped: the build agent was stopped by safety safeguards on 2026-11-20 (partial work on the local branch `salvo`, not merged); the owner's to finish by hand |
+| 1 | the salvo (sections 1 to 6) and Salvo range (section 7) | a later version | paused (partial work on the local branch `salvo`, not merged) |
 | 2 | `transit` (docs/SWARMS.md 3.2): go to a point and hold, for any vehicle | rules 34 | building with stage 3 |
 | 3 | group control of ordinary tasks (docs/SWARMS.md: group orders, member classes, re-forming; bd murmur-3kqi) | rules 34 | building |
 
