@@ -66,7 +66,7 @@ import { buildSwarmLayers, useSwarms } from './swarms'
 import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
 import { HiddenLegend, type HiddenRow } from './HiddenLegend'
 import type { LabelStats } from './declutter'
-import { groupMarks, groupState, missingLines, selectedSwarm, swarmOf, swarmOutlines, unfolded, type GroupState } from './swarmsModel'
+import { groupMarks, groupState, missingLines, selectedSwarm, shownTaskings, swarmOf, swarmOutlines, unfolded, type GroupState } from './swarmsModel'
 import { GroupStrip } from './GroupStrip'
 import { latestOps, vehicleState } from './exceptions'
 import type { GroupsOnMap } from './GroupChips'
@@ -173,6 +173,30 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showSwarms, setShowSwarms] = useState(false)
   const [swarmFocus, setSwarmFocus] = useState<{ id: string; n: number } | null>(null)
   const [hoverGroup, setHoverGroup] = useState<string | null>(null)
+  // Space held: every group's orders drawn (bd murmur-4nik; else a group's only while it is
+  // selected or hovered), except while typing or on a focused control, whose own key it is
+  const [allOrders, setAllOrders] = useState(false)
+  useEffect(() => {
+    const typing = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      return !!t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(t.tagName))
+    }
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey || typing(e)) return
+      e.preventDefault()
+      if (!e.repeat) setAllOrders(true)
+    }
+    const up = (e: KeyboardEvent) => e.code === 'Space' && setAllOrders(false)
+    const off = () => setAllOrders(false)
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', off)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', off)
+    }
+  }, [])
   // a group lit up for a moment after the group strip centred the map on it
   const [flashGroup, setFlashGroup] = useState<string | null>(null)
   useEffect(() => {
@@ -790,6 +814,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     [pending, vehicles, selIntent],
   )
   const taskings = state?.taskings ?? []
+  // the map's orders: a group's only on demand (selected, hovered, lit up, a member selected, Space)
+  const mapTaskings = useMemo(
+    () => shownTaskings(state?.taskings ?? [], marks.ofUid, new Set([swarmSel, hoverGroup, flashGroup].filter((x): x is string => x != null)), selected, allOrders),
+    [state?.taskings, marks, swarmSel, hoverGroup, flashGroup, selected, allOrders],
+  )
   const lost = vehicles.filter(isStale).length
 
   /** an inbox item was clicked: highlight its vehicles and frame them with the task's preview */
@@ -1030,7 +1059,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           weapons={weapons}
           weaponVictim={weaponVictim}
           nameOf={nameOf}
-          taskings={taskings}
+          taskings={mapTaskings}
           selected={selected}
           draft={mapDraft}
           focus={focus}

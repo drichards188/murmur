@@ -10,7 +10,7 @@
 // goes only round members heard; members crowding each other are a pile; chips that would overlap
 // stack; a cluster tile names its groups. Throws on the first failure, prints "swarms: ok" otherwise.
 import type { Alert } from './decisions'
-import { causeLines, chipStatus, convexHull, GROUP_STATE, groupState, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
+import { causeLines, chipStatus, convexHull, GROUP_STATE, groupState, shownTaskings, taskingGroup, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
 import { cellChipText, cellGroups, chipSize, groupsOnScreen, stackChips, tileOf, type MemberOnScreen } from './groupScreen.ts'
 import { textWidth } from './declutter.ts'
 import type { GroupInForce } from './groupOrders.ts'
@@ -126,6 +126,15 @@ check(groupState({ ...base, reformedT: 100_000 }, { station: 9 }, 110_000) === '
 check(groupState(base, { station: 3, moving: 5, lost: 1 }, 0) === 'moving', 'else what most members do')
 check(Object.values(GROUP_STATE).every((x) => x.icon && x.word), 'every state an icon and a word, never colour alone')
 check(belowMin.under && !belowMin.suspended && susp.suspended && !full.under, 'chip status flags')
+
+// a group's orders on demand
+const tk = (id: number, uids: number[]) => ({ id, ops: uids.map((uid) => ({ uid })) })
+const tks = [tk(1, [1, 2]), tk(2, [5]), tk(3, [1, 5]), tk(4, [77])]
+check(taskingGroup(tks[0], marks.ofUid) === 'PICKET-1' && taskingGroup(tks[2], marks.ofUid) === null && taskingGroup(tks[3], marks.ofUid) === null, "a tasking is a group's when all its vehicles are")
+check(shownTaskings(tks, marks.ofUid, new Set(), new Set(), false).map((t) => t.id).join() === '3,4', "groups' orders hidden until asked for")
+check(shownTaskings(tks, marks.ofUid, new Set(['PICKET-1']), new Set(), false).map((t) => t.id).join() === '1,3,4', 'an open group shows its orders')
+check(shownTaskings(tks, marks.ofUid, new Set(), new Set([5]), false).map((t) => t.id).join() === '2,3,4', "a selected member shows its own order")
+check(shownTaskings(tks, marks.ofUid, new Set(), new Set(), true).length === 4, 'Space shows them all')
 
 // outlines: round the members heard now, a stale one left out
 const heard = new Map<number, LngLat>([[1, [-122.48, 37.82]], [2, [-122.46, 37.82]], [3, [-122.47, 37.84]]])

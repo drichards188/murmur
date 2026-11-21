@@ -1791,7 +1791,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         >
           smooth
         </button>
-        <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · middle-drag: spin + tilt · T: top view</span>
+        <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · middle-drag: spin + tilt · T: top view{groups ? ' · hold Space: group orders' : ''}</span>
       </div>
     </>
   )

@@ -339,6 +339,32 @@ export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pic
   return { doing, parts, tone, suspended, under, refused, reformedT, dropped, back, intent }
 }
 
+// ---- a group's order on the map only on demand -------------------------------------------------
+
+/** The group a tasking's vehicles all belong to, if they do (a group order's member orders, each
+ *  one vehicle's share); null for an order to vehicles of no group or of several. */
+export function taskingGroup(t: { ops: readonly { uid: number }[] }, ofUid: ReadonlyMap<number, Pick<GroupMark, 'id'>>): string | null {
+  let g: string | null = null
+  for (const o of t.ops) {
+    const m = ofUid.get(o.uid)
+    if (!m || (g && m.id !== g)) return null
+    g = m.id
+  }
+  return g
+}
+
+/** The taskings the map draws (bd murmur-4nik): a group's orders (its rings, lanes, routes) only on
+ *  demand, while the group is open (selected, hovered, lit up), one of the order's vehicles is
+ *  selected, or `all` (Space held); every other order as before. A hundred members' shares drawn at
+ *  once were the clutter the owner saw. */
+export function shownTaskings<T extends { ops: readonly { uid: number }[] }>(taskings: readonly T[], ofUid: ReadonlyMap<number, Pick<GroupMark, 'id'>>, open: ReadonlySet<string>, selected: ReadonlySet<number>, all: boolean): T[] {
+  if (all || !ofUid.size) return taskings as T[]
+  return taskings.filter((t) => {
+    const g = taskingGroup(t, ofUid)
+    return g == null || open.has(g) || t.ops.some((o) => selected.has(o.uid))
+  })
+}
+
 // ---- the group strip (GroupStrip.tsx): each group's state in a word -----------------------------
 
 export type GroupState = 'suspended' | 'under' | 'reforming' | 'station' | 'moving' | 'returning' | 'idle' | 'lost' | 'damaged'
