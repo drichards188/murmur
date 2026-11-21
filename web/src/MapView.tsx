@@ -38,7 +38,8 @@ import { GroupChips, type ChipPlacer, type ChipSpot, type GroupsOnMap } from './
 import { frameIcon } from './symbols'
 import { buildClusterLayers, CLUSTER_PICK_LAYERS, clusterRadius, domainLine, hotLine, unknownLine } from './clusterLayers'
 import { WeatherMap, type WeatherView } from './weatherMap'
-import { buildReachLayers } from './reachLayers'
+import { buildReachLayers, newReachCache } from './reachLayers'
+import { REACH_REDRAW_MS, ringSet } from './reachCache'
 import { cellAt, cellDetail, type CoverageImage, type LinkRouteDrawing } from './coverage'
 import { buildLinkRouteLayers } from './linkLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
@@ -418,7 +419,9 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const linkMemo = useRef<{ key: unknown[]; layers: LayersList } | null>(null)
   // the sensor reach rings (reachLayers.ts), and what they were last built from
   const reachRef = useRef(reach)
-  const reachMemo = useRef<{ key: unknown[]; layers: LayersList } | null>(null)
+  const reachMemo = useRef<{ fc: GeoJSON.FeatureCollection; sig: string; set: string; at: number; layers: LayersList } | null>(null)
+  // each ring's lifted path, moved with its vehicle (reachCache.ts)
+  const reachCache = useRef(newReachCache())
   // the coverage grid under the pointer (its tooltip)
   const coverageRef = useRef(coverage)
   const covTip = useRef<HTMLDivElement>(null)
@@ -533,11 +536,17 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const reachLayers = (m: maplibregl.Map | null): LayersList => {
     const fc = reachRef.current
     if (!m || !fc?.features.length) return []
-    const key = [fc, terrainGen.current, Math.round(m.getZoom() * 4)]
+    const sig = `${terrainGen.current}|${Math.round(m.getZoom() * 4)}`
     const memo = reachMemo.current
-    if (memo && memo.key.every((k, i) => k === key[i])) return memo.layers
-    const layers = buildReachLayers(fc, surfaceScale(m))
-    reachMemo.current = { key, layers }
+    if (memo && memo.sig === sig) {
+      if (memo.fc === fc) return memo.layers
+      // the same rings a moment later (their vehicles moved a little): not redrawn every update
+      // (a hundred selected made each one cost 400 ms, bd murmur-yfp6)
+      const set = ringSet(fc)
+      if (memo.set === set && performance.now() - memo.at < REACH_REDRAW_MS) return memo.layers
+    }
+    const layers = buildReachLayers(fc, surfaceScale(m), reachCache.current, sig)
+    reachMemo.current = { fc, sig, set: ringSet(fc), at: performance.now(), layers }
     return layers
   }
 

@@ -2,6 +2,7 @@ import type { Check } from './decisions'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 import { usePlatformLimits } from './taskDefaults'
+import { LazyDetails } from './LazyDetails'
 import { foldRefusal } from './refusalFold'
 import './refusalFold.css'
 
@@ -29,8 +30,7 @@ export function RefusalFold({ checks, uids, vehicles }: { checks: Check[]; uids:
             <li key={k} className={l.class === 'waiting' ? 'warn' : 'fail'}>
               {l.text}
               {l.hint && <span className="rf-hint">{l.hint}</span>}
-              <details className="rf-members" onClick={(e) => e.stopPropagation()}>
-                <summary>show the {l.count}</summary>
+              <LazyDetails className="rf-members" onClick={(e) => e.stopPropagation()} summary={`show the ${l.count}`}>
                 <ul>
                   {l.members.map((m) => (
                     <li key={m.uid}>
@@ -38,7 +38,7 @@ export function RefusalFold({ checks, uids, vehicles }: { checks: Check[]; uids:
                     </li>
                   ))}
                 </ul>
-              </details>
+              </LazyDetails>
             </li>
           ))}
         </ul>

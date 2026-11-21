@@ -1,4 +1,7 @@
+import { memo, useMemo } from 'react'
 import { tierLabel } from './decisions'
+import { LazyDetails } from './LazyDetails'
+import { sameFleet } from './stableFleet'
 import { pct, REASON_WORDS, STATE_RGB, type VehicleLink } from './coverage'
 import type { DryRunAnswer, DryRunState } from './useDryRun'
 import type { Vehicle } from './types'
@@ -89,12 +92,11 @@ function GroupLinks({ vehicles }: { vehicles: VehicleLink[] }) {
       {not.map((x) => (
         <VehicleLinkView key={x.uid} v={x} />
       ))}
-      <details className="grp-shares">
-        <summary>Each vehicle's link ({vehicles.length})</summary>
+      <LazyDetails className="grp-shares" summary={`Each vehicle's link (${vehicles.length})`}>
         {vehicles.map((x) => (
           <VehicleLinkView key={x.uid} v={x} />
         ))}
-      </details>
+      </LazyDetails>
     </>
   )
 }
@@ -151,8 +153,7 @@ export function GroupDry({ g, checks, uids, kind, nameOf, vehicles }: { g: Group
           ))}
       </ul>
       {shares.length > 0 && (
-        <details className="grp-shares">
-          <summary>Each member's share ({shares.length})</summary>
+        <LazyDetails className="grp-shares" summary={`Each member's share (${shares.length})`}>
           <table>
             <thead>
               <tr>
@@ -175,7 +176,7 @@ export function GroupDry({ g, checks, uids, kind, nameOf, vehicles }: { g: Group
               ))}
             </tbody>
           </table>
-        </details>
+        </LazyDetails>
       )}
     </div>
   )
@@ -193,12 +194,15 @@ function verdictOf(a: DryRunAnswer): { cls: string; text: string } {
 
 /** The order form's dry run: what the checks and the policy say now, and the predicted link
  *  along each vehicle's route. Information only: nothing here blocks the order. */
-export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) {
+function DryRunView({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) {
   const a = st.answer
+  // one lookup for the names a hundred-member answer asks for (a find over the fleet each was
+  // 100 x 3,600 comparisons)
+  const byUid = useMemo(() => new Map(vehicles.map((v) => [String(v.uid), v])), [vehicles])
   if (!a && !st.loading && !st.error) return null
   const nameOf = (uid: string | null) => {
     if (uid == null) return null
-    const v = vehicles.find((x) => String(x.uid) === uid)
+    const v = byUid.get(uid)
     return v ? callsign(v) : `vehicle ${uid}`
   }
   // rules 34: a group order's failures are its members' (folded by rule below), and its own
@@ -260,3 +264,7 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
   )
 }
 
+
+/** Rendered again only when the dry run's answer changes (every few seconds), or the fleet does:
+ *  the vehicle list is a new array on every feed update, but the dry run reads only names. */
+export const DryRun = memo(DryRunView, (a, b) => a.st === b.st && sameFleet(a.vehicles, b.vehicles))

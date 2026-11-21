@@ -156,7 +156,9 @@ export function reachFeatures(
         if (m == null || !(m > 0)) return
         features.push({
           type: 'Feature',
-          properties: { uid: v.uid, sensor: s.type, domain: d.domain, kind, color: sensorColor(s.type) },
+          // `id`, `at` and `m` let the map reuse a ring's lifted path while its vehicle moves a little
+          // (reachCache.ts): the same ring is the same id
+          properties: { uid: v.uid, sensor: s.type, domain: d.domain, kind, color: sensorColor(s.type), id: `${v.uid}|${s.type}|${kind}`, at, m },
           geometry: { type: 'LineString', coordinates: circle(at, m) },
         })
       }

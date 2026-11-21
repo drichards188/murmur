@@ -20,6 +20,7 @@ import { OPS_FOLD, orderSummary, STUCK_S } from './exceptions'
 import { useGroupOrders } from './policy'
 import { defaultMin, excludedMarks, memberClasses, reforms, slotMarks, SPREAD_WORDS, SPREADS, type GroupSpec, type Spread } from './groupOrders'
 import { drawnHeight } from './map3d'
+import { sameFleet } from './stableFleet'
 
 interface Props {
   vehicles: Vehicle[]
@@ -276,7 +277,11 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
   const [outcome, setOutcome] = useState<TaskOutcome | null>(null)
   /** command log notes: tasking id -> the human tier its sender authorized */
   const [authorized, setAuthorized] = useState<Map<number, string>>(new Map())
-  const byUid = new Map(vehicles.map((v) => [v.uid, v]))
+  // the selected vehicles by uid (all an order form looks up), not the fleet's thousands each render
+  const byUid = new Map(vehicles.filter((v) => selected.has(v.uid)).map((v) => [v.uid, v]))
+  // the fleet as the dry run reads it (names only): the same list while it is the same fleet
+  const fleetRef = useRef(vehicles)
+  if (!sameFleet(fleetRef.current, vehicles)) fleetRef.current = vehicles
   // the command log's cards look vehicles up by uid for their names: a lookup that is the same
   // function every render (so a card is not re-rendered for it), over the latest vehicles, its
   // map built only when a card is
@@ -643,7 +648,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
               </>
             )}
             {error && <p className="error">{error}</p>}
-            {request && !outcome && <DryRun st={dry} vehicles={vehicles} />}
+            {request && !outcome && <DryRun st={dry} vehicles={fleetRef.current} />}
             {outcome && (
               <TaskResult
                 outcome={outcome}

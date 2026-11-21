@@ -8,6 +8,7 @@ import type { LayersList } from '@deck.gl/core'
 import type { LngLat } from './types'
 import { SENSOR_RGB } from './sensorReach.ts'
 import { dashes, lift, type SurfaceScale } from './surfaceLayers.ts'
+import { RingCache } from './reachCache.ts'
 
 type RGBA = [number, number, number, number]
 type XYZ = [number, number, number]
@@ -30,26 +31,51 @@ const STYLE: Record<string, { width: number; alpha: number; dash?: [number, numb
 const MINE_RGB: [number, number, number] = [235, 87, 87]
 const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
 
-/** The rings as paths on the surface, each over a dark casing. */
-export function reachPaths(fc: GeoJSON.FeatureCollection | null, scale: SurfaceScale): { rings: Ring[]; casings: Ring[] } {
+/** What one feature draws: its dashes or line, and the casing under it. */
+interface Built {
+  rings: Ring[]
+  casing: Ring
+}
+
+const move = (path: XYZ[], dLon: number, dLat: number): XYZ[] => path.map((p) => [p[0] + dLon, p[1] + dLat, p[2]])
+const moveBuilt = (b: Built, dLon: number, dLat: number): Built => ({
+  casing: { ...b.casing, path: move(b.casing.path, dLon, dLat) },
+  rings: b.rings.map((r) => ({ ...r, path: move(r.path, dLon, dLat) })),
+})
+
+function buildFeature(f: GeoJSON.Feature, st: (typeof STYLE)[string], kind: string, scale: SurfaceScale): Built {
+  const [r, g, b] = kind === 'minefield' || kind === 'mine' ? MINE_RGB : SENSOR_RGB[String(f.properties?.sensor ?? '')] ?? [210, 210, 210]
+  const lifted = lift((f.geometry as GeoJSON.LineString).coordinates as LngLat[], scale.surfaceZ)
+  const color: RGBA = [r, g, b, Math.round(255 * st.alpha)]
+  const rings: Ring[] = !st.dash ? [{ path: lifted, color, width: st.width }] : dashes(lifted, st.dash[0] * st.width * scale.mPerPx, st.dash[1] * st.width * scale.mPerPx).map((p) => ({ path: p, color, width: st.width }))
+  return { casing: { path: lifted, color: [11, 21, 32, 115], width: 4 }, rings }
+}
+
+/** The rings as paths on the surface, each over a dark casing. With a `cache` a sensor ring (one
+ *  that says its `id`, centre and radius) is lifted once and then moved with its vehicle while the
+ *  move is small (reachCache.ts); `sig` is what else it rests on (the terrain, the zoom). */
+export function reachPaths(fc: GeoJSON.FeatureCollection | null, scale: SurfaceScale, cache?: RingCache<Built>, sig = ''): { rings: Ring[]; casings: Ring[] } {
   const rings: Ring[] = [], casings: Ring[] = []
   for (const f of fc?.features ?? []) {
     if (f.geometry.type !== 'LineString') continue
     const kind = String(f.properties?.kind ?? '')
     const st = STYLE[kind]
     if (!st) continue
-    const [r, g, b] = kind === 'minefield' || kind === 'mine' ? MINE_RGB : SENSOR_RGB[String(f.properties?.sensor ?? '')] ?? [210, 210, 210]
-    const lifted = lift(f.geometry.coordinates as LngLat[], scale.surfaceZ)
-    casings.push({ path: lifted, color: [11, 21, 32, 115], width: 4 })
-    const color: RGBA = [r, g, b, Math.round(255 * st.alpha)]
-    if (!st.dash) rings.push({ path: lifted, color, width: st.width })
-    else for (const p of dashes(lifted, st.dash[0] * st.width * scale.mPerPx, st.dash[1] * st.width * scale.mPerPx)) rings.push({ path: p, color, width: st.width })
+    const { id, at, m } = (f.properties ?? {}) as { id?: string; at?: LngLat; m?: number }
+    const make = () => buildFeature(f, st, kind, scale)
+    const built = cache && id && at && m ? cache.get(id, at, m, sig, make, moveBuilt) : make()
+    casings.push(built.casing)
+    rings.push(...built.rings)
   }
+  cache?.sweep()
   return { rings, casings }
 }
 
-export function buildReachLayers(fc: GeoJSON.FeatureCollection | null, scale: SurfaceScale): LayersList {
-  const { rings, casings } = reachPaths(fc, scale)
+export type ReachCache = RingCache<Built>
+export const newReachCache = (): ReachCache => new RingCache<Built>()
+
+export function buildReachLayers(fc: GeoJSON.FeatureCollection | null, scale: SurfaceScale, cache?: ReachCache, sig = ''): LayersList {
+  const { rings, casings } = reachPaths(fc, scale, cache, sig)
   if (!rings.length) return []
   const common = { getPath: (d: Ring) => d.path, getColor: (d: Ring) => d.color, getWidth: (d: Ring) => d.width, widthUnits: 'pixels' as const, parameters: onTop }
   return [
