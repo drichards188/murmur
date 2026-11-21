@@ -4,6 +4,8 @@ import { groupColor, groupCodes, ROLE_LABEL, ROLE_ORDER, type Swarm, type SwarmA
 import { reformBody, strengthLine, strengthTone, type GroupInForce } from './groupOrders'
 import { submitIntent } from './decisions'
 import { alertLabel } from './swarms'
+import { GroupsSection } from './GroupsSection'
+import type { GroupsApi } from './useGroups'
 import './swarms.css'
 
 /** The Swarms panel (docs/DECISIONS.md, "Swarm units"): every swarm of the fleet from the bridge's
@@ -30,15 +32,30 @@ interface Props {
   /** the map's banners (App.tsx), shown under this drawer's header while it is open over the
    *  map's right edge, where they would otherwise sit over its top (bd murmur-76gv) */
   banners?: ReactNode
+  /** the operator's own groups (groups.ts), listed above the fleet's swarms */
+  groups?: {
+    api: GroupsApi
+    selected: ReadonlySet<number>
+    present: ReadonlySet<number>
+    nameOf: (uid: number) => string
+    onSelect: (uids: number[]) => void
+  }
 }
 
-export function SwarmsButton({ feed, open, onClick }: { feed: SwarmsFeed; open: boolean; onClick: () => void }) {
+/** `mine`: a fleet without swarms, where the drawer holds only the operator's own groups (this many):
+ *  the button is named for them. */
+export function SwarmsButton({ feed, open, onClick, mine = null }: { feed: SwarmsFeed; open: boolean; onClick: () => void; mine?: number | null }) {
   const swarms = feed.doc?.swarms ?? []
   const trouble = swarms.filter((s) => swarmTone(s) !== 'ok').length
-  const title = feed.status === 'missing' ? 'Swarms: no swarm data from the bridge' : `${swarms.length} swarms, ${trouble} with members unheard or low on battery`
+  const title =
+    mine != null
+      ? `Your groups: ${mine} (this fleet has no swarms)`
+      : feed.status === 'missing'
+        ? 'Swarms: no swarm data from the bridge'
+        : `${swarms.length} swarms, ${trouble} with members unheard or low on battery`
   return (
     <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={title} aria-label={title}>
-      Swarms
+      {mine != null ? 'Groups' : 'Swarms'}
       {trouble > 0 && <span className="ix-badge sw-badge">{trouble}</span>}
     </button>
   )
@@ -169,7 +186,7 @@ function GroupLine({ g, alerts, heard }: { g: GroupInForce; alerts: SwarmAlert[]
   )
 }
 
-export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, alerts, onSelect, onClose, heard, banners }: Props) {
+export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, alerts, onSelect, onClose, heard, banners, groups: mine }: Props) {
   const swarms = feed.doc?.swarms ?? []
   // each swarm's colour and code as the map and the fleet list show them (by the summary's order)
   const ids = swarms.map((s) => s.id).join('\n')
@@ -208,6 +225,7 @@ export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, al
           </p>
         )}
         {feed.status === 'loading' && <p className="empty muted">Asking the bridge for its swarms...</p>}
+        {mine && <GroupsSection {...mine} />}
         {groups.length > 0 && (
           <section className="sw-group sw-orders" aria-label="Group orders in force">
             <h3 className="ix-h">

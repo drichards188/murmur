@@ -72,6 +72,8 @@ import { latestOps, vehicleState } from './exceptions'
 import type { GroupsOnMap } from './GroupChips'
 import type { MapScreen } from './aloft'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
+import { useGroups } from './useGroups'
+import { groupOfSelection } from './groups'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -102,6 +104,9 @@ function readInvite(): { operator: string; code: string } | null {
   window.history.replaceState(null, '', window.location.pathname + window.location.search)
   return { operator: decodeURIComponent(m[1]), code: m[2] }
 }
+
+/** No vehicles (the groups panel while closed). */
+const NO_UIDS: ReadonlySet<number> = new Set()
 
 /** The console. `onMenu`: the launcher's main menu (`make start`), shown over it; absent when
  *  the stack was started without the launcher. */
@@ -294,6 +299,22 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     }),
     [spaceOn, showSpace, catalog.data, overhead.data, spaceSel, linksNow.data, box, tasked],
   )
+  // Escape clears the selection (the Fleet list's Clear), unless an order is being drawn (that
+  // Escape cancels the drawing), a panel that Escape closes is open (the vehicle details, the
+  // nomination form, the space timeline, the platforms: that Escape is theirs, and a hundred
+  // selected must not go with it) or the key is a text field's or a control's own
+  const anySelected = selected.size > 0
+  const escapeTaken = drawing != null || detailsUid != null || engageForm != null || showSpace || showPlatforms
+  useEffect(() => {
+    if (!anySelected || escapeTaken) return
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (e.key !== 'Escape' || e.defaultPrevented || (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)))) return
+      setSelected(new Set())
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [anySelected, escapeTaken])
   useEffect(() => {
     if (!drawing) return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setDrawing(null)
@@ -314,7 +335,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // drawer is open; its outlines on the map are rebuilt only when a new summary comes
   const hasSwarms = useMemo(() => allVehicles.some((v) => swarmOf(v) != null), [allVehicles])
   const swarmFeed = useSwarms(hasSwarms || showSwarms)
+  // the operator's own groups (groups.ts): shared through the bridge, never an order
+  const groupsApi = useGroups()
+  // the uids in the fleet now, for the groups panel (only while it can be seen)
+  const presentUids = useMemo(() => (showSwarms ? new Set(allVehicles.map((v) => v.uid)) : NO_UIDS), [showSwarms, allVehicles])
   const swarmSel = useMemo(() => selectedSwarm(swarmFeed.doc?.swarms, selected), [swarmFeed.doc, selected])
+  // the name an order to exactly a group carries as its `group.swarm` label (rules 34: a label,
+  // never a decision input): one of the operator's own groups by its name, else a fleet swarm by its
+  // id, as the situations' opening orders label theirs
+  const groupLabel = useMemo(() => groupOfSelection(groupsApi.groups, selected)?.name ?? swarmSel, [groupsApi.groups, selected, swarmSel])
   // each group's marks on the map (bd murmur-4nik): code, colour, chip, from each new summary
   const marks = useMemo(() => groupMarks(swarmFeed.doc), [swarmFeed.doc])
   // the groups' outlines round their members heard now (a stale one is left out, never wrapped)
@@ -1022,7 +1051,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
         <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
-        {(hasSwarms || swarmFeed.status === 'ok') && <SwarmsButton feed={swarmFeed} open={showSwarms} onClick={() => setShowSwarms((v) => !v)} />}
+        {(hasSwarms || swarmFeed.status === 'ok' || groupsApi.status === 'ok') && (
+          <SwarmsButton feed={swarmFeed} mine={hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0 ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setShowSwarms((v) => !v)} />
+        )}
         <button className={`ghost platforms-btn ${showWeather ? 'on' : ''}`} onClick={() => setShowWeather(v => !v)}>Weather</button>
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
@@ -1063,6 +1094,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           }
         }}
         onSelect={(ids) => setSelected(new Set(ids))}
+        groups={groupsApi}
         reveal={revealVeh}
         swarms={swarmFeed.doc?.swarms}
         taskings={state?.taskings}
@@ -1234,6 +1266,19 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             hovered={hoverGroup}
             onHover={setHoverGroup}
             alerts={decisions?.inbox.swarm_alerts ?? []}
+            groups={{
+              api: groupsApi,
+              selected,
+              present: presentUids,
+              nameOf: (uid) => nameOf(String(uid)),
+              onSelect: (uids) => {
+                // a group of yours is a named selection: the order form then commands it
+                setSelected(new Set(uids))
+                revealVehicles(uids)
+                const pts = allVehicles.flatMap((v) => (v.position && uids.includes(v.uid) ? [v.position] : []))
+                if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
+              },
+            }}
             onSelect={(sw) => {
               // every member, so the order form sends one intent to the whole swarm
               setSelected(new Set(sw.members))
@@ -1315,7 +1360,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           </ErrorBoundary>
         </div>
         <ErrorBoundary name="Task panel" className="slot tasking">
-        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} expandAll={showAll.lists} onFolded={setOrderFolds} />
+        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} groupLabel={groupLabel} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} expandAll={showAll.lists} onFolded={setOrderFolds} />
         </ErrorBoundary>
         {/* the nomination form (Phase E) takes the rail while open: the map keeps its preview and the inbox stays clear */}
         {engageForm && (

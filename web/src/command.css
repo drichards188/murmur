@@ -1,0 +1,14 @@
+/* the command surface at scale (TaskPanel.tsx, FleetPanel.tsx; commandModel.ts) */
+.stage { margin: 6px 0 4px; font-size: 12px; line-height: 1.35; color: var(--muted); }
+.stage b { font: 600 11px var(--mono); letter-spacing: 0.05em; color: var(--text); margin-right: 4px; }
+.stage.ready b { color: var(--ok); }
+.stage.blocked b { color: var(--warn); }
+.stage.sent b { color: var(--accent); }
+
+/* the fleet list's selection bar: how many are selected, clear, all of a kind */
+.fleet-sel { display: flex; align-items: center; gap: 8px; padding: 4px 10px 6px; font: 11.5px var(--mono); color: var(--muted); }
+.fleet-sel b { color: var(--accent); font-weight: 600; }
+.fleet-sel.none b { color: var(--muted); }
+.fleet-sel button { font-size: 11px; padding: 1px 7px; }
+.fleet-sel select { margin-left: auto; max-width: 52%; font: 11.5px var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.fleet-sel select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

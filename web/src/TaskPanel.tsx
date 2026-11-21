@@ -20,12 +20,17 @@ import { OPS_FOLD, orderSummary, STUCK_S } from './exceptions'
 import { useGroupOrders } from './policy'
 import { defaultMin, excludedMarks, memberClasses, reforms, slotMarks, SPREAD_WORDS, SPREADS, type GroupSpec, type Spread } from './groupOrders'
 import { drawnHeight } from './map3d'
+import './command.css'
 import { sameFleet } from './stableFleet'
+import { cardLabel, routing, selectionLine, stage, STAGE_WORDS } from './commandModel'
 
 interface Props {
   vehicles: Vehicle[]
   /** Keep names in completed commands after a spent vehicle leaves the live fleet. */
   historyVehicles?: Vehicle[]
+  /** the name a selection that is exactly a group goes by (one of the operator's own groups, else
+   *  a fleet swarm's id; App.tsx): the order carries it as its `group.swarm` label */
+  groupLabel?: string | null
   selected: Set<number>
   draft: Draft
   setDraft: (d: Draft) => void
@@ -215,7 +220,7 @@ const TaskingCard = memo(
     a.open === b.open && a.onOpen === b.onOpen && a.minute === b.minute,
 )
 
-export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents, expandAll = false, onFolded }: Props) {
+export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = null, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents, expandAll = false, onFolded }: Props) {
   const runs = space?.runs ?? []
   const scen = now ? scenarioNow(space, now) : null
   // rules 21: an identify order's taskings (its orbit each time it moved with its track, then the
@@ -236,9 +241,16 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
     const last = i.history[i.history.length - 1]
     if (e && i.kind === 'identify' && last && (i.state === 'done' || i.state === 'failed' || /identified|not identified|lost contact|not in the picture/.test(last.reason))) e.ended = last.reason
   }
+  // a group order's card names the group it went to ("ORBIT · North picket"): the intent's own
+  // spec, or its group order's when this is a member's
+  const intentById = useMemo(() => new Map((intents ?? []).map((i) => [i.id, i])), [intents])
+  const groupName = (t: Tasking): string | null => {
+    const i = t.intent_id != null ? intentById.get(t.intent_id) : undefined
+    return i?.group?.swarm ?? (i?.parent != null ? (intentById.get(i.parent)?.group?.swarm ?? null) : null)
+  }
   const identifyLabel = (t: Tasking) => {
     const e = t.intent_id != null ? identify.get(t.intent_id) : undefined
-    if (!e) return t.task.toUpperCase()
+    if (!e) return cardLabel(t.task, groupName(t))
     return t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
   }
   const shownTaskings = taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id)
@@ -356,6 +368,8 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
     const g: GroupSpec = {}
     if (grp.spread && grp.spread !== spreads[0]) g.spread = grp.spread
     if (grp.min_members != null) g.min_members = grp.min_members
+    if (grp.wait_s != null) g.wait_s = grp.wait_s
+    if (groupLabel) g.swarm = groupLabel
     if (grp.alt_m != null) g.alt_m = grp.alt_m
     if (grp.reform === false && reforms(kind)) g.reform = false
     if (g.spread === 'lanes') {
@@ -364,7 +378,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
     }
     return Object.keys(g).length ? g : null
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grouped, kind, grp])
+  }, [grouped, kind, grp, groupLabel])
 
   const trackers = sel.filter((s) => byUid.get(s)?.kind === 'tracker')
   const others = sel.filter((s) => byUid.get(s)?.kind !== 'tracker')
@@ -449,6 +463,10 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
   }, [linkRoute, onLinkRoute])
   useEffect(() => () => onLinkRoute?.(null), [onLinkRoute])
 
+  // where the order stands, and where the dry run says it goes (read from its answer, never guessed)
+  const phase = stage({ complete: request != null, loading: dry.loading, answered: dry.answer != null, passed: dry.answer?.passed ?? false, sent: outcome != null && outcome.kind !== 'refused' && request == null })
+  const sendRoute = dry.answer && request ? routing(dry.answer, tierLabel).short : null
+
   const submit = async () => {
     if (!request) return
     // rules 21: an identify order goes as an intent with its track (the task layer's route takes none)
@@ -496,7 +514,9 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
         <>
           <header className="panel-head">
             <h2>Task</h2>
-            <span className="muted">{sel.map((s) => callsign(byUid.get(s) ?? { uid: s, kind: null })).join(' · ')}</span>
+            <span className="muted" title={sel.length > 6 ? sel.map((s) => callsign(byUid.get(s) ?? { uid: s, kind: null })).join(', ') : undefined}>
+              {sel.length > 6 ? selectionLine(selVehicles, groupLabel) : sel.map((s) => callsign(byUid.get(s) ?? { uid: s, kind: null })).join(' · ')}
+            </span>
           </header>
           <div className="taskform">
             {sel.length > 0 && (
@@ -570,7 +590,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
               {grouped && (
                 <fieldset className="grp" aria-label="Group order">
                   <legend>
-                    One group order to {sel.length} <span className="muted">laid out by the engine, member by member</span>
+                    One group order to {groupLabel ? `${groupLabel} (${sel.length})` : sel.length} <span className="muted">laid out by the engine, member by member</span>
                   </legend>
                   {spreads.length > 1 && (
                     <div className="seg">
@@ -593,6 +613,18 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
                         value={grp.min_members ?? ''}
                         onChange={(e) => setGrp({ ...grp, min_members: e.target.value === '' ? undefined : Math.max(1, Math.min(sel.length, Math.round(Number(e.target.value)))) })}
                       />
+                    </label>
+                    <label title="how long the order waits for a member not heard yet to join it, s (empty: the engine's default)">
+                      <span>Wait</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={3600}
+                        placeholder="auto"
+                        value={grp.wait_s ?? ''}
+                        onChange={(e) => setGrp({ ...grp, wait_s: e.target.value === '' ? undefined : Math.max(0, Math.min(3600, Math.round(Number(e.target.value)))) })}
+                      />
+                      <span className="muted">s</span>
                     </label>
                     {kind !== 'hold' && kind !== 'rtl' && (
                       <label title="the lowest layer, m above home (a depth below the surface for a sub); empty: each type's own cruise altitude">
@@ -632,6 +664,9 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
                   )}
                 </fieldset>
               )}
+              <p className={`stage ${phase}`} aria-live="polite">
+                <b>{phase === 'compose' ? '1 Compose' : phase === 'checking' || phase === 'ready' || phase === 'blocked' ? '2 Check' : '3 Sent'}</b> {STAGE_WORDS[phase]}
+              </p>
               <button className="primary" disabled={!ready || busy} onClick={submit}>
                 {kind === 'track'
                   ? trackPair
@@ -641,9 +676,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
                     ? draft.track
                       ? `Send IDENTIFY ${draft.track} to ${callsign(byUid.get(sel[0]) ?? { uid: sel[0], kind: null })}`
                       : 'Click a contact first'
-                    : grouped
-                      ? `Send ${kind.toUpperCase()} to ${sel.length} vehicles as one group`
-                      : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
+                    : `${grouped ? `Send ${kind.toUpperCase()} to ${groupLabel ?? `${sel.length} vehicles`} as one group` : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}${sendRoute ? ` (${sendRoute})` : ''}`}
               </button>
               </>
             )}

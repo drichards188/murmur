@@ -153,11 +153,15 @@ export function swarmTone(s: Swarm): 'ok' | 'warn' | 'bad' {
   return 'ok'
 }
 
+/** Whether the selection is exactly these members (no more, no fewer; nothing is no group): how a
+ *  fleet swarm or one of the operator's own groups (groups.ts) is "selected". */
+export function sameMembers(members: readonly number[], selected: ReadonlySet<number>): boolean {
+  return selected.size > 0 && members.length === selected.size && members.every((u) => selected.has(u))
+}
+
 /** The swarm whose members are exactly this selection, if one is. */
 export function selectedSwarm(swarms: Swarm[] | undefined, selected: ReadonlySet<number>): string | null {
-  if (!swarms || selected.size === 0) return null
-  for (const s of swarms) if (s.members.length === selected.size && s.members.every((u) => selected.has(u))) return s.id
-  return null
+  return swarms?.find((s) => sameMembers(s.members, selected))?.id ?? null
 }
 
 /** The causes of a swarm alert as lines, whatever shape the bridge sends them in. */

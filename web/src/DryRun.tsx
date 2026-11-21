@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react'
 import { tierLabel } from './decisions'
+import { orderPhrase, routing } from './commandModel'
 import { LazyDetails } from './LazyDetails'
 import { sameFleet } from './stableFleet'
 import { pct, REASON_WORDS, STATE_RGB, type VehicleLink } from './coverage'
@@ -105,7 +106,7 @@ function GroupLinks({ vehicles }: { vehicles: VehicleLink[] }) {
  *  sends now, how many wait and join if heard in time, how many it leaves out and why, its
  *  strength against its minimum, then the layout (each member's slot and layer, drawn on the map),
  *  then the checks folded by rule. A hundred members read as a few lines. */
-export function GroupDry({ g, checks, uids, kind, nameOf, vehicles }: { g: GroupPreview; checks: Check[]; uids: string[]; kind: string; nameOf: (uid: string) => string; vehicles: Vehicle[] }) {
+export function GroupDry({ g, checks, uids, kind, phrase, nameOf, vehicles }: { g: GroupPreview; checks: Check[]; uids: string[]; kind: string; phrase: string; nameOf: (uid: string) => string; vehicles: Vehicle[] }) {
   const lines = memberClasses(uids, checks)
   const c = counts(lines, g.spec, kind)
   const folds = foldByRule(checks)
@@ -122,7 +123,9 @@ export function GroupDry({ g, checks, uids, kind, nameOf, vehicles }: { g: Group
         <h4>Group</h4>
         <span className="muted">{g.layout.spread ?? g.spec.spread}</span>
       </div>
-      <p className={c.sent + c.waiting >= c.min ? 'pass' : 'fail'}>{headline(c, g.spec, kind, g.spec.swarm ?? null)}.</p>
+      <p className={c.sent + c.waiting >= c.min ? 'pass' : 'fail'}>
+        <b>{phrase}</b>: {headline(c, g.spec, kind, g.spec.swarm ?? null)}.
+      </p>
       <RefusalFold checks={checks} uids={uids} vehicles={vehicles} />
       {g.layout.refused ? <p className="fail">The layout does not hold: {g.layout.refused}</p> : <p className="muted">{layoutLine(g.layout)}</p>}
       {(g.layout.warnings ?? []).map((w, k) => (
@@ -183,13 +186,8 @@ export function GroupDry({ g, checks, uids, kind, nameOf, vehicles }: { g: Group
 }
 
 function verdictOf(a: DryRunAnswer): { cls: string; text: string } {
-  if (!a.passed) return { cls: 'fail', text: 'The rules would refuse it:' }
-  if (a.would_reach === 'approved' || a.submission_authorizes) {
-    return { cls: 'wait', text: `Checks pass. Sending it is your approval${a.policy ? ` (${tierLabel(a.policy.rule)}: ${a.policy.reason})` : ''}.` }
-  }
-  if (a.would_reach === 'auto_approved') return { cls: 'pass', text: 'Checks pass. It would go at once (auto).' }
-  if (a.would_reach === 'pending_approval') return { cls: 'wait', text: `Checks pass. It would wait for approval${a.policy ? `: ${a.policy.reason}` : ''}.` }
-  return { cls: 'wait', text: `Checks pass; it would reach ${a.would_reach}.` }
+  const r = routing(a, tierLabel)
+  return { cls: r.tone, text: r.text }
 }
 
 /** The order form's dry run: what the checks and the policy say now, and the predicted link
@@ -231,7 +229,7 @@ function DryRunView({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) 
         </ul>
       )}
       {a && unverified > 0 && <p className="muted">{unverified} check{unverified > 1 ? 's' : ''} could not be verified.</p>}
-      {a?.group && <GroupDry g={a.group} checks={a.checks} uids={a.uids ?? []} kind={st.order?.task ?? ''} nameOf={(u) => nameOf(u) ?? u} vehicles={vehicles} />}
+      {a?.group && <GroupDry g={a.group} checks={a.checks} uids={a.uids ?? []} kind={st.order?.task ?? ''} phrase={orderPhrase(st.order?.task ?? '', { radius: st.order?.radius, points: st.order?.route?.length })} nameOf={(u) => nameOf(u) ?? u} vehicles={vehicles} />}
       {routed.length > 0 && (
         <ul aria-label="Routed">
           {routed.map(({ uid, p }, k) => (

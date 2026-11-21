@@ -5,6 +5,9 @@ import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
 import { groupCodes, groupColor, type Swarm, swarmGroups } from './swarmsModel'
 import './nodeLoss.css'
+import { AddToGroup } from './GroupsSection'
+import { kindsOf, rangeBetween } from './commandModel'
+import type { GroupsApi } from './useGroups'
 import './swarms.css'
 import type { Tasking, Vehicle } from './types'
 import { callsign, domainOf, isStale, staleMs } from './types'
@@ -38,6 +41,8 @@ interface Props {
   expandAll?: boolean
   /** how many vehicles the folded groups do not list (the map legend counts them) */
   onFolded?: (n: { vehicles: number; groups: number }) => void
+  /** the operator's own groups: the selection can be added to one from here */
+  groups?: GroupsApi
 }
 
 function linkClass(v: Vehicle) {
@@ -58,7 +63,7 @@ interface RowProps {
   selected: boolean
   open: boolean
   flash: boolean
-  onToggle: Props['onToggle']
+  onToggle: (uid: number, shift: boolean) => void
   onDeselect: Props['onDeselect']
   onDetails: Props['onDetails']
   reach?: { text: string; title: string }
@@ -82,8 +87,8 @@ const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, 
         className="vrow-select"
         aria-pressed={selected}
         aria-label={`${selected ? 'Deselect' : 'Select'} ${callsign(v)} for tasking`}
-        title={selected ? 'Selected for tasking (click or right-click to deselect)' : 'Select for tasking'}
-        onClick={() => onToggle(v.uid)}
+        title={selected ? 'Selected for tasking (click or right-click to deselect; shift-click selects a range)' : 'Select for tasking (shift-click selects a range)'}
+        onClick={(e) => onToggle(v.uid, e.shiftKey)}
       >
         <span className="vrow-box" aria-hidden>
           {selected ? '✓' : ''}
@@ -306,8 +311,10 @@ function GroupRow({ it, selected, onSelect, onOpen }: { it: Extract<Item, { kind
   )
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, lost, expandAll = false, onFolded }: Props) {
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, lost, expandAll = false, onFolded, groups }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
+  // the kinds in the fleet, for "all of a kind" (recomputed only when the fleet's membership changes)
+  const kinds = useMemo(() => kindsOf(vehicles), [vehicles])
   const list = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState({ top: 0, height: 800 })
   // the groups the person opened (a view setting of this console)
@@ -352,11 +359,21 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
   const flash = useFlash(reveal, firstRevealed)
   // the rows take these, the same functions every render, so that a row whose vehicle did not
   // change is not rendered again; they call the latest callbacks (murmur-4xq3)
-  const latest = useRef({ onToggle, onDeselect, onDetails })
-  latest.current = { onToggle, onDeselect, onDetails }
+  const latest = useRef({ onToggle, onDeselect, onDetails, onSelect, selected })
+  latest.current = { onToggle, onDeselect, onDetails, onSelect, selected }
+  // shift-click: every vehicle from the last one toggled to this one, in the order the list shows
+  // them (the rows listed now: a folded group's unlisted members are not in the range)
+  const anchor = useRef<number | null>(null)
   const act = useMemo(
     () => ({
-      onToggle: (uid: number) => latest.current.onToggle(uid),
+      onToggle: (uid: number, shift: boolean) => {
+        if (shift && anchor.current != null) {
+          const order = itemsRef.current.flatMap((i) => (i.kind === 'row' ? [i.v.uid] : []))
+          const range = rangeBetween(order, anchor.current, uid)
+          latest.current.onSelect([...new Set([...latest.current.selected, ...range])])
+        } else latest.current.onToggle(uid)
+        anchor.current = uid
+      },
       onDeselect: (uid: number) => latest.current.onDeselect(uid),
       onDetails: (uid: number) => latest.current.onDetails(uid),
     }),
@@ -409,6 +426,34 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
           <button onClick={() => onSelect([])}>None</button>
         </div>
       </header>
+      <div className={`fleet-sel ${selected.size ? '' : 'none'}`} data-testid="selection">
+        <span aria-live="polite">
+          <b>{selected.size}</b> selected
+        </span>
+        {selected.size > 0 && (
+          <button className="ghost" onClick={() => onSelect([])} title="Clear the selection (Escape)">
+            Clear
+          </button>
+        )}
+        {kinds.length > 1 && (
+          <select
+            aria-label="Select all of a kind"
+            value=""
+            onChange={(e) => {
+              const k = kinds.find((x) => x.id === e.target.value)
+              if (k) onSelect(k.uids)
+            }}
+          >
+            <option value="">All of a kind...</option>
+            {kinds.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.label} ({k.uids.length})
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {groups && <AddToGroup api={groups} selected={selected} />}
       {vehicles.length === 0 ? (
         <p className="empty">
           No vehicles yet. Start the swarm with <code>make sim</code>; vehicles appear here as their first heartbeat
