@@ -5,6 +5,7 @@ import type { Vehicle } from './types'
 import { callsign } from './types'
 import { counts, foldByRule, foldLine, foldTone, headline, layoutLine, memberClasses, type GroupPreview } from './groupOrders'
 import type { Check } from './decisions'
+import { RefusalFold } from './RefusalFold'
 import './coverage.css'
 
 const LEG_WORDS: Record<string, string> = { transit: 'transit', task: 'task path', return: 'return', here: 'where it is' }
@@ -70,9 +71,6 @@ function LegBar({ label, leg, ret }: { label: string; leg: NonNullable<VehicleLi
   )
 }
 
-/** At most this many names in one line; the rest counted. */
-const NAMES = 6
-
 /** Rules 34: a group of more than this many has its predicted links folded. */
 const LINK_FOLD = 6
 
@@ -101,20 +99,14 @@ function GroupLinks({ vehicles }: { vehicles: VehicleLink[] }) {
   )
 }
 
-function names(uids: string[], nameOf: (uid: string) => string): string {
-  const shown = uids.slice(0, NAMES).map(nameOf).join(', ')
-  return uids.length > NAMES ? `${shown} and ${uids.length - NAMES} more` : shown
-}
-
 /** Rules 34: a group order's dry run, bottom line first (docs/SWARMS.md section 10): how many it
  *  sends now, how many wait and join if heard in time, how many it leaves out and why, its
  *  strength against its minimum, then the layout (each member's slot and layer, drawn on the map),
  *  then the checks folded by rule. A hundred members read as a few lines. */
-export function GroupDry({ g, checks, uids, kind, nameOf }: { g: GroupPreview; checks: Check[]; uids: string[]; kind: string; nameOf: (uid: string) => string }) {
+export function GroupDry({ g, checks, uids, kind, nameOf, vehicles }: { g: GroupPreview; checks: Check[]; uids: string[]; kind: string; nameOf: (uid: string) => string; vehicles: Vehicle[] }) {
   const lines = memberClasses(uids, checks)
   const c = counts(lines, g.spec, kind)
   const folds = foldByRule(checks)
-  const strength = checks.find((x) => x.rule === 'strength' && x.uid == null)
   const byLayer = new Map<number, number>()
   const altOf = new Map<number, number>()
   for (const s of Object.values(g.layout.shares ?? {})) {
@@ -129,7 +121,7 @@ export function GroupDry({ g, checks, uids, kind, nameOf }: { g: GroupPreview; c
         <span className="muted">{g.layout.spread ?? g.spec.spread}</span>
       </div>
       <p className={c.sent + c.waiting >= c.min ? 'pass' : 'fail'}>{headline(c, g.spec, kind, g.spec.swarm ?? null)}.</p>
-      {strength && <p className={`grp-strength ${strength.outcome}`}>{strength.detail}</p>}
+      <RefusalFold checks={checks} uids={uids} vehicles={vehicles} />
       {g.layout.refused ? <p className="fail">The layout does not hold: {g.layout.refused}</p> : <p className="muted">{layoutLine(g.layout)}</p>}
       {(g.layout.warnings ?? []).map((w, k) => (
         <p key={k} className="warn">
@@ -155,11 +147,6 @@ export function GroupDry({ g, checks, uids, kind, nameOf }: { g: GroupPreview; c
           .map((f) => (
             <li key={f.rule} className={foldTone(f)}>
               <b>{f.rule}</b> {foldLine(f)}
-              {f.reasons.map((r, k) => (
-                <span key={k} className={`grp-reason ${r.class ?? r.outcome}`}>
-                  {r.class ?? r.outcome.replace('_', ' ')} ×{r.uids.length}: {r.example} <span className="muted">({names(r.uids, nameOf)})</span>
-                </span>
-              ))}
             </li>
           ))}
       </ul>
@@ -215,7 +202,7 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
     return v ? callsign(v) : `vehicle ${uid}`
   }
   // rules 34: a group order's failures are its members' (folded by rule below), and its own
-  const failed = a ? a.checks.filter((c) => c.outcome === 'fail' && (!a.group || c.uid == null)) : []
+  const failed = a ? a.checks.filter((c) => c.outcome === 'fail' && !a.group) : []
   const unverified = a ? a.checks.filter((c) => c.outcome === 'unverified').length : 0
   const v = a ? verdictOf(a) : null
   const link = a?.link_coverage
@@ -240,7 +227,7 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
         </ul>
       )}
       {a && unverified > 0 && <p className="muted">{unverified} check{unverified > 1 ? 's' : ''} could not be verified.</p>}
-      {a?.group && <GroupDry g={a.group} checks={a.checks} uids={a.uids ?? []} kind={st.order?.task ?? ''} nameOf={(u) => nameOf(u) ?? u} />}
+      {a?.group && <GroupDry g={a.group} checks={a.checks} uids={a.uids ?? []} kind={st.order?.task ?? ''} nameOf={(u) => nameOf(u) ?? u} vehicles={vehicles} />}
       {routed.length > 0 && (
         <ul aria-label="Routed">
           {routed.map(({ uid, p }, k) => (

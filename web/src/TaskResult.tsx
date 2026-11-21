@@ -2,6 +2,7 @@ import type { Authorization, Intent } from './decisions'
 import { tierLabel } from './decisions'
 import type { Vehicle } from './types'
 import { callsign } from './types'
+import { RefusalFold } from './RefusalFold'
 
 /** What the task panel shows after sending: sent on the operator's own authority (200, a
  *  human tier), waiting for approval (202), or refused (422). */
@@ -95,7 +96,9 @@ export function TaskResult({
   return (
     <div className="tr refused" role="alert">
       <strong>Refused by the rules (intent i{i.id}). Nothing was sent.</strong>
-      {failed.length > 0 ? (
+      {i.uids.length > 1 && i.checks.some((c) => c.uid == null) ? (
+        <RefusalFold checks={i.checks} uids={i.uids} vehicles={vehicles} />
+      ) : failed.length > 0 ? (
         <ul>
           {failed.map((c, k) => (
             <li key={k} className="fail">

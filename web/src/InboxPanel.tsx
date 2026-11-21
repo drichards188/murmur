@@ -16,6 +16,7 @@ import {
   unspendTarget,
 } from './decisions'
 import { Bluf, BlufReason, ChecksFold } from './Bluf'
+import { RefusalFold } from './RefusalFold'
 import { alertParts } from './bluf'
 import { waitingItems } from './blocking'
 import { EngageCard, EngagementsSection } from './EngageCard'
@@ -231,12 +232,10 @@ function GroupBody({ intent: i, vehicles }: { intent: Intent; vehicles: Vehicle[
   const lines = memberClasses(i.uids, i.checks)
   const c = counts(lines, i.group, i.kind)
   const folds = foldByRule(i.checks)
-  const strength = i.checks.find((x) => x.rule === 'strength' && x.uid == null)
   const armed = new Set(i.policy?.facts.armed ?? [])
   const name = (u: string) => nameOf(vehicles, u)
   const listed = (uids: string[]) =>
     uids.length > GROUP_NAMES ? `${uids.slice(0, GROUP_NAMES).map(name).join(', ')} and ${uids.length - GROUP_NAMES} more` : uids.map(name).join(', ')
-  const left = lines.filter((l) => l.class !== 'sent')
   return (
     <>
       <p className="ix-group-head">
@@ -246,17 +245,7 @@ function GroupBody({ intent: i, vehicles }: { intent: Intent; vehicles: Vehicle[
         {armed.size > 0 && <span className="ix-tag warn">{armed.size} armed</span>}
         <span>{headline(c, i.group, i.kind, null)}</span>
       </p>
-      {strength && <p className={`ix-group-strength ${strength.outcome}`}>{strength.detail}</p>}
-      {left.length > 0 && (
-        <ul className="ix-group-left">
-          {left.map((l) => (
-            <li key={l.uid} className={l.class}>
-              <b>{name(l.uid)}</b> {l.class}: {l.why[0] ?? ''}
-              {l.why.length > 1 && <span className="muted"> (+{l.why.length - 1})</span>}
-            </li>
-          ))}
-        </ul>
-      )}
+      <RefusalFold checks={i.checks} uids={i.uids} vehicles={vehicles} />
       <details className="ix-group-members" onClick={(e) => e.stopPropagation()}>
         <summary>
           {c.n} members ({c.sent} sent{c.waiting ? `, ${c.waiting} waiting` : ''}
@@ -777,7 +766,8 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
             ))}
           </ol>
           {approver?.note && <p className="ix-note-shown">Note from {approver.by}: {approver.note}</p>}
-          {i.checks.some((c) => c.outcome !== 'pass') && (
+          {i.uids.length > 1 && i.checks.some((c) => c.uid == null) && <RefusalFold checks={i.checks} uids={i.uids} vehicles={vehicles} />}
+          {!(i.uids.length > 1 && i.checks.some((c) => c.uid == null)) && i.checks.some((c) => c.outcome !== 'pass') && (
             <ul className="ix-dec-checks">
               {i.checks
                 .filter((c) => c.outcome !== 'pass')
