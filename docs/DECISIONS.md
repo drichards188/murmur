@@ -4048,3 +4048,35 @@ Where the build departs from the draft, and why:
 - **Tests written for rules 33 decide under it by name** where they are about one intent to
   several vehicles (a queue test of a carried order on two vehicles, the older-rules checks of
   `tests/rules34.rs` and `rules34_reform.rs`), and the rules 33 scenarios run under both.
+- **A group's layer base is its type's catalog cruise altitude**, as built in stage 2, not the
+  fleet's per-vehicle `cruise_alt_m` that `mission_alt` reads for a one-vehicle order (the draft's
+  "[each type's cruise altitude, as `mission_alt` uses]"). They differ only where a fleet sets its
+  own: packed Saturation's 1,300 Pumas fly from 800 m to keep the gulf in the radio's sight, and
+  as group members at 80 m they lost their links. An opening order now gives `group` (its `alt_m`
+  here); whether the layout should read the fleet's figure is left for the owner (a logged fact
+  and a rules change).
+
+Situations under rules 34 (the opening orders of each; the runner counts a group's member orders
+under its line): every situation but packed Saturation names one vehicle an order, so none of
+them sends a group order and each starts as before (harbor-watch live below; the v3 worlds and the
+scale watch headless, their digests moved only by the logged causes). Saturation's region variant
+hands over one order per vehicle (rules 29), none a group. Packed Saturation's 36 are group orders.
+Headless (seed 1, no agent, after the layer bases above), 35 of 36 went out at 150 s: 14 picket
+rings done at strength, PICKET-1 and PICKET-7 suspended once the jammer sent members home (their
+failsafe, as designed), PICKET-8 voided at creation (15 of its X10s never reported: its members
+could not be placed, so a person was asked, and the pending order was voided whole on vehicle
+771's lost link; rules 33 would have refused its one intent), the 13 Puma lanes holding (76 to 93
+of each hundred done, a re-form where members dropped), the surface groups and the AUV ring in
+their layers; 2,891 member orders done, 404 running, 288 failed; the log replays. Live (autoplay,
+before op-auto was started ahead of the opening orders, on a host loaded by a headless run and
+another session's stack): the orders took 33 minutes to issue where the situation runs 15 (16 to
+60 s each; the surface groups' and the AUV ring's dry runs timed out), the decision tick waited 10
+to 90 s on its lock while they were issued, 15 groups with a member not yet placed expired in the
+inbox before anyone could decide them, and late packets at 23:48 read as 6,119 reboots, failing
+most of the member orders out; the log replays and matches its anchors. Not quoted as a
+measurement: it needs a quiet host.
+
+Checked live, rules 34 the default: harbor-watch on autoplay with the playbook (the port block of
+9365): the three opening orders dispatched and done, the playbook's four proposals routed by the
+watch policy's agent tier and three approved by op-auto, no group order; `run.started` names 34
+and schema 9; the log replays and matches its anchors.
