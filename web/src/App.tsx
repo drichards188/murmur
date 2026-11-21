@@ -61,11 +61,12 @@ import { buildStationLayers } from './linkLayers'
 import { nodeLossView } from './nodeLoss'
 import { buildNodeRegionLayers } from './nodeLossLayers'
 import { useNodes } from './useNodes'
-import { buildSwarmLayers, swarmLabelCandidates, useSwarms } from './swarms'
+import { buildSwarmLayers, useSwarms } from './swarms'
 import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
 import { HiddenLegend, type HiddenRow } from './HiddenLegend'
 import type { LabelStats } from './declutter'
-import { selectedSwarm, swarmOf, swarmOutlines, unfolded } from './swarmsModel'
+import { groupMarks, missingLines, selectedSwarm, swarmOf, swarmOutlines, unfolded } from './swarmsModel'
+import type { GroupsOnMap } from './GroupChips'
 import type { MapScreen } from './aloft'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
 
@@ -164,8 +165,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showInbox, setShowInbox] = useState(false)
   // rules 5: orders held for vehicles the link can't reach now
   const [showQueue, setShowQueue] = useState(false)
-  // swarms (docs/DECISIONS.md, "Swarm units"): the Swarms drawer
+  // swarms (docs/DECISIONS.md, "Swarm units"): the Swarms drawer, the card to bring into view in
+  // it (a chip clicked on the map), and the group whose chip or card is under the pointer
   const [showSwarms, setShowSwarms] = useState(false)
+  const [swarmFocus, setSwarmFocus] = useState<{ id: string; n: number } | null>(null)
+  const [hoverGroup, setHoverGroup] = useState<string | null>(null)
   const [inboxTab, setInboxTab] = useState<InboxTab>('inbox')
   const [inboxSel, setInboxSel] = useState<InboxSelection>(null)
   // evaluation instrumentation: a track opened is attributed to the selected inbox card only
@@ -277,8 +281,45 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const hasSwarms = useMemo(() => allVehicles.some((v) => swarmOf(v) != null), [allVehicles])
   const swarmFeed = useSwarms(hasSwarms || showSwarms)
   const swarmSel = useMemo(() => selectedSwarm(swarmFeed.doc?.swarms, selected), [swarmFeed.doc, selected])
-  // the groups' outlines and names, from each new summary (their names go through the label budget)
-  const swarmShapes = useMemo(() => swarmOutlines(swarmFeed.doc, swarmSel), [swarmFeed.doc, swarmSel])
+  // each group's marks on the map (bd murmur-4nik): code, colour, chip, from each new summary
+  const marks = useMemo(() => groupMarks(swarmFeed.doc), [swarmFeed.doc])
+  // the groups' outlines round their members heard now (a stale one is left out, never wrapped)
+  const swarmShapes = useMemo(() => {
+    if (!marks.list.length) return []
+    const heard = new Map<number, LngLat>()
+    for (const v of allVehicles) if (v.position && !isStale(v) && marks.ofUid.has(v.uid)) heard.set(v.uid, v.position)
+    return swarmOutlines(marks, (uid) => heard.get(uid) ?? null, swarmSel, hoverGroup)
+  }, [marks, allVehicles, swarmSel, hoverGroup])
+  // the chips on the map: a click selects the group's members (as the Fleet list's group row does)
+  // and brings its card into view in the Swarms drawer; nothing is sent
+  const groupsOnMap = useMemo<GroupsOnMap | null>(() => {
+    if (!marks.list.length) return null
+    return {
+      marks,
+      selected: swarmSel,
+      hovered: hoverGroup,
+      onHover: setHoverGroup,
+      onSelect: (id) => {
+        const m = marks.byId.get(id)
+        if (!m) return
+        setSelected(new Set(m.members))
+        setRevealVeh({ ids: m.members.map(String) })
+        setShowSwarms(true)
+        setSwarmFocus((f) => ({ id, n: (f?.n ?? 0) + 1 }))
+      },
+      detail: (id) => {
+        const m = marks.byId.get(id)
+        if (!m) return []
+        const members = new Set(m.members)
+        const byUid = new Map(allVehicles.filter((v) => members.has(v.uid)).map((v) => [v.uid, v]))
+        const lostNow = m.members.filter((u) => {
+          const v = byUid.get(u)
+          return v != null && isStale(v)
+        })
+        return missingLines(m, lostNow, (u) => (byUid.has(u) ? callsign(byUid.get(u)!) : `vehicle ${u}`))
+      },
+    }
+  }, [marks, swarmSel, hoverGroup, allVehicles])
   const reachRings = useMemo(() => {
     const fields = minefieldFeatures(minefields.data)
     if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) {
@@ -580,12 +621,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now()) : []),
       ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }, plan),
       ...stationLayers,
-      // the swarms' outlines and labels last, over the tracks' uncertainty (hundreds of contacts'
-      // rings would hide them) and under the vehicles
-      ...buildSwarmLayers(swarmShapes, swarmSel, plan),
+      // the groups' outlines last, over the tracks' uncertainty (hundreds of contacts' rings would
+      // hide them) and under the vehicles; their names are chips over everything (GroupChips.tsx)
+      ...buildSwarmLayers(swarmShapes),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [swarmShapes, swarmSel, nodeRegionLayers, estimateLayers, trackLayers, keepOutLayers, stationLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
+    [swarmShapes, nodeRegionLayers, estimateLayers, trackLayers, keepOutLayers, stationLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
   )
   // every text layer's labels for the one label budget (declutter.ts, docs/research/
   // saturation-display.md R2), with our vehicles' (MapView's): the same data and ticks as the
@@ -595,10 +636,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       ...(silent.length ? estimateLabelCandidates({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus, showAll: estimateAll }, screen) : []),
       ...trackLabelCandidates({ tracks: tracks?.tracks ?? [], lost: tracks?.lost ?? [], nowMs: now(), staleAfterS: tracks?.stale_after_s ?? 10, screen, focus: trackFocus }),
       ...orderLabelCandidates({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }, screen),
-      ...swarmLabelCandidates(swarmShapes, swarmSel, screen),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [silent, estimateTick, detailsUid, vehicleFocus, estimateAll, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick, swarmShapes, swarmSel],
+    [silent, estimateTick, detailsUid, vehicleFocus, estimateAll, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
   )
   const onLabelStats = useCallback((s: LabelStats) => setLabelStats(s), [])
   const n = (x: number) => x.toLocaleString('en-US')
@@ -962,6 +1002,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           tooltip={mapTooltip}
           allLabels={showAll.labels}
           onLabelStats={onLabelStats}
+          groups={groupsOnMap}
         />
         </ErrorBoundary>
         {showCoverage && (
@@ -1073,6 +1114,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             banners={drawer === 'swarms' ? banners : null}
             feed={swarmFeed}
             selected={swarmSel}
+            focus={swarmFocus}
+            hovered={hoverGroup}
+            onHover={setHoverGroup}
             alerts={decisions?.inbox.swarm_alerts ?? []}
             onSelect={(sw) => {
               // every member, so the order form sends one intent to the whole swarm

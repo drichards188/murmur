@@ -3,11 +3,18 @@
 // swarm_alerts): a member alert folded into a swarm alert is left out of the Inbox's own list and
 // found under its swarm card; a fleet without folding keeps every alert; a selection is a swarm's
 // only when it is exactly its members; the fleet list groups by swarm in the summary's order, with
-// the vehicles of none last, and stays by domain for a fleet without swarms; each swarm with a hull
-// gets one outline at sea level and a label (how many are unheard when any); the task line and
-// the tone say what the panel shows. Throws on the first failure, prints "swarms: ok" otherwise.
+// the vehicles of none last, and stays by domain for a fleet without swarms; the task line and the
+// tone say what the panel shows. The map's groups (bd murmur-4nik): no group colour is an
+// affiliation's; codes are as short as keep them apart; a chip's strength is honest (under its
+// minimum and suspended told apart, drops and returns counted, who is missing named); an outline
+// goes only round members heard; members crowding each other are a pile; chips that would overlap
+// stack; a cluster tile names its groups. Throws on the first failure, prints "swarms: ok" otherwise.
 import type { Alert } from './decisions'
-import { causeLines, foldedInto, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
+import { causeLines, chipStatus, convexHull, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
+import { cellChipText, cellGroups, chipSize, groupsOnScreen, stackChips, tileOf, type MemberOnScreen } from './groupScreen.ts'
+import { textWidth } from './declutter.ts'
+import type { GroupInForce } from './groupOrders.ts'
+import type { LngLat } from './types.ts'
 
 function check(cond: unknown, what: string) {
   if (!cond) throw new Error(`swarms: ${what}`)
@@ -63,13 +70,88 @@ check(groups.map((g) => g.id).join() === 'PICKET-1,SEARCH-1,NEW-1,', 'groups in 
 check(groups[0].title === 'PICKET-1 · PICKET-1 name' && groups[0].vehicles.map((x) => x.uid).join() === '1,2', 'a group keeps its members in list order')
 check(swarmGroups([v(1, null)], doc.swarms) === null, 'a fleet without swarms keeps its domain groups')
 
-// the map
-const { outlines, labels } = swarmOutlines(doc, 'PICKET-1')
-check(outlines.length === 1 && outlines[0].id === 'PICKET-1', 'one outline per swarm with a hull')
-check(outlines[0].ring.every((p) => p[2] === 0), 'outlines at sea level')
-check(outlines[0].line[3] === 255, 'the selected swarm drawn stronger')
-check(labels.map((l) => l.text).join('|') === 'PICKET-1 · 3 lost|SEARCH-1', 'labels say how many are unheard')
-check(swarmOutlines(null, null).outlines.length === 0, 'no summary, nothing drawn')
+// the map: colours, codes, chips, outlines (bd murmur-4nik)
+const AFFILIATION = ['#7fb8ff', '#f2c14e', '#5fd38d', '#ff5d5d', '#ffb347', '#6fe0c4']
+check(GROUP_PALETTE.every((g) => !AFFILIATION.includes(g.color.toLowerCase())), 'no group colour is an affiliation, selection or sea colour')
+const hue = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  if (max - min < 0.2) return null // near grey: no hue to mistake
+  const h = max === r ? ((g - b) / (max - min)) % 6 : max === g ? (b - r) / (max - min) + 2 : (r - g) / (max - min) + 4
+  return (h * 60 + 360) % 360
+}
+// friendly blue round 215, hostile red 0, neutral green 145, unknown yellow 45, selection 35
+for (const { color } of GROUP_PALETTE) {
+  const h = hue(color)
+  check(h == null || (h > 240 && h < 340), `${color} sits outside the affiliation hues (${h})`)
+}
+check(groupColor(0).color === GROUP_PALETTE[0].color && groupColor(GROUP_PALETTE.length).color === GROUP_PALETTE[0].color, 'colours by place in the summary, repeating')
+const sat = groupCodes(['PICKET-1', 'PICKET-12', 'SEARCH-3', 'SURFACE-3', 'RELAY-1', 'RESERVE', 'UNDERSEA-1'])
+check([...sat.values()].join() === 'PI1,PI12,SE3,SU3,RE1,RE,UN1', `codes as few letters as keep them apart (${[...sat.values()]})`)
+const gc = groupCodes(['PICKET', 'CRISSY', 'SEARCH', 'STRAIT', 'MARINA'])
+check([...gc.values()].join() === 'PI,CR,SE,ST,MA', `Group command's codes (${[...gc.values()]})`)
+check([...groupCodes(['PICKET-1', 'SEARCH-1']).values()].join() === 'P1,S1', 'one letter where one keeps them apart')
+check(new Set(groupCodes(['A-1', 'A_1', 'A.1']).values()).size === 3, 'codes stay unique however the ids collide')
+
+const inForce: GroupInForce[] = [
+  { intent: 41, kind: 'orbit', swarm: 'PICKET-1', state: 'dispatched', selection: 60, members: [], on_share: 44, dropped: { '7': 'lost link: silent 30 s', '8': 'lost link: silent 31 s', '9': 'ended: its member order failed' }, back: [12], taken: 0, strength: 45, min: 48, reforming: true, reforms: 1, suspended: false },
+]
+const sg = (over: Partial<NonNullable<Swarm['groups']>[number]> = {}) => ({ intent: 41, kind: 'orbit', members_here: 60, strength: 60, min: 48, dropped: 0, back: 0, reforms: 0, suspended: false, ...over })
+const full = chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg()] }), inForce)
+check(full.doing === 'orbit i41' && full.parts.map((p) => p.text).join(' · ') === '60/60 · min 48' && full.tone === 'ok', `a group at full strength (${JSON.stringify(full.parts)})`)
+const belowMin = chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 45, dropped: 3, back: 1 })] }), inForce)
+check(belowMin.parts[0].text === "45/60 · under min 48" && belowMin.tone === "bad" && !belowMin.suspended, 'under its minimum: bad, not suspended')
+check(belowMin.parts.some((p) => p.text === "3 dropped") && belowMin.parts.some((p) => p.text === '1 back'), 'drops and returns counted, not pooled')
+const susp = chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 5, min: 7, suspended: true })] }), inForce)
+check(susp.suspended && susp.parts[0].text === 'SUSPENDED · 5 of min 7', 'suspended said apart from under strength')
+const short = chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 55, dropped: 5 })] }), inForce)
+check(short.tone === 'warn' && short.parts[0].text === '55/60', 'short of its selection, above its minimum: a warning')
+const lost = chipStatus(swarm('X', [1, 2, 3, 4], { lost_link: 3, tasks: [{ intent: 9, kind: 'patrol', count: 4 }] }))
+check(lost.doing === 'patrol i9' && lost.parts.map((p) => p.text).join() === '4,3 lost link' && lost.tone === 'bad', `no group order: its task and its lost links (${JSON.stringify(lost.parts)})`)
+check(chipStatus(swarm('X', [1, 2], { tasks: [] })).doing === 'no order', 'no order')
+
+const marks = groupMarks({ ...doc, groups: inForce })
+check(marks.list.map((m) => m.code).join() === 'P1,S1' && marks.ofUid.get(5)?.id === 'SEARCH-1', 'marks: codes and members')
+check(marks.byId.get('PICKET-1')!.color === GROUP_PALETTE[0].color, "marks: the summary's order sets the colour")
+const pm = { ...marks.byId.get('PICKET-1')!, ...chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 45, dropped: 3, back: 1 })] }), inForce) }
+const lines = missingLines(pm, [3], (u) => `SKY ${u}`)
+check(lines.join('|') === '2 dropped (lost link): SKY 7, SKY 8|1 dropped (ended): SKY 9|1 back, waiting to rejoin: SKY 12|1 link lost now: SKY 3', `who is missing and why (${lines.join('|')})`)
+
+// outlines: round the members heard now, a stale one left out
+const heard = new Map<number, LngLat>([[1, [-122.48, 37.82]], [2, [-122.46, 37.82]], [3, [-122.47, 37.84]]])
+const outlines = swarmOutlines(marks, (u) => heard.get(u) ?? null, 'PICKET-1')
+check(outlines.length === 1 && outlines[0].id === 'PICKET-1' && outlines[0].ring.length === 3, 'one outline per group with three heard')
+check(outlines[0].ring.every((p) => p[2] === 0) && outlines[0].line[3] === 255 && outlines[0].width > 2.5, 'at sea level, the selected one stronger')
+heard.delete(3)
+check(swarmOutlines(marks, (u) => heard.get(u) ?? null, null).length === 0, 'no tidy outline round a member not heard')
+check(convexHull([[0, 0], [2, 0], [1, 1], [2, 2], [0, 2]]).length === 4, 'the hull leaves inner points out')
+
+// on the screen: apart, or a pile; the chip over the one drawn highest
+const at = (uid: number, x: number, y: number, group = 'G'): MemberOnScreen => ({ uid, group, x, y, lon: x / 1000, lat: y / 1000, z: uid, halfH: 14 })
+const apart = groupsOnScreen([at(1, 100, 100), at(2, 300, 100), at(3, 500, 200)]).groups.get('G')!
+check(apart.lod === 'apart' && apart.n === 3, 'members far apart stand apart')
+const onPile = groupsOnScreen([at(1, 100, 100), at(2, 110, 105), at(3, 120, 90), at(4, 600, 600)])
+const pile = onPile.groups.get('G')!
+check(pile.lod === 'pile', 'members crowding each other are a pile')
+check([...onPile.crowded].join() === '1,2,3', 'the one standing apart is not crowded')
+check(pile.yAt[2] === 3 && pile.lift === 24, 'the chip over the member drawn highest')
+check(groupsOnScreen([at(1, 100, 100), at(2, 105, 100, 'H')]).groups.get('G')!.lod === 'apart', "another group's member does not crowd")
+const st = stackChips([{ x: 100, y: 100, w: 120, h: 43 }, { x: 110, y: 100, w: 120, h: 43 }, { x: 600, y: 100, w: 120, h: 43 }])
+check(st[0].up === 0 && st[1].up === 47 && st[1].free && st[2].up === 0, `chips that would overlap stack (${JSON.stringify(st)})`)
+check(chipSize(marks.list[0]).w >= textWidth('P1', 11) + textWidth('PICKET-1', 14), 'a chip is as wide as its words')
+
+// far out: the groups in each cluster tile
+const [tx, ty] = tileOf(-122.47, 37.82, 12)
+check(tx === 654 && ty === 1582, `tiles as the bridge counts them (${tx}, ${ty})`)
+const cells = cellGroups(
+  [{ uid: 1, position: [-122.47, 37.82] }, { uid: 2, position: [-122.4701, 37.8201] }, { uid: 5, position: [-122.4702, 37.82] }, { uid: 99, position: [-122.47, 37.82] }, { uid: 3, position: null }],
+  (u) => marks.ofUid.get(u)?.id ?? null,
+  12,
+)
+const cell = cells.get(`${tx}:${ty}`)!
+check(cell.total === 4 && cell.none === 1 && cell.groups.map(([id, n]) => `${id}:${n}`).join() === 'PICKET-1:2,SEARCH-1:1', 'a tile names its groups, the largest first')
+check(cellChipText(cell, (id) => marks.byId.get(id)!.code).head === 'PICKET-1 2' && cellChipText(cell, (id) => marks.byId.get(id)!.code).rest === 'S1 1 · 1 ungrouped', 'a tile chip names its groups by code')
 
 // the panel's words
 check(taskLine(doc.swarms[0]) === 'orbit i7', 'a task all run')

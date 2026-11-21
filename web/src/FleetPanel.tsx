@@ -3,7 +3,7 @@ import { type GroupContext, groupView, type GroupView, latestOps, STATE_ORDER, S
 import { emuCause } from './linkEmu'
 import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
-import { type Swarm, swarmColor, swarmGroups } from './swarmsModel'
+import { groupCodes, groupColor, type Swarm, swarmGroups } from './swarmsModel'
 import './nodeLoss.css'
 import './swarms.css'
 import type { Tasking, Vehicle } from './types'
@@ -191,7 +191,7 @@ const OVERSCAN_PX = 400
 
 type Item =
   | { kind: 'head'; title: string; count: number; top: number; color?: string }
-  | { kind: 'group'; id: string; title: string; color: string; members: Vehicle[]; view: GroupView<Vehicle>; expanded: boolean; top: number }
+  | { kind: 'group'; id: string; title: string; color: string; ink: string; code: string | null; members: Vehicle[]; view: GroupView<Vehicle>; expanded: boolean; top: number }
   | { kind: 'row'; v: Vehicle; top: number }
   | { kind: 'more'; id: string; text: string; top: number }
 
@@ -208,13 +208,15 @@ function layout(vehicles: Vehicle[], swarms: Props['swarms'], ctx: GroupContext,
   let top = 0
   const bySwarm = swarmGroups(vehicles, swarms)
   if (bySwarm) {
-    const colors = new Map((swarms ?? []).map((s) => [s.id, swarmColor(s)]))
+    // each group's colour and code as the map's chips show them (swarmsModel.ts GROUP_PALETTE)
+    const looks = new Map((swarms ?? []).map((s, i) => [s.id, groupColor(i)]))
+    const codes = groupCodes((swarms ?? []).map((s) => s.id))
     for (const g of bySwarm) {
       if (!g.vehicles.length) continue
       const id = g.id ?? 'none'
       const expanded = expandAll || open.has(id)
       const view = groupView(g.vehicles, ctx, expanded)
-      items.push({ kind: 'group', id, title: g.title, color: g.id ? (colors.get(g.id) ?? '#7d8b9a') : '#7d8b9a', members: g.vehicles, view, expanded, top })
+      items.push({ kind: 'group', id, title: g.title, color: (g.id && looks.get(g.id)?.color) || '#7d8b9a', ink: (g.id && looks.get(g.id)?.ink) || '#0b0f14', code: g.id ? (codes.get(g.id) ?? null) : null, members: g.vehicles, view, expanded, top })
       top += GROUP_H
       for (const v of view.shown) {
         items.push({ kind: 'row', v, top })
@@ -278,7 +280,13 @@ function GroupRow({ it, selected, onSelect, onOpen }: { it: Extract<Item, { kind
       </button>
       <button className="vgroup-body" aria-expanded={it.expanded} onClick={onOpen} title={it.expanded ? 'Fold: list only its exceptions' : 'Open: list every member, exceptions first'}>
         <span className="vgroup-name">
-          <i style={{ background: it.color }} aria-hidden />
+          {it.code ? (
+            <span className="gcode" style={{ background: it.color, color: it.ink }} aria-hidden>
+              {it.code}
+            </span>
+          ) : (
+            <i style={{ background: it.color }} aria-hidden />
+          )}
           <span className="vgroup-title">{it.title}</span>
           <b>{members.length}</b>
           <span className="vgroup-caret" aria-hidden>

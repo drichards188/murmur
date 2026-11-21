@@ -93,8 +93,9 @@ let memo: { vehicles: Vehicle[]; placed: Vehicle[]; under: Vehicle[]; over: Vehi
 
 /** Stems and sea-level shadows: they follow a vehicle's drawn position (display smoothing,
  *  drawn.ts), so MapView rebuilds just these on an animation frame. The stems of what is under
- *  water are drawn seen through it, the other stems in their own colour. */
-export function build3dGlide(vehicles: Vehicle[]) {
+ *  water are drawn seen through it, the other stems in their own colour: a group member's in its
+ *  group's (`stemColor`, bd murmur-4nik; `stemKey` changes when those colours do), fainter. */
+export function build3dGlide(vehicles: Vehicle[], stemColor?: (v: Vehicle) => RGBA | null, stemKey?: unknown) {
   if (!memo || memo.vehicles !== vehicles) {
     const placed = vehicles.filter((v) => v.position)
     memo = { vehicles, placed, under: placed.filter(underWater), over: placed.filter((v) => !underWater(v)) }
@@ -108,6 +109,7 @@ export function build3dGlide(vehicles: Vehicle[]) {
     ? (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, 0) as XYZ
     : (v: Vehicle): XYZ => [v.position![0], v.position![1], 0]
   const triggers = smooth ? { getSourcePosition: drawnTick(), getTargetPosition: drawnTick(), getPosition: drawnTick() } : {}
+  const stemOf = (v: Vehicle) => stemColor?.(v) ?? colour(v, 160)
   // stem from sea level to the vehicle: shows height (or depth) at a glance
   const stems = (id: string, data: Vehicle[], seen = false) =>
     new LineLayer<Vehicle>({
@@ -115,10 +117,10 @@ export function build3dGlide(vehicles: Vehicle[]) {
       data,
       getSourcePosition: ground,
       getTargetPosition: at,
-      getColor: seen ? (v) => seenThroughWater(colour(v, 160)) : (v) => colour(v, 160),
+      getColor: seen ? (v) => seenThroughWater(stemOf(v)) : stemOf,
       getWidth: 1.5,
       widthUnits: 'pixels',
-      updateTriggers: triggers,
+      updateTriggers: { ...triggers, getColor: stemKey },
     })
   return {
     stemsUnder: stems('stems-under', under, true),

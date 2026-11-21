@@ -1,13 +1,11 @@
-// The swarm summary's feed (GET /api/swarms) and the map's swarm outlines (swarmsModel.ts has the
-// types and the pure helpers). The outlines are deck.gl layers at sea level over the terrain and
-// the water (as orderLayers.ts: a MapLibre line would drape on the seabed), built from one summary
-// and so rebuilt about once a second when a new one comes, never per frame.
-import { PolygonLayer, TextLayer } from '@deck.gl/layers'
+// The swarm summary's feed (GET /api/swarms) and the map's group outlines (swarmsModel.ts has the
+// types and the pure helpers; GroupChips.tsx the groups' names over their members). The outlines
+// are deck.gl layers at sea level over the terrain and the water (as orderLayers.ts: a MapLibre
+// line would drape on the seabed), rebuilt when a new summary or state comes, never per frame.
+import { PolygonLayer } from '@deck.gl/layers'
 import { useEffect, useState } from 'react'
-import type { MapScreen } from './aloft'
-import { ALL_FULL, textWidth, type LabelCandidate, type LabelPlan } from './declutter'
 import { ALERT_LABEL } from './decisions'
-import type { Outline, OutlineLabel, SwarmsDoc } from './swarmsModel'
+import type { Outline, SwarmsDoc } from './swarmsModel'
 
 export type SwarmsStatus = 'off' | 'loading' | 'ok' | 'missing' | 'error'
 
@@ -63,28 +61,14 @@ export function alertLabel(kind: string): string {
   return (ALERT_LABEL as Record<string, string>)[kind] ?? kind.replace(/_/g, ' ').toUpperCase()
 }
 
-const TEXT_OUTLINE: [number, number, number, number] = [11, 15, 20, 255]
-const FONT = 'IBM Plex Mono, ui-monospace, monospace'
 // over the scene: an outline at sea level is never hidden by the terrain or the seabed
 const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
 
-/** The groups' names for the label budget (declutter.ts, R2): aggregates, priority 2, after what
- *  is in focus and before our vehicles and the tracks; the selected group's always. Names that
- *  ran together ("SEARCH-8 SEARCH-7 ... SEARCH-1") now take turns. */
-export function swarmLabelCandidates(outlines: { labels: OutlineLabel[] }, selected: string | null, screen: MapScreen): LabelCandidate[] {
-  return outlines.labels.map((l) => {
-    const w = textWidth(l.text, 11) / 2
-    const box: [number, number, number, number] = [-w, -8, w, 8]
-    return { key: `s:${l.id}`, at: screen.at(l.at[0], l.at[1], 0), short: box, full: box, priority: l.id === selected ? 1 : 2, force: l.id === selected }
-  })
-}
-
-/** deck.gl layers for the outlines (MapView's `layers` prop), from one summary's outlines
- *  (swarmOutlines: memoise them on it) and the label plan. */
-export function buildSwarmLayers(shapes: { outlines: Outline[]; labels: OutlineLabel[] }, selected: string | null, plan: LabelPlan = ALL_FULL) {
-  const { outlines } = shapes
-  const labels = shapes.labels.filter((l) => plan.level(`s:${l.id}`) !== 'none')
-  if (!outlines.length && !labels.length) return []
+/** deck.gl layers for the groups' outlines (MapView's `layers` prop), from swarmOutlines (memoise
+ *  them): a line in the group's colour with a light fill of it. The groups' names are their chips
+ *  (GroupChips.tsx), over every layer. */
+export function buildSwarmLayers(outlines: Outline[]) {
+  if (!outlines.length) return []
   return [
     new PolygonLayer<Outline>({
       id: 'swarm-hulls',
@@ -92,30 +76,11 @@ export function buildSwarmLayers(shapes: { outlines: Outline[]; labels: OutlineL
       getPolygon: (o) => o.ring,
       getLineColor: (o) => o.line,
       getFillColor: (o) => o.fill,
-      getLineWidth: (o) => (o.id === selected ? 2.5 : 1.5),
+      getLineWidth: (o) => o.width,
       lineWidthUnits: 'pixels',
       stroked: true,
       filled: true,
       pickable: false,
-      updateTriggers: { getLineWidth: selected },
-      parameters: onTop,
-    }),
-    new TextLayer<OutlineLabel>({
-      id: 'swarm-labels',
-      data: labels,
-      getPosition: (l) => l.at,
-      getText: (l) => l.text,
-      getSize: 11,
-      getColor: (l) => l.color,
-      getTextAnchor: 'middle',
-      getAlignmentBaseline: 'center',
-      fontFamily: FONT,
-      fontWeight: 600,
-      outlineWidth: 3,
-      outlineColor: TEXT_OUTLINE,
-      // the other layers' settings, so deck.gl's font atlas cache keeps one entry for all
-      fontSettings: { sdf: true, fontSize: 48, buffer: 6 },
-      characterSet: 'auto',
       parameters: onTop,
     }),
   ]

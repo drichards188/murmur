@@ -1,6 +1,6 @@
-import { type ReactNode, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import type { SwarmsFeed } from './swarms'
-import { ROLE_LABEL, ROLE_ORDER, type Swarm, type SwarmAlert, swarmColor, swarmTone, taskLine } from './swarmsModel'
+import { groupColor, groupCodes, ROLE_LABEL, ROLE_ORDER, type Swarm, type SwarmAlert, swarmTone, taskLine } from './swarmsModel'
 import { reformBody, strengthLine, strengthTone, type GroupInForce } from './groupOrders'
 import { submitIntent } from './decisions'
 import { alertLabel } from './swarms'
@@ -16,6 +16,11 @@ interface Props {
   feed: SwarmsFeed
   /** the swarm the selection is exactly, if any */
   selected: string | null
+  /** bring this swarm's card into view (a chip clicked on the map; n changes on every request) */
+  focus?: { id: string; n: number } | null
+  /** the group whose chip or card is under the pointer: its card marked, its members on the map */
+  hovered?: string | null
+  onHover?: (id: string | null) => void
   /** the inbox's swarm alerts, for a mark on the swarms that have one */
   alerts: SwarmAlert[]
   onSelect: (s: Swarm) => void
@@ -39,13 +44,30 @@ export function SwarmsButton({ feed, open, onClick }: { feed: SwarmsFeed; open: 
   )
 }
 
-function Row({ s, selected, alerts, onSelect }: { s: Swarm; selected: boolean; alerts: number; onSelect: () => void }) {
+interface Look {
+  color: string
+  ink: string
+  code: string
+}
+
+function Row({ s, look, selected, hovered, alerts, onSelect, onHover, rowRef }: { s: Swarm; look: Look; selected: boolean; hovered: boolean; alerts: number; onSelect: () => void; onHover?: (id: string | null) => void; rowRef: (el: HTMLButtonElement | null) => void }) {
   const tone = swarmTone(s)
   return (
-    <button className={`sw-row ${tone} ${selected ? 'sel' : ''}`} onClick={onSelect} aria-pressed={selected} title={`Select all ${s.count} of ${s.id} for one order`}>
-      <span className="sw-chip" style={{ background: swarmColor(s) }} aria-hidden />
+    <button
+      ref={rowRef}
+      className={`sw-row ${tone} ${selected ? 'sel' : ''} ${hovered ? 'hov' : ''}`}
+      onClick={onSelect}
+      onMouseEnter={() => onHover?.(s.id)}
+      onMouseLeave={() => onHover?.(null)}
+      aria-pressed={selected}
+      title={`Select all ${s.count} of ${s.id} for one order`}
+    >
+      <span className="sw-chip" style={{ background: look.color }} aria-hidden />
       <span className="sw-main">
         <span className="sw-name">
+          <span className="gcode" style={{ background: look.color, color: look.ink } as CSSProperties}>
+            {look.code}
+          </span>{' '}
           <b>{s.id}</b> {s.name}
           {alerts > 0 && <span className="sw-alerts" title="swarm alerts in the Inbox">{alerts} alert{alerts === 1 ? '' : 's'}</span>}
         </span>
@@ -147,8 +169,18 @@ function GroupLine({ g, alerts, heard }: { g: GroupInForce; alerts: SwarmAlert[]
   )
 }
 
-export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, heard, banners }: Props) {
+export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, alerts, onSelect, onClose, heard, banners }: Props) {
   const swarms = feed.doc?.swarms ?? []
+  // each swarm's colour and code as the map and the fleet list show them (by the summary's order)
+  const ids = swarms.map((s) => s.id).join('\n')
+  const looks = useMemo(() => {
+    const codes = groupCodes(ids ? ids.split('\n') : [])
+    return new Map([...codes].map(([id, code], i) => [id, { ...groupColor(i), code }]))
+  }, [ids])
+  const rows = useRef(new Map<string, HTMLButtonElement>())
+  useEffect(() => {
+    if (focus) rows.current.get(focus.id)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [focus])
   const groups = feed.doc?.groups ?? []
   const total = swarms.reduce((n, s) => n + s.count, 0)
   const alertsBy = new Map<string, number>()
@@ -199,7 +231,20 @@ export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, heard, 
                 <small>{group.reduce((n, s) => n + s.count, 0).toLocaleString()} vehicles</small>
               </h3>
               {group.map((s) => (
-                <Row key={s.id} s={s} selected={selected === s.id} alerts={alertsBy.get(s.id) ?? 0} onSelect={() => onSelect(s)} />
+                <Row
+                  key={s.id}
+                  s={s}
+                  look={looks.get(s.id) ?? { ...groupColor(0), code: s.id }}
+                  selected={selected === s.id}
+                  hovered={hovered === s.id}
+                  alerts={alertsBy.get(s.id) ?? 0}
+                  onSelect={() => onSelect(s)}
+                  onHover={onHover}
+                  rowRef={(el) => {
+                    if (el) rows.current.set(s.id, el)
+                    else rows.current.delete(s.id)
+                  }}
+                />
               ))}
             </section>
           )

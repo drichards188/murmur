@@ -75,23 +75,57 @@ export const ROLE_ORDER = ['picket', 'search', 'relay', 'surface', 'undersea', '
 
 export type RGBA = [number, number, number, number]
 
-const ROLE_COLOR: Record<string, string> = {
-  picket: '#7fb8ff',
-  search: '#f2c14e',
-  relay: '#c49bff',
-  surface: '#4fd1c5',
-  undersea: '#5b8cff',
-  reserve: '#ff6b6b',
-  other: '#d7dde4',
-}
-
 /** The swarm a vehicle belongs to: the bridge's top-level `swarm`, or its identity's. */
 export function swarmOf(v: Pick<Vehicle, 'swarm' | 'identity'>): string | null {
   return v.swarm ?? v.identity?.swarm ?? null
 }
 
-export function swarmColor(s: Pick<Swarm, 'color' | 'role'>): string {
-  return s.color && /^#[0-9a-fA-F]{6}$/.test(s.color) ? s.color : (ROLE_COLOR[s.role] ?? ROLE_COLOR.other)
+/** The groups' colours, each with the ink its text takes (at least 4.5:1 on it; each colour at
+ *  least 4:1 against the dark map). None is an affiliation colour (blue friendly, red hostile,
+ *  green neutral, yellow unknown: the tracks use them, and a group in one would read as that), the
+ *  selection's orange or the sea's teal: violet, ivory, pink, deep magenta, orchid, in that order so
+ *  that neighbours in the summary differ. A group's colour is its place in the summary's order, the
+ *  same in the fleet list, the Swarms panel and the map; past five they repeat, and the code
+ *  (groupCodes) tells them apart, in greyscale too. The fleet file's `color` is not used: it chose
+ *  among the affiliation hues. Never on a vehicle's frame or fill (its affiliation): only on the
+ *  chip, the outline, the ring under each member and its stem. */
+export const GROUP_PALETTE: readonly { color: string; ink: string }[] = [
+  { color: '#c49bff', ink: '#120b1f' },
+  { color: '#ebe5d8', ink: '#16130d' },
+  { color: '#ff92cc', ink: '#1f0a15' },
+  { color: '#c0399f', ink: '#ffffff' },
+  { color: '#ea8cf2', ink: '#1b0a1d' },
+]
+
+/** The colour (and its ink) of the group at `index` in the summary's order. */
+export function groupColor(index: number): { color: string; ink: string } {
+  const n = GROUP_PALETTE.length
+  return GROUP_PALETTE[((index % n) + n) % n]
+}
+
+/** Each swarm's colour by id, from the summary's order (the lists' swatches and the map). */
+export function swarmColors(swarms: readonly Pick<Swarm, 'id'>[] | undefined): Map<string, string> {
+  return new Map((swarms ?? []).map((s, i) => [s.id, groupColor(i).color]))
+}
+
+/** Each group's short code, on its chip and under each of its members, so membership reads without
+ *  colour: the first letters of its id's leading word, as few as make every code unique (the same
+ *  number of letters for all), then its number: PICKET "PI" beside SEARCH "SE"; PICKET-3 "P3"
+ *  where no other word starts with P; SEARCH-3 "SE3" beside SURFACE-3 "SU3". An id without
+ *  letters is its own code. */
+export function groupCodes(ids: readonly string[]): Map<string, string> {
+  const parts = ids.map((id) => {
+    const word = (/^[^A-Za-z]*([A-Za-z]+)/.exec(id)?.[1] ?? '').toUpperCase()
+    const num = /(\d+)\D*$/.exec(id)?.[1] ?? ''
+    return { id, word, num }
+  })
+  const longest = Math.max(1, ...parts.map((p) => p.word.length))
+  for (let n = 1; n <= longest; n++) {
+    const codes = parts.map((p) => (p.word ? p.word.slice(0, n) + p.num : p.id))
+    if (new Set(codes).size === codes.length) return new Map(parts.map((p, i) => [p.id, codes[i]]))
+  }
+  // the same word and number twice (ids that differ only in punctuation): numbered in order
+  return new Map(parts.map((p, i) => [p.id, `${p.word ? p.word.slice(0, 2) + p.num : p.id}.${i + 1}`]))
 }
 
 export function rgba(hex: string, alpha = 255): RGBA {
@@ -190,37 +224,185 @@ export function swarmGroups<V extends Pick<Vehicle, 'swarm' | 'identity'>>(
   return out
 }
 
-// ---- the map's outlines (swarms.ts draws them) --------------------------------------------------
+// ---- each group on the map: its marks, its chip, its outline -----------------------------------
+//
+// One chip per group over its members (GroupChips.tsx), a ring under each member and its stem in
+// the group's colour (vehicleLayers.ts, map3d.ts), its code under each member while they stand
+// apart, and its outline at sea level round the members heard now (swarms.ts). Built from one
+// summary (about once a second), never per frame.
+
+export type Tone = 'ok' | 'warn' | 'bad'
+
+/** A piece of a chip's status line, its tone colouring it (none: the line's own). */
+export interface ChipPart {
+  text: string
+  tone?: Tone
+}
+
+/** One group as the map marks it. */
+export interface GroupMark {
+  id: string
+  name: string
+  code: string
+  /** its colour and the ink its text takes (GROUP_PALETTE) */
+  color: string
+  ink: string
+  rgb: RGBA
+  members: number[]
+  /** what it does: "orbit i1", "patrol i100", "no order" */
+  doing: string
+  /** its strength, honestly: on its share of the group order against its selection and minimum,
+   *  members unheard, back, dropped; else how many run its task */
+  parts: ChipPart[]
+  /** the worst of its parts: the chip's edge */
+  tone: Tone
+  /** its group order is suspended below its minimum: drawn apart from merely under strength */
+  suspended: boolean
+  /** the group order in force over most of it (rules 34), for the chip's hover: its members dropped
+   *  (uid -> why) and back */
+  dropped: [number, string][]
+  back: number[]
+  intent: number | null
+}
+
+export interface GroupMarks {
+  list: GroupMark[]
+  byId: ReadonlyMap<string, GroupMark>
+  ofUid: ReadonlyMap<number, GroupMark>
+}
+
+export const NO_MARKS: GroupMarks = { list: [], byId: new Map(), ofUid: new Map() }
+
+const worse = (a: Tone, b: Tone): Tone => (a === 'bad' || b === 'bad' ? 'bad' : a === 'warn' || b === 'warn' ? 'warn' : 'ok')
+
+/** A group's chip status from the summary: under a group order in force (the one over most of its
+ *  members), "60/60 · min 45" (its strength, on their shares and back, of its selection, against
+ *  its minimum), "41/60 · under min 45" or "SUSPENDED · 5 of min 7"; members back and dropped when
+ *  any; else how many run its largest task; and how many have lost their link. Never a bar: the
+ *  numbers, and the chip's hover names who is missing and why. */
+export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pick<GroupMark, 'doing' | 'parts' | 'tone' | 'suspended' | 'dropped' | 'back' | 'intent'> {
+  const parts: ChipPart[] = []
+  let tone: Tone = 'ok'
+  let suspended = false
+  let doing = 'no order'
+  let dropped: [number, string][] = []
+  let back: number[] = []
+  let intent: number | null = null
+  const g = [...(s.groups ?? [])].sort((a, b) => b.members_here - a.members_here)[0]
+  if (g) {
+    const whole = inForce.find((x) => x.intent === g.intent)
+    const sel = whole?.selection ?? g.members_here
+    intent = g.intent
+    doing = `${KIND_VERB[g.kind] ?? g.kind} i${g.intent}`
+    if (g.suspended) {
+      suspended = true
+      tone = 'bad'
+      parts.push({ text: `SUSPENDED · ${g.strength} of min ${g.min}`, tone: 'bad' })
+    } else if (g.strength < g.min) {
+      tone = 'bad'
+      parts.push({ text: `${g.strength}/${sel} · under min ${g.min}`, tone: 'bad' })
+    } else {
+      tone = g.strength < sel ? 'warn' : 'ok'
+      parts.push({ text: `${g.strength}/${sel}`, tone }, { text: `min ${g.min}` })
+    }
+    if (g.back) parts.push({ text: `${g.back} back` })
+    if (g.dropped) {
+      parts.push({ text: `${g.dropped} dropped`, tone: 'warn' })
+      tone = worse(tone, 'warn')
+    }
+    dropped = Object.entries(whole?.dropped ?? {}).map(([u, why]) => [Number(u), why])
+    back = whole?.back ?? []
+  } else {
+    const t = [...(s.tasks ?? [])].sort((a, b) => b.count - a.count)[0]
+    if (t) {
+      doing = `${KIND_VERB[t.kind] ?? t.kind}${t.intent != null ? ` i${t.intent}` : ''}`
+      parts.push({ text: t.count === s.count ? `${s.count}` : `${t.count} of ${s.count}` })
+    } else parts.push({ text: `${s.count}` })
+  }
+  if (s.lost_link) {
+    const t = swarmTone(s)
+    parts.push({ text: `${s.lost_link} lost link`, tone: t === 'ok' ? 'warn' : t })
+    tone = worse(tone, t === 'ok' ? 'warn' : t)
+  }
+  return { doing, parts, tone, suspended, dropped, back, intent }
+}
+
+/** Every swarm's marks from one summary: its code, colour (by its place in the summary) and chip. */
+export function groupMarks(doc: SwarmsDoc | null): GroupMarks {
+  const swarms = doc?.swarms ?? []
+  if (!swarms.length) return NO_MARKS
+  const codes = groupCodes(swarms.map((s) => s.id))
+  const list: GroupMark[] = swarms.map((s, i) => {
+    const { color, ink } = groupColor(i)
+    return { id: s.id, name: s.name, code: codes.get(s.id)!, color, ink, rgb: rgba(color), members: s.members, ...chipStatus(s, doc?.groups) }
+  })
+  const ofUid = new Map<number, GroupMark>()
+  for (const m of list) for (const u of m.members) ofUid.set(u, m)
+  return { list, byId: new Map(list.map((m) => [m.id, m])), ofUid }
+}
+
+/** Who is missing from a group and why, for its chip's hover: those its group order dropped, by
+ *  reason; those back and waiting to rejoin; those whose link is lost now. Names by `nameOf`, at
+ *  most `max` a line. */
+export function missingLines(m: GroupMark, lostNow: readonly number[], nameOf: (uid: number) => string, max = 6): string[] {
+  const names = (uids: number[]) => uids.slice(0, max).map(nameOf).join(', ') + (uids.length > max ? ` +${uids.length - max}` : '')
+  const out: string[] = []
+  const why = new Map<string, number[]>()
+  for (const [u, w] of m.dropped) {
+    const k = w.split(':')[0]
+    const list = why.get(k)
+    if (list) list.push(u)
+    else why.set(k, [u])
+  }
+  for (const [k, uids] of why) out.push(`${uids.length} dropped (${k}): ${names(uids)}`)
+  if (m.back.length) out.push(`${m.back.length} back, waiting to rejoin: ${names(m.back)}`)
+  if (lostNow.length) out.push(`${lostNow.length} link lost now: ${names([...lostNow])}`)
+  return out
+}
+
+/** The convex hull of points ([lon, lat]), counter-clockwise (Andrew's monotone chain). */
+export function convexHull(points: readonly LngLat[]): LngLat[] {
+  const p = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  if (p.length < 3) return p
+  const cross = (o: LngLat, a: LngLat, b: LngLat) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+  const lower: LngLat[] = []
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop()
+    lower.push(q)
+  }
+  const upper: LngLat[] = []
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i]
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop()
+    upper.push(q)
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)]
+}
 
 export interface Outline {
   id: string
   ring: [number, number, number][]
   line: RGBA
   fill: RGBA
+  width: number
 }
 
-export interface OutlineLabel {
-  id: string
-  at: [number, number, number]
-  text: string
-  color: RGBA
-}
-
-const LOST_TEXT: RGBA = [255, 154, 138, 255]
-
-/** Each swarm's hull at sea level and a label at its centroid ("PICKET-1", and how many have lost
- *  their link when any); the selected swarm's drawn stronger. */
-export function swarmOutlines(doc: SwarmsDoc | null, selected: string | null): { outlines: Outline[]; labels: OutlineLabel[] } {
-  const outlines: Outline[] = []
-  const labels: OutlineLabel[] = []
-  for (const s of doc?.swarms ?? []) {
-    const hex = swarmColor(s)
-    const sel = s.id === selected
-    if (s.hull && s.hull.length >= 3)
-      outlines.push({ id: s.id, ring: s.hull.map(([lon, lat]) => [lon, lat, 0]), line: rgba(hex, sel ? 255 : 190), fill: rgba(hex, sel ? 46 : 18) })
-    const at = s.centroid ?? s.hull?.[0]
-    if (!at) continue
-    labels.push({ id: s.id, at: [at[0], at[1], 0], text: s.lost_link ? `${s.id} · ${s.lost_link} lost` : s.id, color: s.lost_link ? LOST_TEXT : rgba(hex) })
+/** Each group's outline at sea level round its members heard now (`heardAt`: a member's position
+ *  while its link is not stale, else null): a silent or stale member is left out, never wrapped in
+ *  a tidy shape at a place it may have left (it shows on its own, dimmed and dashed). The selected
+ *  or hovered group drawn stronger. */
+export function swarmOutlines(marks: GroupMarks, heardAt: (uid: number) => LngLat | null, selected: string | null, hovered: string | null = null): Outline[] {
+  const out: Outline[] = []
+  for (const m of marks.list) {
+    const pts: LngLat[] = []
+    for (const u of m.members) {
+      const p = heardAt(u)
+      if (p) pts.push(p)
+    }
+    const hull = convexHull(pts)
+    if (hull.length < 3) continue
+    const strong = m.id === selected || m.id === hovered
+    out.push({ id: m.id, ring: hull.map(([lon, lat]) => [lon, lat, 0]), line: rgba(m.color, strong ? 255 : 200), fill: rgba(m.color, strong ? 52 : 24), width: strong ? 4 : 2.5 })
   }
-  return { outlines, labels }
+  return out
 }

@@ -32,7 +32,10 @@ import { spaceFeatures, spaceLinkLayers } from './spaceLayers'
 import { buildPreviewLayers, buildSurfaceLayers, type SurfaceScale } from './surfaceLayers'
 import type { Cluster, Clusters, LngLat, Tasking, Vehicle } from './types'
 import { callsign, isStale } from './types'
-import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS, vehicleLabelCandidates } from './vehicleLayers'
+import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS, vehicleLabelCandidates, type GroupDraw } from './vehicleLayers'
+import { cellChipSize, cellGroups, chipSize, groupsOnScreen, stackChips, type CellChip, type GroupOnScreen, type MemberOnScreen } from './groupScreen'
+import { GroupChips, type ChipPlacer, type ChipSpot, type GroupsOnMap } from './GroupChips'
+import { frameIcon } from './symbols'
 import { buildClusterLayers, CLUSTER_PICK_LAYERS, clusterRadius, domainLine, hotLine, unknownLine } from './clusterLayers'
 import { WeatherMap, type WeatherView } from './weatherMap'
 import { buildReachLayers } from './reachLayers'
@@ -147,6 +150,10 @@ interface Props {
   /** the full block of what is under the pointer, by its label key (`t:<id>`...), for a layer
    *  and object not our vehicles: shown as a tooltip while its label is not drawn in full */
   tooltip?: (layerId: string, object: unknown) => { key: string; text: string } | null
+  /** the groups (swarms; bd murmur-4nik): a chip over each group's members (over every layer), a
+   *  ring in its colour under each member, its stems in that colour, its code under each member
+   *  while they stand apart; a member's callsign only on hover, selected, or while they stand apart */
+  groups?: GroupsOnMap | null
 }
 
 /** The extension layers: called with what the camera cannot show (aloft.ts) and the label plan
@@ -169,6 +176,18 @@ const noActs: ActDrawing[] = []
 const noWeapons: WeaponTrack[] = []
 const noVictim = (): LngLat | null => null
 const noName = (uid: string) => `vehicle ${uid}`
+
+/** a group member's stem (bd murmur-4nik): its group's colour, fainter than the ring; full on the
+ *  hovered or selected group, dim on the others while one is hovered or while its link is stale */
+function stemColorOf(g: GroupDraw) {
+  return (v: Vehicle): [number, number, number, number] | null => {
+    const m = g.ofUid.get(v.uid)
+    if (!m) return null
+    const strong = g.hovered === m.id || g.selected === m.id
+    const a = isStale(v) ? 50 : strong ? 210 : g.hovered ? 45 : 130
+    return [m.rgb[0], m.rgb[1], m.rgb[2], a]
+  }
+}
 
 // antenna trackers: a beam along the yaw the tracker reports (where it is actually pointing)
 function beamFeatures(vehicles: Vehicle[]): FC {
@@ -343,7 +362,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, nodes, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, nodes, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp, groups = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -371,7 +390,14 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     () => (map.current && ready.current ? surfaceScale(map.current) : null),
   )
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay, nodes })
+  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay, nodes, groupDraw: null as GroupDraw | null, groupGeo: new Map<string, GroupOnScreen>(), cells: new Map<string, CellChip>() })
+  // the groups: their marks and what a chip does, the chips laid out last (GroupChips.tsx), and the
+  // function that moves them with the camera
+  const groupsRef = useRef(groups)
+  groupsRef.current = groups
+  const [chips, setChips] = useState<ChipSpot[]>([])
+  const chipsKey = useRef('')
+  const chipPlacer = useRef<ChipPlacer | null>(null)
   // the label budget (declutter.ts): our vehicles' candidates as last seen on screen, the other
   // layers' source, Show all, the plan last made and its counts
   const vehicleLabels = useRef<LabelCandidate[]>([])
@@ -515,6 +541,53 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     return layers
   }
 
+  /** The groups' chips at this camera (groupScreen.ts): each group's over its members on the screen,
+   *  the most important first (selected, hovered, then the most members in view), stacked where two
+   *  would overlap, and forced into the label budget: the labels round them make room, and a
+   *  group in view is never left unnamed; far out, one per cluster tile with a group in it,
+   *  unforced (the budget may leave one out: its marker still counts it), the fullest first. */
+  const chipLayout = (screen: MapScreen): { cands: LabelCandidate[]; spots: ChipSpot[] } => {
+    const g = groupsRef.current
+    if (!g || !g.marks.list.length) return { cands: [], spots: [] }
+    const { groupGeo, cells, clusters: cl } = latest.current
+    const out: { spot: ChipSpot; x: number; y: number; w: number; h: number }[] = []
+    const rank = (id: string) => (id === g.selected ? 0 : id === g.hovered ? 1 : 2)
+    for (const geo of [...groupGeo.values()].sort((a, b) => rank(a.id) - rank(b.id) || b.n - a.n)) {
+      const m = g.marks.byId.get(geo.id)
+      const p = screen.at(geo.xAt[0], geo.xAt[1], geo.xAt[2])
+      const q = screen.at(geo.yAt[0], geo.yAt[1], geo.yAt[2])
+      if (!m || !p || !q) continue
+      const { w, h } = chipSize(m)
+      out.push({ spot: { key: `g:${m.id}`, id: m.id, xAt: geo.xAt, yAt: geo.yAt, lift: geo.lift }, x: p[0], y: q[1] - geo.lift, w, h })
+    }
+    const groupChips = out.length
+    if (cl) {
+      const at = new Map(cl.cells.map((c) => [`${c.x}:${c.y}`, c]))
+      const codeOf = (id: string) => g.marks.byId.get(id)?.code ?? id
+      for (const cell of [...cells.values()].sort((a, b) => b.total - a.total)) {
+        const c = at.get(cell.key)
+        const first = cell.groups[0]
+        const p = c && screen.at(c.c[0], c.c[1], 0)
+        if (!c || !first || !p) continue
+        const lift = clusterRadius(c) + 10
+        const { w, h } = cellChipSize(cell, codeOf)
+        out.push({ spot: { key: `gc:${cell.key}`, id: first[0], xAt: [c.c[0], c.c[1], 0], yAt: [c.c[0], c.c[1], 0], lift, cell }, x: p[0], y: p[1] - lift, w, h })
+      }
+    }
+    const stacked = stackChips(out.slice(0, groupChips))
+    const cands: LabelCandidate[] = []
+    const spots: ChipSpot[] = []
+    out.forEach((o, i) => {
+      const st = stacked[i]
+      const up = st?.up ?? 0
+      const spot = up ? { ...o.spot, lift: o.spot.lift + up, leader: up } : o.spot
+      spots.push(spot)
+      const box: [number, number, number, number] = [-o.w / 2, -o.h, o.w / 2, 6]
+      cands.push({ key: spot.key, at: [o.x, o.y - up], short: box, full: box, priority: 2, force: i < groupChips })
+    })
+    return { cands, spots }
+  }
+
   /** The one label budget at this camera: our vehicles' candidates, the cluster markers' room,
    *  the other layers' candidates; our vehicles' levels kept in `latest` (the same map while they
    *  do not change, so the vehicle layers are not rebuilt for nothing), the counts reported. */
@@ -531,8 +604,9 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       return { key: `c:${cell.x}:${cell.y}`, at: screen.at(cell.c[0], cell.c[1], 0), short: [-w, -r, w, r + 3 + 12 * lines.length], full: [-w, -r, w, r + 3 + 12 * lines.length], priority: 2, obstacle: true }
     })
     const others = labelsRef.current?.(screen) ?? []
+    const { cands: chipCands, spots } = chipLayout(screen)
     const t1 = performance.now()
-    const plan = planLabels([...obstacles, ...vehicleLabels.current, ...others], {
+    const plan = planLabels([...obstacles, ...chipCands, ...vehicleLabels.current, ...others], {
       zoom: m.getZoom(),
       width: c.clientWidth,
       height: c.clientHeight,
@@ -561,6 +635,13 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const old = latest.current
     if (old.labels.size !== levels.size || [...levels].some(([k, l]) => old.labels.get(k) !== l)) old.labels = levels
     if (old.badges.size !== badges.size || [...badges].some((k) => !old.badges.has(k))) old.badges = badges
+    // the chips the budget placed (all of them before the map has a camera)
+    const shown = spots.filter((c) => plan.level(c.key) !== 'none')
+    const ck = shown.map((c) => `${c.key}@${c.lift}:${c.xAt.join()}:${c.yAt.join()}`).join('|')
+    if (ck !== chipsKey.current) {
+      chipsKey.current = ck
+      setChips(shown)
+    }
     const key = JSON.stringify(plan.stats)
     if (key !== statsRef.current) {
       statsRef.current = key
@@ -584,10 +665,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         clusters: buildClusterLayers(latest.current.clusters),
       }
     } else if (previewToo && m) staticLayers.current.preview = buildPreviewLayers(previewData(), surfaceScale(m))
-    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl } = latest.current
+    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl, groupDraw } = latest.current
     const { three, surface, preview: previewLayers, link, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
-    const glide = build3dGlide(vs)
+    const glide = build3dGlide(vs, groupDraw ? stemColorOf(groupDraw) : undefined, groupDraw)
     const trails = smoothRef.current ? buildTrailLayers(vs) : { under: [], over: [] }
     const layers: LayersList = [
       // seen through the water (map3d.ts): the trails and stems of what is under it
@@ -611,7 +692,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
-      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl }),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl, groups: groupDraw }),
       // hostile acts our sensors observed: the fire event, then what lingers of it
       ...actLayers(),
       // opponent weapons as our sensors know them: the estimate, the fixes, the strike
@@ -819,6 +900,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // then reads a camera off by that much: tens of pixels over the deep channel, so a click on a
     // vehicle missed it. A move whenever that elevation changes gives deck.gl the camera again.
     let deckElevation = m.transform.elevation
+    // the groups' chips follow the camera on every frame drawn (a few dozen projections)
+    m.on('render', () => {
+      if (chipPlacer.current && !lostRef.current) chipPlacer.current.place(screenNow())
+    })
     m.on('render', () => {
       if (m.transform.elevation === deckElevation) return
       deckElevation = m.transform.elevation
@@ -1341,6 +1426,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const cands: LabelCandidate[] = []
     // only those on screen weigh in (the drawn set reaches a quarter of the view past each edge)
     const [w, h] = [m.getCanvas().clientWidth, m.getCanvas().clientHeight]
+    const onScreen: { v: Vehicle; at: [number, number]; z: number }[] = []
     for (const v of [...drawn].sort((a, b) => a.uid - b.uid)) {
       if (!v.position) continue
       const [lon, lat] = v.position
@@ -1350,12 +1436,30 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       const q = p ?? m.project(v.position)
       const at: [number, number] = Array.isArray(q) ? q : [q.x, q.y]
       if (at[0] < -40 || at[0] > w + 40 || at[1] < -40 || at[1] > h + 40) continue
+      onScreen.push({ v, at, z: aloft.has(v.uid) ? 0 : z })
+    }
+    // the groups as they stand on the screen (groupScreen.ts): where each one's chip goes, and
+    // whether its members stand apart or crowd each other
+    const g = groups
+    const members: MemberOnScreen[] = []
+    if (g) for (const { v, at, z } of onScreen) {
+      const mark = g.marks.ofUid.get(v.uid)
+      if (mark) members.push({ uid: v.uid, group: mark.id, x: at[0], y: at[1], lon: v.position![0], lat: v.position![1], z, halfH: frameIcon(v, isStale(v)).halfH })
+    }
+    const { groups: groupGeo, crowded } = groupsOnScreen(members)
+    for (const { v, at } of onScreen) {
       const mine = selected.has(v.uid) || v.uid === follow
       const priority: Priority = mine ? 1 : isStale(v) ? 3 : 4
-      cands.push(...vehicleLabelCandidates(v, at, aloft.has(v.uid), priority, mine, nodes))
+      const own = vehicleLabelCandidates(v, at, aloft.has(v.uid), priority, mine, nodes)
+      // a member crowding another of its group: no callsign (its chip names the group; hover shows
+      // it, selecting it labels it), its LOST badge as any vehicle's
+      cands.push(...(!mine && crowded.has(v.uid) ? own.filter((c) => !c.key.startsWith('v:')) : own))
     }
     vehicleLabels.current = cands
-    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay, nodes }
+    // far out: which groups fill each cluster tile (every vehicle, those sent lite too)
+    const cells = g && clustered ? cellGroups(vehicles, (uid) => g.marks.ofUid.get(uid)?.id ?? null, clusters!.z) : new Map<string, CellChip>()
+    const groupDraw: GroupDraw | null = g ? { ofUid: g.marks.ofUid, crowded, hovered: g.hovered, selected: g.selected } : null
+    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay, nodes, groupDraw, groupGeo, cells }
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
@@ -1382,7 +1486,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, nodes, follow])
+  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, nodes, follow, groups])
 
   useEffect(() => {
     spaceRef.current = space
@@ -1655,6 +1759,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   return (
     <>
       <div ref={container} className="map" />
+      {groups && <GroupChips spots={chips} groups={groups} placer={chipPlacer} screen={screenNow} />}
       <div ref={tooltip} className="vtip" hidden />
       <div ref={covTip} className="covtip" hidden />
       {glLost && (
