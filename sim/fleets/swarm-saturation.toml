@@ -46,7 +46,7 @@
 #   way to the strait crosses no no-go area (as in hostile-act-engagement). No script orders them;
 #   every task for them waits for a person.
 #
-# Opening orders (one per swarm but the reserve, to all its members as one intent):
+# Opening orders (one per swarm but the reserve, to all its members as one group order, rules 34):
 # sim/situations/swarm-saturation.toml.
 title = "Saturation: 3,602 stand-ins in 37 swarms at the Golden Gate"
 

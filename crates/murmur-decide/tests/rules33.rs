@@ -271,7 +271,8 @@ fn run(name: &str, version: Option<u32>) -> scenario::ScenarioResult {
     scenario::run_file(&f, &root(), &RunOptions { rules_version: version, ..RunOptions::default() }).unwrap()
 }
 
-/// Scenarios 149 to 157 end as designed under rules 33, each replaying and its tamper caught.
+/// Scenarios 149 to 157 end as designed under rules 33 (asked for by name) and under the current
+/// rules, each replaying and its tamper caught.
 #[test]
 fn the_rules_33_scenarios_end_as_designed() {
     for name in [
@@ -285,10 +286,12 @@ fn the_rules_33_scenarios_end_as_designed() {
         "156-a-stricter-bar-holds-both.toml",
         "157-a-named-loosening-and-its-name-dropped.toml",
     ] {
-        let r = run(name, None);
+        let r = run(name, Some(SCENARIO_SETTINGS_SINCE));
         assert!(r.ok, "{name}: {:?}", r.failures);
         assert!(r.replay_ok, "{name}: {:?}", r.replay_mismatches);
         assert!(r.log.contains(&format!("\"rules_version\":{SCENARIO_SETTINGS_SINCE},")), "{name}");
+        let r = run(name, None);
+        assert!(r.ok && r.replay_ok, "{name} under rules {RULES_VERSION}: {:?} {:?}", r.failures, r.replay_mismatches);
     }
 }
 
@@ -325,7 +328,7 @@ fn the_engagement_identity_check_names_the_level_and_the_bar() {
 /// rules 33 relabelled 32 is caught for what no build of rules 32 logged.
 #[test]
 fn an_own_looks_details_are_logged_under_rules_33_only() {
-    let now = run("149-identify-goes-on-past-a-first-naming.toml", None);
+    let now = run("149-identify-goes-on-past-a-first-naming.toml", Some(SCENARIO_SETTINGS_SINCE));
     assert!(now.log.contains("\"sensor\":\"eo_ir\",\"level\":\"identify\",\"confidence\":0.11"), "the naming's look");
     assert!(now.log.contains("\"step\":\"named\""));
     let old = run("149-identify-goes-on-past-a-first-naming.toml", Some(REACH_NOW_SINCE));

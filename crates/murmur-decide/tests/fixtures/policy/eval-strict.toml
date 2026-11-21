@@ -126,7 +126,7 @@ reason = "endurance unknown: reserves after the task could not be estimated"
 
 [[tier]]
 name = "every-vehicle-task"
-when = { kind = ["orbit", "patrol", "track"] }
+when = { kind = ["orbit", "patrol", "transit", "track"] }
 tier = "human"
 reason = "strict variant: every vehicle task is a human decision (approval fatigue study)"
 

@@ -1475,11 +1475,28 @@ fn a_confirming_delivery_whose_link_drops_before_it_asks_is_requeued() {
     assert_eq!(r.requeued, 2);
 }
 
-/// Run A: an orbit for sky-1 and blade-1; sky-1 started it (`acked`), blade-1's start went out
-/// (`starting`) and the bridge stopped. Run B carries it over dispatched: sky-1 is followed
-/// (the bridge's Adopt op, never requeued), blade-1 only confirmed (its Confirm op may be).
+/// The shipped policy under rules 33, asked for by name: one intent to two vehicles is one
+/// intent there (from rules 34 a group order, its members one-vehicle orders of their own).
+fn rules33() -> Policy {
+    let mut p = policy();
+    p.rules.rules_version = SCENARIO_SETTINGS_SINCE;
+    p
+}
+
+/// [`replays`] for a log of rules 33.
+fn replays_33(fx: &Fx) -> ReplayReport {
+    let opts = ReplayOptions { rules: replay::RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE), ..ReplayOptions::default() };
+    let r = replay_str_with(&fx.log.text(), &opts).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    r
+}
+
+/// Run A: an orbit for sky-1 and blade-1 (one intent: rules 33); sky-1 started it (`acked`),
+/// blade-1's start went out (`starting`) and the bridge stopped. Run B carries it over
+/// dispatched: sky-1 is followed (the bridge's Adopt op, never requeued), blade-1 only confirmed
+/// (its Confirm op may be).
 fn resumed_one_started_one_maybe() -> (Fx, Fx, IntentId) {
-    let mut a = fx();
+    let mut a = fx_on(rules33());
     let w = world_now(&a);
     let id = a.submit(orbit(NEAR_CRISSY, 200.0, &["sky-1", "blade-1"]), &w);
     a.engine.dispatch_or_queue(id, &w).unwrap();
@@ -1488,12 +1505,12 @@ fn resumed_one_started_one_maybe() -> (Fx, Fx, IntentId) {
     a.engine.record_op_state_ahead(id, &sky, "starting mission: mission mode commanded").unwrap();
     a.engine.record_op_state(id, &sky, "acked", "accepted").unwrap();
     a.engine.record_op_state_ahead(id, &blade, "starting mission: mission mode commanded").unwrap();
-    let ra = replays(&a);
+    let ra = replays_33(&a);
     let open = ra.open.iter().find(|o| o.spec.id == id).unwrap();
     assert_eq!(open.committed(), vec![sky.clone()]);
     assert!(open.maybe_started.contains(&blade), "{:?}", open.maybe_started);
     assert_eq!(open.resumes_as(), State::Dispatched);
-    let mut b = fx();
+    let mut b = fx_on(rules33());
     b.clock.set(a.clock.now().plus_ms(10_000));
     let from = ResumedFrom {
         log: "a.jsonl".into(),
@@ -1522,6 +1539,7 @@ fn replay_catches_an_adopted_vehicle_requeued_after_a_restart() {
     let check = |text: &str| -> Vec<String> {
         let opts = ReplayOptions {
             previous: Some(&a_text),
+            rules: replay::RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE),
             ..ReplayOptions::default()
         };
         replay_str_with(text, &opts).unwrap().mismatches.into_iter().map(|m| m.what).collect()

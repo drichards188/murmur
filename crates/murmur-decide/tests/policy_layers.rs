@@ -332,7 +332,7 @@ fn the_watch_policy_is_the_shipped_one_and_one_tier() {
     let at = watch.tiers.iter().position(|t| t.name == "agent-tasking").unwrap();
     assert_eq!(watch.tiers[at + 1].name, "default");
     let added = watch.tiers.remove(at);
-    assert_eq!(added.when.kind, Some(vec![TaskKind::Orbit, TaskKind::Patrol, TaskKind::Track, TaskKind::Identify]));
+    assert_eq!(added.when.kind, Some(vec![TaskKind::Orbit, TaskKind::Patrol, TaskKind::Transit, TaskKind::Track, TaskKind::Identify]));
     assert_eq!(watch, shipped);
 }
 

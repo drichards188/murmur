@@ -214,7 +214,11 @@ fn a_member_found_not_running_is_requeued_under_its_groups_approval() {
 #[test]
 fn under_older_rules_the_group_step_does_nothing() {
     let clock = ManualClock::new(T0);
-    let (mut e, log) = engine(&clock);
+    // rules 33, asked for by name (34 is the default)
+    let mut p = policy();
+    p.rules.rules_version = SCENARIO_SETTINGS_SINCE;
+    let log = MemorySink::new();
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     assert!(!e.policy().rules.group_orders());
     let before = log.text().len();
     let step = e.step_groups(&world(), &terrain()).unwrap();

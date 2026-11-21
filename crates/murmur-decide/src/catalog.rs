@@ -59,7 +59,8 @@ impl AutopilotKind {
             | AutopilotKind::Blimp
             | AutopilotKind::Boat
             | AutopilotKind::Ugv
-            | AutopilotKind::Sub => &[Orbit, Patrol, Hold, Rtl, Engage, Identify],
+            // rules 34: a transit (refused before the checks under older rules)
+            | AutopilotKind::Sub => &[Orbit, Patrol, Transit, Hold, Rtl, Engage, Identify],
             AutopilotKind::Tracker => &[Track, Hold],
             AutopilotKind::Drifter => &[],
         }

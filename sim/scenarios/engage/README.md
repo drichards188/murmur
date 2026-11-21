@@ -101,7 +101,8 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   with what blocks it), `reacquired` (`t=<s> T-0002 is T-0005 again, confirmed by op-2`),
   `reinstated` (`t=<s> T-0002 counts again: why`).
 
-- Rules 34 (being built: `min_rules = 34`; docs/SWARMS.md, bd murmur-4nik): an order to more
+- Rules 34 (the default since 2026-11-20; the group scenarios keep `min_rules = 34`; docs/SWARMS.md,
+  bd murmur-4nik): an order to more
   than one vehicle is a group order (its `task` step's optional `group`: `spread`, `min_members`,
   `alt_m`, `wait_s`, `reform`, `lanes`, `lane_spacing_m`). Once approved the runner sends it out as
   the bridge will (`Engine::dispatch_group`): its member orders, each dispatched or queued on its

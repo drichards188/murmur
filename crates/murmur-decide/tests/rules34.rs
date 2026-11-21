@@ -77,8 +77,10 @@ fn an_agents_group_order_is_one_card_and_its_members_never_reach_the_inbox() {
 #[test]
 fn under_older_rules_an_order_to_many_is_one_intent_and_a_group_spec_is_refused() {
     let clock = ManualClock::new(T0);
-    let (mut e, _) = engine(&clock);
-    assert_eq!(e.policy().rules.rules_version, RULES_VERSION);
+    // rules 33, asked for by name (34 is the default)
+    let mut p = policy();
+    p.rules.rules_version = SCENARIO_SETTINGS_SINCE;
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
     let w = four_quads();
     let t = terrain();
     let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
@@ -100,7 +102,7 @@ fn a_log_of_rules_34_cannot_pass_for_one_of_older_rules() {
     let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let id = e.submit(s.authority(), orbit(RING, 150.0, &["sky-1", "sky-2", "sky-3"]), &w, &t).unwrap().id();
     e.dispatch_group(id, &w).unwrap();
-    let text = forge(&log.text(), |ev| claim_older_rules(&mut ev[0].body, RULES_VERSION));
+    let text = forge(&log.text(), |ev| claim_older_rules(&mut ev[0].body, SCENARIO_SETTINGS_SINCE));
     let r = replay::replay_str_with(&text, &replay::ReplayOptions { rules: replay::RulesAccepted::AtLeast(1), ..Default::default() }).unwrap();
     assert!(
         r.mismatches.iter().any(|m| m.what.contains("only builds of rules 34 or later write it")),
@@ -166,8 +168,10 @@ fn an_operators_dry_run_of_a_group_order_shows_its_layout() {
     // an agent's preview of a transit to stations too
     let a = e.agent_port(AgentId::new("agent-planner")).preview(tr.clone(), &w, &t).unwrap();
     assert_eq!(a.group.as_ref().and_then(|g| g.layout.spread), Some(group::Spread::Stations));
-    // rules 33: one intent's dry run, and no transit
-    let mut old = Engine::new(Policy::load(&sim_dir().join("policy.toml")).unwrap(), roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
+    // rules 33, asked for by name: one intent's dry run, and no transit
+    let mut p33 = Policy::load(&sim_dir().join("policy.toml")).unwrap();
+    p33.rules.rules_version = SCENARIO_SETTINGS_SINCE;
+    let mut old = Engine::new(p33, roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
     let p = old.dry_run_for_operator(&OperatorId::new("op-1"), orbit(RING, 150.0, &uids), &w, &t).unwrap();
     assert!(p.group.is_none() && !p.checks.iter().any(|c| c.rule == RuleId::Strength));
     tr.group = None;
@@ -177,11 +181,13 @@ fn an_operators_dry_run_of_a_group_order_shows_its_layout() {
     assert!(refused.to_string().contains("take no transit (rules 34)"), "{refused}");
 }
 
-/// Rules 34 (policy schema 9, staged): a transit is routed as a patrol is. Under the situations'
-/// watch policy an agent's transit waits for the operator in its agent tier, which names patrol;
-/// under the standing policy an agent's routine transit goes by the default tier, as a patrol does.
+/// Rules 34 (policy schema 9): a tier's kind list routes a transit where it names one. Under the
+/// situations' watch policy an agent's transit waits for the operator in its agent tier, which
+/// names it beside patrol; under the standing policy an agent's routine transit goes by the default
+/// tier, as a patrol does; and a list that names patrol alone no longer takes a transit (the staged
+/// build's fallback is gone: a policy says what it routes).
 #[test]
-fn a_transit_is_routed_as_a_patrol() {
+fn a_transit_is_routed_where_a_tier_names_it() {
     let clock = ManualClock::new(T0);
     let w = four_quads();
     let t = terrain();
@@ -195,4 +201,13 @@ fn a_transit_is_routed_as_a_patrol() {
     let mut e = Engine::new(rules34(Policy::load(&sim_dir().join("policy.toml")).unwrap()), roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
     let id = e.agent_port(AgentId::new("agent-planner")).propose(one(), rationale("hold a station on the strait"), &w, &t).unwrap().id();
     assert_eq!(e.intent(id).unwrap().policy().map(|p| p.rule.as_str()), Some("default"), "{:?}", e.intent(id).unwrap().policy());
+    // the watch policy's agent tier without transit: the transit is not its
+    let mut p = watch_policy();
+    let tier = p.tiers.iter_mut().find(|t| t.name == "agent-tasking").expect("the agent tier");
+    let kinds = tier.when.kind.as_mut().expect("its kinds");
+    assert!(kinds.contains(&TaskKind::Transit), "the watch policy names transit beside patrol");
+    kinds.retain(|k| *k != TaskKind::Transit);
+    let mut e = Engine::new(p, roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
+    let id = e.agent_port(AgentId::new("agent-planner")).propose(one(), rationale("hold a station on the strait"), &w, &t).unwrap().id();
+    assert_eq!(e.intent(id).unwrap().policy().map(|p| p.rule.as_str()), Some("default"), "patrol alone takes no transit");
 }

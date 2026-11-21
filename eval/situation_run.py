@@ -141,6 +141,11 @@ def say(msg: str) -> None:
         pass
 
 
+def member_counts(by_state: dict[str, int]) -> str:
+    """A group order's member orders by state, most first ("98 dispatched, 2 queued")."""
+    return ", ".join(f"{n} {s}" for s, n in sorted(by_state.items(), key=lambda x: (-x[1], x[0])))
+
+
 def rel(p: Path) -> str:
     """A path as the repository names it (absolute when outside it)."""
     try:
@@ -1413,13 +1418,22 @@ class Runner:
             f"  target/release/murmur-replay {rel(self.audit)} --anchors {rel(self.anchors)}",
             "what happened:",
         ]
+        # rules 34: an order to many is one group order, out as one member order per member (each
+        # an intent with its group as `parent`): counted under its group by state, never listed
+        members: dict[int, dict[str, int]] = {}
+        for i in intents.values():
+            if i.get("parent") is not None:
+                c = members.setdefault(int(i["parent"]), {})
+                c[str(i.get("state"))] = c.get(str(i.get("state")), 0) + 1
         for o in self.orders:
             now = intents.get(o.get("intent_id"), {}).get("state")
             by = f" by {o['by']}" if o.get("by") else ""
             routed = f" [{o['routed']}]" if o.get("routed") else ""
             # a swarm's order by its swarm, not a hundred callsigns
             names = f"swarm {o['swarm']} ({len(o.get('vehicles') or [])} vehicles)" if o.get("swarm") else ", ".join(o.get("vehicles") or ["?"])
-            lines.append(f"  opening order {o['id']} ({o['task']} for {names}){by}: intent {o.get('intent_id')} {now or o.get('state') or o.get('error')}{routed}")
+            mine = members.get(o.get("intent_id") or -1)
+            parts = f"; its member orders: {member_counts(mine)}" if mine else ""
+            lines.append(f"  opening order {o['id']} ({o['task']} for {names}){by}: intent {o.get('intent_id')} {now or o.get('state') or o.get('error')}{parts}{routed}")
         if self.handover_want:
             # rules 29: the fleet's starting tasks, from the whole log (not only what the run saw)
             w = HandoverWatch()
@@ -1462,10 +1476,13 @@ class Runner:
                 states[str(i.get("state"))] = states.get(str(i.get("state")), 0) + 1
             lines.append("    their intents now: " + ", ".join(f"{n} {s}" for s, n in sorted(states.items(), key=lambda x: -x[1])))
         handed_ids = {i["id"] for i in handed}
-        others = [i for i in others if i["id"] not in handed_ids]
+        # rules 34: member orders counted under their group (its line above, or its own below)
+        others = [i for i in others if i["id"] not in handed_ids and i.get("parent") is None]
         for i in sorted(others, key=lambda i: i["id"]):
             src = i.get("source") or {}
-            lines.append(f"  intent {i['id']} {i.get('kind')} for vehicles {','.join(str(u) for u in i.get('uids') or [])} from {src.get('kind')} {src.get('id')}: {i.get('state')}")
+            mine = members.get(int(i["id"]))
+            parts = f"; its member orders: {member_counts(mine)}" if mine else ""
+            lines.append(f"  intent {i['id']} {i.get('kind')} for vehicles {','.join(str(u) for u in i.get('uids') or [])} from {src.get('kind')} {src.get('id')}: {i.get('state')}{parts}")
         chain = self.chain.summary_lines()
         if chain:
             lines.append("  the engagement chain (audit log):")

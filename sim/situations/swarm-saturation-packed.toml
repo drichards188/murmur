@@ -13,9 +13,13 @@
 # Gulf of the Farallones; a relay chain of Puma-class fixed wings along the Presidio shore and out
 # to sea; five surface swarms (Saildrones at sea, Corsair-class USVs in the strait and the bay); a
 # group of REMUS-class AUVs under the bridge; and two armed MQ-9Bs in reserve. Every opening order
-# goes to a swarm as one intent with all its members (`vehicles = { swarm = ... }`), using today's
-# kinds: an orbit makes a ring picket, a patrol a lane or a relay chain. The reserve gets none: a
-# script may not order an armed platform.
+# goes to a swarm, all its members (`vehicles = { swarm = ... }`): an orbit makes a ring picket, a
+# patrol a lane or a relay chain. From decision rules 34 each is one group order (docs/SWARMS.md):
+# the engine lays out each member's slot, layer and altitude inside its type's band, checks each
+# share, and sends every member its own member order under the one approval, a member it cannot
+# send now waiting to join (rules 33 sent it as one intent of a hundred vehicles, the task layer
+# stacking each a step higher and sending every member of a patrol along the same lane: bd
+# murmur-3kqi). The reserve gets none: a script may not order an armed platform.
 #
 # The timeline, on the situation's clock (the link emulator's start): the stack and the opening
 # orders take the first minute or two; a quiet watch while the swarms reach their stations; RF
@@ -108,11 +112,12 @@ accepted in the form. The target-identity check (0.6) may need a closer look fir
 order with one quadcopter of a picket). What should not happen: a swarm sent to orbit the shooter
 (a circling friendly counts anywhere on its disc and blocks the engagement), a nomination before
 the confirmation (refused), or an engagement on a drone that did nothing. Known limits of this
-world: one order to a hundred vehicles runs as a hundred missions, each at its own altitude step
-(the task layer's deconfliction: up to some 500 m for the quadcopters, 1.6 km for the Pumas, and
-the AUVs' depth steps reach past the channel's floor); a patrol sends every member along the same
-lane; the relay chain relays nothing (the link emulator links each vehicle to the ground station
-directly).
+world: the relay chain relays nothing (the link emulator links each vehicle to the ground station
+directly). From decision rules 34 one order to a swarm is one group order, each member on its own
+slot and layer inside its type's band; under rules 33 it ran as a hundred missions, each at its own
+altitude step (the task layer's deconfliction: up to some 500 m for the quadcopters, 1.6 km for the
+Pumas, the AUVs' depth steps past the channel's floor), and a patrol sent every member along the
+same lane.
 """
 
 world = "golden-gate-saturation"              # sim/worlds/golden-gate-saturation.toml: the Golden Gate,
@@ -163,12 +168,13 @@ bullets = [
   "An effect needs two operators with engagement authority; it is allowed only in the zone west of the bridge.",
 ]
 
-# ---- opening orders, once the fleet is ready: one per swarm, to all its members as one intent
-# (`vehicles = { swarm = ... }`), issued by the setup script (op-setup) under the dry-run rule. The
+# ---- opening orders, once the fleet is ready: one per swarm, to all its members as one group
+# order (`vehicles = { swarm = ... }`; rules 34), issued by the setup script (op-setup) under the
+# dry-run rule. The
 # reserve has none (armed: refused at load). Every platform has an endurance figure, every station
 # is inside the operating area, so each goes out by policy (the default tier).
 
-# picket rings (X10, orbit: the task layer spreads a ring's members round it)
+# picket rings (X10, orbit: the engine lays a ring's members out round it, a slot and a layer each)
 [[order]]
 id = "picket-1"
 task = "orbit"
@@ -305,7 +311,8 @@ center = [-122.4000, 37.8320]
 radius_m = 300
 note = "Opening order: picket ring, central bay, east"
 
-# search lanes (Puma, patrol: every member flies the lane, north and back)
+# search lanes (Puma, patrol: from rules 34 the members evenly round the racetrack a two-point lane
+# becomes, layered inside the Puma's band; rules 33 sent every member along the same lane)
 [[order]]
 id = "search-1"
 task = "patrol"
@@ -376,7 +383,8 @@ vehicles = { swarm = "SEARCH-10" }
 route = [[-122.645, 37.790], [-122.645, 37.850]]
 note = "Opening order: search lane 10 over the inner gulf"
 
-# the relay chain (Puma, patrol: the chain flown back and forth)
+# the relay chain (Puma, patrol: the chain flown back and forth; from rules 34 its members spread
+# evenly round it)
 [[order]]
 id = "relay-1"
 task = "patrol"
@@ -502,7 +510,7 @@ director = true
 at_s = 0
 headline = "Stack up: 37 swarms coming on station"
 bullets = ["Swarms panel: role, ready, lost link, low battery, task", "Opening orders: one per swarm, out by policy", "The armed reserve gets no order: it loiters off Lands End"]
-text = "The stack comes up: 3,602 drones in 37 swarms. The setup script sends one opening order per swarm, to all its members as one intent, out by policy. The armed reserve gets none: it loiters high off Lands End, and any order for it waits for you."
+text = "The stack comes up: 3,602 drones in 37 swarms. The setup script sends one opening order per swarm, to all its members as one group order (each member its own slot and layer), out by policy. The armed reserve gets none: it loiters high off Lands End, and any order for it waits for you."
 
 [[watch]]
 at_s = 90

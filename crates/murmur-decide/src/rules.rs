@@ -302,9 +302,12 @@ pub enum UnknownEndurance {
 /// `[watch]` (what counts as identified, stale and approaching) read by the engine, the bridge,
 /// the agents and the scoring alike; an identify order ends only on the sent vehicle's own look
 /// meeting its domain's criteria, and an engagement needs its target identified at its kind.
-/// Version 34 ([`GROUP_ORDER_SINCE`]), group orders, is being built and is not yet the default:
-/// see [`RULES_NEWEST`].
-pub const RULES_VERSION: u32 = SCENARIO_SETTINGS_SINCE;
+/// Version 34 ([`GROUP_ORDER_SINCE`]): an orbit, patrol, transit, hold or rtl naming more than one
+/// of our vehicles is one group order, which the engine lays out member by member, checks share by
+/// share and decides once, dispatching each member as a one-vehicle member order under that one
+/// approval and re-forming the group inside what was approved when members drop; and a transit, a
+/// route flown once and held at its end by the vehicle's type.
+pub const RULES_VERSION: u32 = GROUP_ORDER_SINCE;
 
 /// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
 /// except on a branch that builds the next version in stages before making it the default
@@ -313,19 +316,20 @@ pub const RULES_VERSION: u32 = SCENARIO_SETTINGS_SINCE;
 /// version only when asked: a scenario's `min_rules`, the scenario runner's `--rules N`, a test's
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
-/// and this to [`RULES_VERSION`] again. Rules 34, group orders (docs/SWARMS.md), are built so.
-pub const RULES_NEWEST: u32 = GROUP_ORDER_SINCE;
+/// and this to [`RULES_VERSION`] again. Rules 34, group orders (docs/SWARMS.md), were built so.
+pub const RULES_NEWEST: u32 = RULES_VERSION;
 
-/// The rules version from which one order to many of our vehicles is a group order (bd
-/// murmur-4nik; docs/SWARMS.md, the owner's decisions of 2026-11-10, picked up on 2026-11-20 for
-/// the ordinary tasks: orbit, patrol, hold, rtl). Up to rules 33 an order naming a hundred
-/// vehicles was one intent, all or nothing: one member's stale fact refused the hundred, one
-/// member behind a hill held the ninety-nine in the queue, one member's failsafe failed the order
-/// although the rest reached the ring, and the task layer invented each member's slot and
-/// altitude after the checks (a hundred quadcopters stacked to 591 m, AUVs to 238 m deep), so no
-/// check read them, the log did not hold them and replay could not bind them (bd murmur-3kqi).
-/// From this version a proposal naming more than one vehicle for one of those kinds is a group
-/// order (its `group`, [`crate::group::GroupSpec`]): the engine lays its members out
+/// The rules version from which one order to many of our vehicles is a group order (bd murmur-4nik;
+/// docs/SWARMS.md, the owner's decisions of 2026-11-10, picked up on 2026-11-20 for the ordinary
+/// tasks: orbit, patrol, hold, rtl, and the transit it adds; built in stages behind
+/// [`RULES_NEWEST`], the default since the owner's go-ahead of 2026-11-20). Up to rules 33 an order
+/// naming a hundred vehicles was one intent, all or nothing: one member's stale fact refused the
+/// hundred, one member behind a hill held the ninety-nine in the queue, one member's failsafe
+/// failed the order although the rest reached the ring, and the task layer invented each member's
+/// slot and altitude after the checks (a hundred quadcopters stacked to 591 m, AUVs to 238 m deep),
+/// so no check read them, the log did not hold them and replay could not bind them (bd
+/// murmur-3kqi). From this version a proposal naming more than one vehicle for one of those kinds
+/// is a group order (its `group`, [`crate::group::GroupSpec`]): the engine lays its members out
 /// ([`crate::group::layout`]: slots, layers, altitudes, from their logged facts and their types'
 /// catalog figures), checks every vehicle rule on each member's own share, classes each member
 /// sent, waiting or excluded with its reason (the `class` on its failing results), refuses the
@@ -335,9 +339,9 @@ pub const RULES_NEWEST: u32 = GROUP_ORDER_SINCE;
 /// member order (`intent.created` with `parent` and `share`, the transition `under`, then its own
 /// dispatch or queue). A member an engagement holds is excluded, saying so: a group order never
 /// stops an engagement. Its new inputs are the platform fact
-/// [`crate::catalog::PlatformFacts::formation`], which the engine drops before logging under
-/// older rules, and policy schema 9's `[group]` ([`GROUP_ORDER_SCHEMA_SINCE`]). Every gate of
-/// that change reads this constant, never a literal.
+/// [`crate::catalog::PlatformFacts::formation`], which the engine drops before logging under older
+/// rules, and policy schema 9's `[group]` ([`GROUP_ORDER_SCHEMA_SINCE`]). Every gate of that change
+/// reads this constant, never a literal.
 pub const GROUP_ORDER_SINCE: u32 = 34;
 
 /// The rules version from which the thresholds are the scenario's (docs/SCENARIO-SETTINGS.md, the
@@ -773,12 +777,14 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
 /// This is the one a run of the default rules logs; a run under older rules logs the schema they
-/// logged ([`RulesConfig::policy_schema`]: 7 below rules 33, whose keys it does not log).
-pub const POLICY_SCHEMA: u32 = SCENARIO_SETTINGS_SCHEMA_SINCE;
+/// logged ([`RulesConfig::policy_schema`]: 8 under rules 33, 7 below them, whose keys it does not
+/// log).
+pub const POLICY_SCHEMA: u32 = GROUP_ORDER_SCHEMA_SINCE;
 
 /// The newest policy schema this build reads and replay accepts: [`POLICY_SCHEMA`], or the one
-/// rules being built behind [`RULES_NEWEST`] add (rules 34's [`GROUP_ORDER_SCHEMA_SINCE`]).
-pub const POLICY_SCHEMA_NEWEST: u32 = GROUP_ORDER_SCHEMA_SINCE;
+/// rules being built behind [`RULES_NEWEST`] add (none now: rules 34's
+/// [`GROUP_ORDER_SCHEMA_SINCE`] is the default).
+pub const POLICY_SCHEMA_NEWEST: u32 = POLICY_SCHEMA;
 
 /// The policy schema that adds `[group]` (with [`GROUP_ORDER_SINCE`]): named so that a branch
 /// merging beside another schema bump renumbers it in one line.
@@ -1055,14 +1061,15 @@ impl RulesConfig {
         self.rules_version >= IDENTIFY_CRITERIA_SINCE
     }
 
-    /// The policy schema a run under these rules logs (`run.started`'s `policy_schema`):
-    /// [`POLICY_SCHEMA`] from rules 33, whose keys it logs; under older rules the schema they
-    /// logged, [`PASSKEY_SCHEMA_SINCE`] (their logged policy drops rules 33's keys).
+    /// The policy schema a run under these rules logs (`run.started`'s `policy_schema`): from
+    /// rules 34 [`GROUP_ORDER_SCHEMA_SINCE`] (its `[group]`), under rules 33
+    /// [`SCENARIO_SETTINGS_SCHEMA_SINCE`] (their logged policy drops `[group]`), under older rules
+    /// [`PASSKEY_SCHEMA_SINCE`] (it drops rules 33's keys too).
     pub fn policy_schema(&self) -> u32 {
         if self.group_orders() {
             GROUP_ORDER_SCHEMA_SINCE
         } else if self.scenario_settings() {
-            SCENARIO_SETTINGS_SCHEMA_SINCE.max(POLICY_SCHEMA)
+            SCENARIO_SETTINGS_SCHEMA_SINCE
         } else {
             PASSKEY_SCHEMA_SINCE
         }
@@ -1110,7 +1117,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         Targets::Vehicles if spec.kind() == TaskKind::Identify => {
             // rules 21: the identify rule, then the vehicle rules on the orbit it is flown as
             // (none when there is no plan: the vehicle's own readiness alone)
-            out.extend(capability(spec, world));
+            out.extend(capability(spec, world, cfg));
             out.push(crate::identify::check(spec, world, cfg));
             match crate::identify::orbit_view(spec, world, cfg) {
                 std::borrow::Cow::Owned(orbit) => {
@@ -1124,7 +1131,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             }
         }
         Targets::Vehicles => {
-            out.extend(capability(spec, world));
+            out.extend(capability(spec, world, cfg));
             out.extend(readiness(spec, world, cfg));
             out.extend(platform_limits(spec, world, cfg));
             out.extend(domain(spec, world, cfg));
@@ -1227,8 +1234,9 @@ fn is_safety_command(kind: TaskKind) -> bool {
 }
 
 /// The platform kind supports the task (the KINDS table), the platform is in the catalog,
-/// and a track target exists.
-pub fn capability(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> {
+/// and a track target exists. Rules 34: a transit is among a mover's tasks; the list a refusal
+/// gives names it under rules 34 only, so an older log's details read as they were.
+pub fn capability(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let r = RuleId::Capability;
     let kind = spec.kind();
     per_vehicle(spec, world, r, |uid, v| {
@@ -1242,11 +1250,15 @@ pub fn capability(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> 
         let ap = ap.value;
         // rules 27: a ground vehicle or a sub lays mines (a lay order exists from rules 27 only)
         let lays = kind == TaskKind::Lay && matches!(ap, AutopilotKind::Ugv | AutopilotKind::Sub);
-        // rules 34: whatever patrols transits (its list of tasks is as before, so older details
-        // read the same; a transit exists from rules 34 only)
-        let transits = kind == TaskKind::Transit && ap.supports(TaskKind::Patrol);
-        if !ap.supports(kind) && !lays && !transits {
-            let list: Vec<_> = ap.tasks().iter().map(|k| k.as_str()).collect();
+        if !ap.supports(kind) && !lays {
+            // rules 34: a transit exists from rules 34 only (refused before the checks under
+            // older rules), so their details name none
+            let list: Vec<_> = ap
+                .tasks()
+                .iter()
+                .filter(|k| **k != TaskKind::Transit || cfg.group_orders())
+                .map(|k| k.as_str())
+                .collect();
             let can = if list.is_empty() {
                 "nothing".to_string()
             } else {

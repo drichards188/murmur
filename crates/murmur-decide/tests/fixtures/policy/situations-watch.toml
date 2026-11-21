@@ -263,7 +263,7 @@ submitter_authorizes = true
 
 [[tier]]
 name = "agent-tasking"
-when = { source = "agent", kind = ["orbit", "patrol", "track", "identify"] }
+when = { source = "agent", kind = ["orbit", "patrol", "transit", "track", "identify"] }
 tier = "human"
 reason = "an AI's proposal to move one of our vehicles waits for the operator on watch"
 
@@ -307,3 +307,7 @@ reason = "routine task inside the approved area (tunable; approval fatigue is me
 rule_declaration = true
 attribution_threshold = 0.9
 nominate_unconfirmed = false
+
+# rules 34 (policy schema 9): written out by the shipped policy at the flip
+[group]
+min_share = 0.8

@@ -3999,3 +3999,52 @@ member order done within 100 s and the group `done: 6 reached their shares; the 
 `/api/swarms` showed it at 6 of a minimum 5, its swarm's task line one entry for the six; a group
 transit leaving the approved area waited in the inbox as one card. The logs replay under
 `--rules 34` and match their anchors.
+
+## 2026-11-20: Group orders on MCP, and decision rules 34 the default (murmur-4nik, murmur-3kqi)
+
+docs/SWARMS.md section 13's MCP part of stage 6 and its stage 10, on the owner's go-ahead of
+2026-11-20 ("the MCP group order, then the flip"). Built:
+
+- **MCP**: `preview_intent` and `propose_intent` take `group` (spread, minimum, layer base, lanes,
+  re-forming: the console's options; unknown keys refused) and the transit; an agent's preview
+  lays the group out and checks it share by share as the operator's dry run does (the engine's
+  two dry runs share `Engine::dry_run_checks`, the terrain along each member's share fetched
+  first); `propose_intent` lists the member orders a group went out as; `get_fleet`,
+  `get_platforms` and `/api/platforms` name transit beside patrol where the run's rules take one.
+  No tool approves, re-forms, resumes, suspends or recalls a group.
+- **The flip**: `RULES_VERSION = RULES_NEWEST = 34` and policy schema 9 the default
+  (`POLICY_SCHEMA_NEWEST = POLICY_SCHEMA`); transit in `AutopilotKind::tasks` beside patrol; the
+  standing policy writes `[group] min_share = 0.8` out and names transit in its kinds comment; the
+  watch policy's agent tier and the approval-flood policy's every-vehicle-task tier name transit
+  beside patrol.
+
+Where the build departs from the draft, and why:
+
+- **An agent reads a group's bottom line, not its members.** A hundred members' checks are over a
+  thousand results, past what lands whole in a model's context (`RESULT_MAX_CHARS`), so MCP counts
+  each rule's passing member results (`checks_folded`) and keeps the group's own and every one that
+  did not pass; a preview's `group` says how many would be sent, wait or be left out, each with its
+  reasons, against the minimum, whether it re-forms, and the layout by domain; every member's
+  share, task and check only with `members: true` (section 10's "each member only with
+  `members`"). The engine's answer and the log are whole; only the agent's view folds. The two
+  tools' schemas cost the model's tool list some 4,700 characters (Harbor watch's 46,463 to
+  51,162), its descriptions kept short for it.
+- **The staged fallback is dropped**: a tier's `kind` list routes a transit only where it names
+  one, as recommended, now that every shipped policy that names patrol names transit beside it
+  (the watch policy, eval/policy/strict.toml; the frozen scenario copies name neither in a tier).
+  A policy says what it routes.
+- **A run asked for older rules logs the policy those rules logged**: `Policy::as_logged` drops a
+  tier's `transit` below rules 34, as it drops `[group]` (older rules refuse a transit before the
+  policy is asked), so the watch policy run under rules 33 or 32 logs `run.started` byte for byte
+  as before (`tests/scenario_settings.rs`). `RulesConfig::policy_schema` gives rules 33 schema 8
+  by its constant (it took the larger of 8 and `POLICY_SCHEMA`, which would have said 9).
+- **No `[since.34]` anywhere**: under rules 34 every scenario but the group ones (158 to 173,
+  `min_rules = 34`) makes the same events in the same order with the same decisions, its log
+  differing only by `run.started` (rules, schema, `[group]`) and each decision's platform facts
+  carrying the `formation` figures (checked for all 173 against `--rules 33`'s logs). A situation
+  has no `[since]` table; the one situation whose design the flip changes, swarm-saturation-packed
+  (its 36 opening orders to whole swarms are group orders now), says what rules 33 did in its
+  notes.
+- **Tests written for rules 33 decide under it by name** where they are about one intent to
+  several vehicles (a queue test of a carried order on two vehicles, the older-rules checks of
+  `tests/rules34.rs` and `rules34_reform.rs`), and the rules 33 scenarios run under both.

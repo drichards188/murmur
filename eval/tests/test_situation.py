@@ -771,7 +771,7 @@ def test_the_watch_policy_is_the_shipped_one_plus_agent_tasking():
     assert added == [
         {
             "name": "agent-tasking",
-            "when": {"source": "agent", "kind": ["orbit", "patrol", "track", "identify"]},
+            "when": {"source": "agent", "kind": ["orbit", "patrol", "transit", "track", "identify"]},
             "tier": "human",
             "reason": "an AI's proposal to move one of our vehicles waits for the operator on watch",
         }

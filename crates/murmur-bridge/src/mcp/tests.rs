@@ -2945,7 +2945,7 @@ fn the_reach_notes_say_the_reach_is_the_even_chance_range_under_rules_33() {
 /// operator's would be, and the fleet lists no transit.
 #[tokio::test(start_paused = true)]
 async fn agents_propose_group_orders_and_no_tool_approves_or_reforms_one() {
-    let old = rig();
+    let old = rig_policy(|p| p.rules.rules_version = murmur_decide::SCENARIO_SETTINGS_SINCE);
     old.vehicle(1, Firmware::Copter, "x10", (LAT, LON));
     sleep(Duration::from_millis(500)).await;
     let tasks = old.ok(&planner(), "get_fleet", json!({ "uids": [1] })).await["vehicles"][0]["platform"]["tasks"].clone();

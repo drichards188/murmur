@@ -17,11 +17,17 @@
 #          agent's proposal in a human tier always waits for a human, whatever this key says.
 # A `when` matches if every condition in it holds; an empty `when` matches everything.
 # Conditions:
-#   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track,
+#   kind = [...]                  task kind is one of: orbit, patrol, transit (rules 34: a route
+#                                 flown once and held at its end), hold, rtl, track,
 #                                 collect (satellite imagery/SAR), cover (SATCOM or GNSS),
 #                                 engage (Phase E: an abstract effect on a declared-hostile track),
 #                                 identify (rules 21: one vehicle sent to identify one track,
-#                                 flown as an orbit around it; routed as an orbit is)
+#                                 flown as an orbit around it; routed as an orbit is). A list
+#                                 routes a kind only where it names it: name transit beside
+#                                 patrol where a tier means every route an order flies.
+#                                 Rules 34: an order of an ordinary kind to many vehicles is
+#                                 one group order, routed once on the members it would send or
+#                                 keep waiting (never one left out), its kind the group's
 #   armed = true|false            some target / no target is on a platform with armed = true
 #                                 in sim/platforms.toml (unknown platform counts as armed)
 #   leaves_approved_area = bool   some vehicle's route leaves the "approved" areas in
@@ -356,3 +362,13 @@ grace_s = 60
 level = "recognise"
 sensors = ["sonar"]
 grace_s = 300
+
+# Group orders (rules 34, policy schema 9; docs/SWARMS.md, crates/murmur-decide/src/group.rs): an
+# orbit, patrol, transit, hold or rtl naming more than one vehicle is one group order, laid out and
+# checked member by member and decided once. Its figures where the proposal names none:
+#   min_share = 0.8    the minimum strength, a share of the vehicles named, rounded up (a hold or
+#                      an rtl: one member): fewer able to take it and the order is refused. An
+#                      estimate (docs/SWARMS.md decision 3). Above 0, at most 1. Logged from
+#                      rules 34; a run of older rules refuses any other value.
+[group]
+min_share = 0.8

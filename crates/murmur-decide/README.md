@@ -2583,6 +2583,62 @@ Rules versions:
   (relabelled rules 32, its logged settings, its own looks' sensors and its `named` step are
   caught; with the settings taken out as rules 32 logged a policy, the last two still are).
 
+- **34** (`GROUP_ORDER_SINCE`, the owner's decisions of 2026-11-10 and the go-ahead of 2026-11-20,
+  DECISIONS.md "Group orders for the ordinary tasks" and its stages; docs/SWARMS.md; bd
+  murmur-4nik, murmur-3kqi; policy schema 9; a v34 log carries every rules 33 behaviour too):
+  *one order to many of our vehicles is one group order*. An orbit, patrol, transit, hold or rtl
+  naming more than one vehicle is a group order (its `group`, `group::GroupSpec`: `spread`,
+  `min_members`, `alt_m`, `wait_s`, `reform`, `lanes`, `lane_spacing_m`, filled before it is
+  logged, `GroupSpec::normalized`; a `swarm` label decides nothing). `group::layout` lays its
+  members out from their logged facts and their types' catalog figures (the platform fact
+  `formation`: `sep_m`, `alt_band_m`, `depth_band_m`, each an estimate, `Catalog::formed`, logged
+  under rules 34 only): slots round a ring, evenly along a route or a racetrack, lanes, stations
+  along a transit or a block round its end, layers inside each type's band, concentric rings on
+  the surface, the minimum-distance pairing so no two ways cross. `group::evaluate` checks every
+  vehicle rule on each member's own share and the group's own `separation` (the layout cannot
+  keep them apart), `depth` (a sub's layer at the seabed) and `strength` (fewer than its minimum
+  can take it); a member a hard reason leaves out is `excluded`, one a soft reason holds
+  `waiting` (the result's `member`), never a refusal of the group. The policy is asked once over
+  the members sent or waiting; one approval covers them (`[group] min_share`, 0.8, the default
+  minimum's share); `Engine::dispatch_group` makes each member a one-vehicle member order
+  (`intent.created` with `parent` and `share`, the transition `under`, then its own dispatch or
+  queue, `group.dispatched`), and the bridge flies each share as logged (its altitude, where it
+  enters its ring or route; the task layer's own slot arithmetic off). A waiting member's re-check
+  that would raise the tier voids it, reported on the group, never the inbox. The group ends by
+  its minimum (each member's end counted). `Engine::step_groups` re-forms a group in force on
+  material, settled drops (an end other than done, a loss, 20 s silent past its stale limit) and
+  returns (30 s heard), at most once a minute, inside its envelope and tier, moving only the gaps'
+  neighbours on healthy links (`group.reformed`), else `group.reform_refused`; below its minimum
+  once settled it is `group.suspended` and never resumes on its own. A member an engagement holds
+  is excluded, saying so, and keeps its slot in a re-form: a group order never stops an
+  engagement. `transit` (`Task::Transit`): a route of 1 to 50 points flown once and held at its
+  end by the vehicle's type, checked as any vehicle order (rules 17 along each leg, rules 22
+  routing its legs, reserves on its route and time on task), queued, logged ahead and carried as
+  the queue's kinds; in `AutopilotKind::tasks` beside patrol (a refusal's list names it under
+  rules 34 only). A policy tier's `kind` list routes a transit only where it names one; the
+  standing policy's comment and the watch policy's agent tier name it beside patrol (the staged
+  build's fallback, a list naming patrol routing a transit, is gone). The operator's dry run and
+  an agent's preview lay a group out as its submission would (`Engine::dry_run_checks`); MCP
+  `preview_intent` and `propose_intent` take `group` and the transit, a preview's answer folding a
+  group's members to its bottom line. Markers (a log claiming rules 33 or older can't carry them):
+  `formation`, a `group` spec or `[group]`, `parent`, `share`, `layout`, `group.dispatched`,
+  `group.reformed`, `group.reform_refused`, `group.suspended`, the transition `under`, a result's
+  `member`, the kind `transit`. Replay recomputes every layout, check, policy decision, member order
+  and re-form from the logged facts. Scenarios 158 to 173 (`min_rules = 34`), tampers
+  `move_member_slot`, `member_without_group`, `admit_raised_member`, `forge_reform`,
+  `reform_outside_envelope`, `move_member_station`; `tests/rules34.rs`, `tests/group_layout.rs`;
+  the bridge's `decision/tests/groups.rs` (each type flying its share and a transit's hold).
+  Built in stages behind `RULES_NEWEST` (docs/SWARMS.md section 13, stages 0 to 7 and MCP) and
+  made the default last (`RULES_VERSION = RULES_NEWEST = 34`, `POLICY_SCHEMA` 9; a run asked for
+  rules 33 logs schema 8, older 7, `RulesConfig::policy_schema`); no scenario but the group ones
+  changes design (each other scenario's log differs only by the logged formation facts and the
+  policy's `[group]`), so none carries a `[since.34]`. Fixtures (a clean build of the flip):
+  `tests/data/audit/v34-engagement-scenario-01.jsonl` (no group order: as rules 33 decided it,
+  the formation facts and `[group]` aside), `v34-group-reforms-after-three-drop-scenario-166.jsonl`
+  (relabelled rules 33, its group spec, member orders, layout and re-form are caught; with the
+  policy's markers taken out as rules 33 logged it, the rest still are) and
+  `v34-group-transit-to-stations-scenario-172.jsonl` (a transit and its stations, caught the same).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -2600,7 +2656,11 @@ and `confirm_declaration` in `step_up_acts` (`RULE_ID_SCHEMA_SINCE`, rules 9); *
 `[rules.silent]` and `[rules.engage] min_identity_level` and `default_effect_radius_m`, each
 optional and written out with its default (`SCENARIO_SETTINGS_SCHEMA_SINCE`, rules 33: a run
 under rules 33 logs schema 8 and one asked for older rules 7, `RulesConfig::policy_schema`; replay
-accepts up to `POLICY_SCHEMA_NEWEST`, `POLICY_SCHEMA` itself while no schema is being built).
+accepts up to `POLICY_SCHEMA_NEWEST`, `POLICY_SCHEMA` itself while no schema is being built); **9**
+adds `[group]` (`min_share`, above 0 and at most 1, written out with its default 0.8;
+`GROUP_ORDER_SCHEMA_SINCE`, rules 34: a run under rules 34 logs schema 9, one asked for rules 33
+logs 8 and drops `[group]`, and a run of older rules refuses a `[group]` other than the standing
+one, `Policy::fits_rules`).
 
 ## Integration contract for the bridge
 

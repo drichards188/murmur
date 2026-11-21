@@ -2250,7 +2250,7 @@ fn first_pass(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> (L
     let hold = Task::Hold {};
     for uid in &spec.uids {
         let mut out = Vec::new();
-        let cap = crate::rules::capability(&alone(spec, spec.task.clone(), uid), world);
+        let cap = crate::rules::capability(&alone(spec, spec.task.clone(), uid), world, cfg);
         let capable = cap.iter().all(|r| r.outcome == Outcome::Pass);
         out.extend(cap);
         let mut hard = false;
@@ -2652,8 +2652,9 @@ mod tests {
     #[test]
     fn the_policy_logs_group_figures_from_rules_34_only() {
         let mut p = crate::Policy::load(&root().join("sim/policy.toml")).unwrap();
-        assert!(p.group.is_none(), "sim/policy.toml has no [group]: the standing values");
+        assert_eq!(p.group, Some(GroupPolicy::default()), "sim/policy.toml writes the standing values out");
         p.rules.rules_version = crate::rules::GROUP_ORDER_SINCE - 1;
+        assert!(p.fits_rules().is_ok(), "the standing values fit older rules too");
         assert!(p.clone().as_logged().group.is_none());
         assert_eq!(p.rules.policy_schema(), crate::rules::SCENARIO_SETTINGS_SCHEMA_SINCE);
         p.group = Some(GroupPolicy { min_share: 0.5 });

@@ -1,6 +1,7 @@
 # The watch policy for situations (sim/situations/README.md): sim/policy.toml with one tier
 # added before the default, `agent-tasking`, so an AI's proposal to move one of our vehicles
-# (an orbit, a patrol, a track; rules 21: an identify) waits for the operator, however routine. Everything else is the
+# (an orbit, a patrol, a track; rules 21: an identify; rules 34: a transit, and any of these as a
+# group order to many, one card) waits for the operator, however routine. Everything else is the
 # shipped policy, which this file extends (a supplement: it sets only what it changes, and the
 # decision layer merges it over sim/policy.toml; crates/murmur-decide/src/policy.rs), and a test
 # holds them together (eval/tests/test_situation.py): an operator's own order is still approved
@@ -13,6 +14,6 @@ extends = "../../policy.toml"
 [[tier]]
 name = "agent-tasking"
 before = "default"
-when = { source = "agent", kind = ["orbit", "patrol", "track", "identify"] }
+when = { source = "agent", kind = ["orbit", "patrol", "transit", "track", "identify"] }
 tier = "human"
 reason = "an AI's proposal to move one of our vehicles waits for the operator on watch"

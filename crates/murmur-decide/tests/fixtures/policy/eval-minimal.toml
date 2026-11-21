@@ -248,3 +248,7 @@ reason = "routine task inside the approved area (tunable; approval fatigue is me
 rule_declaration = true
 attribution_threshold = 0.9
 nominate_unconfirmed = true                 # minimal: a rule declaration may be nominated at once
+
+# rules 34 (policy schema 9): written out by the shipped policy at the flip
+[group]
+min_share = 0.8
