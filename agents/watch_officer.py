@@ -10,7 +10,8 @@ credentials run), wakes the model when something worth a look changed (the trigg
 agents/watch/wake.py) or on a slow heartbeat, gives the stronger model the consequential
 moments (engagement chain, a lost link on an armed platform, a suspected spoof where the watch
 is: `--watch-config`, agents/watch/stakes.py; a consult about a contact is briefed with the
-driver's case file, agents/watch/casefile.py), enforces
+driver's case file, agents/watch/casefile.py), reads the operator's tasking (`GET /api/tasking`:
+new guidance wakes the routine model, `Officer.tasking_loop`; `--no-tasking` reads none), enforces
 budgets, and writes every turn to the situation log (JSONL; agents/watch/situation.py lists
 its lines). The model proposes through the same tools as any agent: it cannot approve or
 sign anything, and humans sign every effect.
@@ -161,6 +162,42 @@ def active_tasking(doc) -> list[dict]:
             and i["text"].strip()]
 
 
+def tasking_key(item: dict) -> tuple:
+    """One posting of guidance: its id and when it was posted (a restarted bridge, whose tasking
+    is in memory, numbers its items again from tk-1)."""
+    return (str(item.get("id")), item.get("at_t"))
+
+
+def tasking_changes(doc, known: dict, now: float) -> list[dict]:
+    """What changed in the operator's tasking since the last read (`known`: key -> the active item
+    as read, updated in place to this read's): `tasking.retired` for an item read before that is
+    no longer active (`gone` when the bridge no longer lists it at all, as after a restart), then
+    `tasking.posted` for an active item not read before, oldest first. An answer without its item
+    list is refused (ValueError) and changes nothing: a garbled read never withdraws guidance."""
+    items = doc.get("items") if isinstance(doc, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("a tasking answer without its items")
+    active = {tasking_key(i): i for i in active_tasking(doc)}
+    listed = {tasking_key(i) for i in items if isinstance(i, dict)}
+
+    def order(kv):
+        at = kv[0][1]
+        return (at if isinstance(at, (int, float)) else 0, kv[0][0])
+
+    out: list[dict] = []
+    for key, i in sorted(known.items(), key=order):
+        if key not in active:
+            out.append({"kind": "tasking.retired", "t": now, "tasking": key[0], "at_t": key[1], "text": i.get("text"),
+                        "by": i.get("by"), **({"gone": True} if key not in listed else {})})
+    for key, i in sorted(active.items(), key=order):
+        if key not in known:
+            out.append({"kind": "tasking.posted", "t": now, "tasking": key[0], "at_t": key[1], "text": i.get("text"),
+                        "by": i.get("by")})
+    known.clear()
+    known.update(active)
+    return out
+
+
 def tasking_fetcher(mcp_url: str):
     """A reader of the bridge's `/api/tasking`, on the host the MCP endpoint is on (the live
     runner's only; stdlib, a thread, a short timeout)."""
@@ -188,6 +225,11 @@ class Officer:
         # operator tasking: `async () -> dict` reading the bridge's GET /api/tasking, given only by
         # the live runner (`main`); None (the headless design, never a live channel) tells nothing
         self.tasking_fetch = tasking_fetch
+        # the active tasking read so far (`tasking_key` -> item; None until a read succeeds): a poll
+        # tells what is new or withdrawn against it (`tasking_loop`), an update adds what it lists
+        self.tasking_known: dict | None = None
+        self.tasking_lock = asyncio.Lock()  # one read at a time, each applied in the order it was made
+        self.tasking_in_feed = False  # the bridge's own change feed carries tasking: the loop stops
         self.watch = watch  # agents/watch/stakes.py `Watch`, or None (no watch area known)
         # the situation's [playbook] table (a playbook Config, `--watch-config`), and the run's watch
         # settings (agents/roe.py `Roe`), read from the bridge's policy at each connect (`adopt`)
@@ -275,6 +317,9 @@ class Officer:
         while not self.stop.is_set():
             try:
                 changes = await self.poller.poll()
+                if not self.tasking_in_feed and any(isinstance(c, dict) and str(c.get("kind", "")).startswith("tasking.")
+                                                    for c in changes):
+                    self.tasking_in_feed = True  # told by the bridge's feed: the driver's own read stops
                 changes += await self.poller.nominations()
                 # rules 30: the standing of ours (get_inbox's review; nothing under older rules)
                 changes += await self.poller.node_losses()
@@ -306,6 +351,43 @@ class Officer:
                         pass
             await self.sleep(every)
 
+    async def tasking_poll(self, now: float) -> list[dict]:
+        """One poll's read of the operator's tasking and what changed since (`tasking_changes`).
+        The first read that succeeds, a poll's or an update's, is the baseline and tells nothing."""
+        async with self.tasking_lock:
+            doc = await self.tasking_fetch()
+            if self.tasking_known is None:
+                known: dict = {}
+                tasking_changes(doc, known, now)
+                self.tasking_known = known
+                return []
+            return tasking_changes(doc, self.tasking_known, now)
+
+    async def tasking_loop(self) -> None:
+        """The operator's tasking every `poll_s` (`GET /api/tasking`, read-only, beside the change
+        feed so a slow read never holds it up): new guidance is a `tasking.posted` change, which
+        wakes the routine model within tasking's share of the wakes (agents/watch/wake.py), and
+        guidance withdrawn a `tasking.retired` note. Guidance already posted when the officer
+        connects is the baseline: its opening update lists it, so it is not told again as new. A
+        read that fails is tried again at the next poll (logged now and then); a bridge without
+        the channel (404) is read no more, and one whose own change feed tells tasking is left to it."""
+        errors = 0
+        while not self.stop.is_set() and not self.tasking_in_feed:
+            try:
+                changes = await self.tasking_poll(time.time())
+                errors = 0
+                if changes and not self.tasking_in_feed:
+                    self.waker.add(changes, time.time())
+                    self.log_dropped()
+            except Exception as e:  # noqa: BLE001 (the watch goes on without it)
+                if getattr(e, "code", None) == 404:
+                    self.log.write("tasking.none", error="the bridge has no /api/tasking: no operator tasking this run")
+                    return
+                errors += 1
+                if errors in (1, 5) or errors % 30 == 0:
+                    self.log.write("tasking.error", error=f"{type(e).__name__}: {e}", misses=errors)
+            await self.sleep(self.args.poll_s)
+
     # ---- the run ---------------------------------------------------------------------------
 
     async def run(self) -> str:
@@ -330,6 +412,7 @@ class Officer:
         self.log.write("backend.start", **{k: v for k, v in started.items() if k != "argv"})
         poller = asyncio.ensure_future(self.poll_loop())
         shadow = asyncio.ensure_future(self.shadow_loop()) if self.shadow is not None else None
+        tasking = asyncio.ensure_future(self.tasking_loop()) if self.tasking_fetch is not None else None
         try:
             while True:
                 if self.stop.is_set():
@@ -372,7 +455,7 @@ class Officer:
                 if outcome:
                     return outcome
         finally:
-            for task in (poller, shadow):
+            for task in (poller, shadow, tasking):
                 if task is None:
                     continue
                 task.cancel()
@@ -563,15 +646,23 @@ class Officer:
             return []
 
     async def tasking(self) -> list[dict]:
-        """The operator's active tasking now (`GET /api/tasking`, read-only, no identity), or none
-        when this runner has no live channel or the read fails: an update goes out without it."""
+        """The operator's active tasking now (`GET /api/tasking`, read-only), or none when this
+        runner has no live channel or the read fails: an update goes out without it. What it lists
+        is read (`tasking_known`), so a poll after it does not tell it again as new."""
         if self.tasking_fetch is None:
             return []
         try:
-            r = await self.tasking_fetch()
+            async with self.tasking_lock:
+                doc = await self.tasking_fetch()
+                if not isinstance(doc, dict) or not isinstance(doc.get("items"), list):
+                    return []  # garbled: neither told nor a baseline
+                items = active_tasking(doc)
+                if self.tasking_known is None:
+                    self.tasking_known = {}
+                self.tasking_known.update({tasking_key(i): i for i in items})
         except Exception:  # noqa: BLE001
             return []
-        return active_tasking(r)
+        return items
 
     def mcp_ok(self) -> bool:
         init = self.backend.init or {}
@@ -762,7 +853,8 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--agent", default="agent-watch", help="the agent id (a dev bridge: listed in MURMUR_AGENTS)")
     ap.add_argument("--key", help="the agent's key in a credentials run (default MURMUR_AGENT_KEY); never logged")
     ap.add_argument("--no-tasking", action="store_true",
-                    help="do not read the operator's tasking (GET /api/tasking): the officer runs on its brief alone")
+                    help="do not read the operator's tasking (GET /api/tasking, each poll and at each wake; new "
+                         "guidance wakes the routine model): the officer runs on its brief alone")
     ap.add_argument("--brief", type=Path, help="the situation brief, appended to the system prompt")
     ap.add_argument("--situation-log", type=Path, help="JSONL log of every wake and turn (appended)")
     ap.add_argument("--until", type=float, help="stop at this Unix time")

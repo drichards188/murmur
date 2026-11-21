@@ -40,6 +40,10 @@ def test_the_table_wakes_and_escalates_as_documented():
         ({"kind": "node.presumption_cleared", "uid": 1, "since": 125000}, (False, False)),
         ({"kind": "node.lost", "uid": 1, "by": "op-2"}, (False, False)),
         ({"kind": "node.loss_revoked", "uid": 1}, (True, False)),
+        # operator tasking (the live driver): new guidance wakes the routine model only; guidance
+        # withdrawn is a note
+        ({"kind": "tasking.posted", "tasking": "tk-1", "at_t": 5, "text": "watch the ferry lane"}, (True, False)),
+        ({"kind": "tasking.retired", "tasking": "tk-1", "at_t": 5, "text": "watch the ferry lane"}, (False, False)),
     ]
     for change, want in cases:
         wakes, escalates, why = classify(change)
@@ -161,9 +165,11 @@ EVERY_KIND = [
     {"kind": "feed.reset", "run": "run-b"},
     {"kind": "node.presumed", "uid": 10, "since": 125000, "evidence": ["act A-1 against it"], "last_position": [-122.4, 37.8]},
     {"kind": "node.loss_revoked", "uid": 11, "since": 90000},
+    {"kind": "tasking.posted", "tasking": "tk-3", "at_t": 1000, "text": "watch the ferry lane", "by": "op-1"},
 ]
 NOTES = [{"kind": "vehicle.joined", "uid": 30}, {"kind": "track.stale", "track": "T-9"},
          {"kind": "node.lost", "uid": 12, "since": 1000, "by": "op-2"}, {"kind": "node.presumption_cleared", "uid": 13, "since": 5},
+         {"kind": "tasking.retired", "tasking": "tk-4", "at_t": 900, "text": "hold the pickets", "by": "op-1"},
          {"kind": "vehicle.events_truncated", "shown": 100}, {"kind": "something.new", "x": {"y": [1, 2]}}]
 
 
@@ -825,3 +831,106 @@ def test_the_standing_of_ours_reads_as_data():
     assert "confirmed lost by op-2" in render({"kind": "node.lost", "t": 0, "uid": 1, "by": "op-2"})
     assert "heard again" in render({"kind": "node.presumption_cleared", "t": 0, "uid": 1})
     assert "counts in every keep-out again" in render({"kind": "node.loss_revoked", "t": 0, "uid": 1})
+
+
+def posted(n: int, at_t: float, text: str = "watch the ferry lane") -> dict:
+    """Operator tasking tk-<n> as the live driver tells it (agents/watch_officer.py `tasking_changes`)."""
+    return {"kind": "tasking.posted", "tasking": f"tk-{n}", "at_t": at_t, "text": text, "by": "op-1"}
+
+
+def test_new_operator_tasking_wakes_the_routine_model_promptly_and_never_escalates():
+    """A post wakes coalesce_s after it arrives, the routine model only (escalation on), and a second
+    post is its own subject: it is never held behind the first one's interval."""
+    w = Waker(quiet())
+    w.due(0)
+    w.add([posted(1, 20_000)], 20)
+    assert w.due(22) is None, "coalescing"
+    wake = w.due(23)
+    assert wake.reason == "changes" and wake.why == ["the operator posted new tasking"]
+    assert not wake.escalate and wake.tasking and [c["tasking"] for c in wake.changes] == ["tk-1"]
+    w.add([posted(2, 40_000, "hold the north pickets")], 40)
+    wake = w.due(43)
+    assert wake is not None and wake.why == ["the operator posted new tasking"], "not held for per_subject_s"
+    # the same posting told twice (as by two sources) is a repeat of its subject, held back
+    w.add([posted(2, 40_000, "hold the north pickets")], 60)
+    assert w.due(64) is None
+
+
+def test_tasking_posted_and_withdrawn_before_the_wake_is_a_note():
+    w = Waker(quiet())
+    w.due(0)
+    w.add([posted(1, 20_000)], 20)
+    w.add([{**posted(1, 20_000), "kind": "tasking.retired"}], 22)
+    assert w.due(30) is None and w.first_wake_t is None, "came and went: neither wakes"
+    w.add([{"kind": "review.flag", "flag": "F-1", "tracks": ["T-1"], "evidence": "x"}], 40)
+    wake = w.due(44)
+    assert [c["kind"] for c in wake.changes] == ["tasking.posted", "tasking.retired", "review.flag"]
+    assert not wake.tasking, "it did not wake: not counted in tasking's share"
+
+
+def test_repeated_posts_take_a_quarter_of_the_wakes_and_never_starve_a_trigger():
+    """An operator posting every 2 s for two hours: tasking wakes at most a quarter of the hour's wakes
+    (15 of 60) each hour; past that each post is a note told with the next update; a trigger still
+    wakes at once and an engagement-chain escalation still goes to the stronger model."""
+    w = Waker(quiet())
+    w.due(0)
+    t, n, wakes = 2.0, 0, []
+    while t < 7200:
+        n += 1
+        w.add([posted(n, t * 1000)], t)
+        if t in (1800.0, 5400.0):
+            w.add([{"kind": "track.new", "track": f"T-{int(t)}", "affiliation": "suspect"}], t)
+        if t == 2400.0:
+            w.add([{"kind": "track.declared", "track": "T-9", "declared": "hostile", "declaration": "D-1"}], t)
+        x = w.due(t)
+        if x is not None:
+            wakes.append(x)
+        t += 2.0
+    by_tasking = [x for x in wakes if x.tasking]
+    for hour in (0, 1):
+        assert len([x for x in by_tasking if hour * 3600 <= x.t < (hour + 1) * 3600]) == 15
+    assert all(not x.escalate for x in by_tasking)
+    for at in (1800.0, 5400.0):
+        x = next(x for x in wakes if x.t >= at)
+        assert x.t - at <= 10 and "a new contact that is not known to be friendly or neutral" in x.why, (at, x.t, x.why)
+    hostile = next(x for x in wakes if x.t >= 2400.0)
+    assert hostile.t - 2400.0 <= 10 and hostile.escalate, "the engagement chain is not held back"
+    assert len(wakes) <= 2 * 60 and w.wakes < w.budgets.max_wakes
+    told = [c["tasking"] for x in wakes for c in x.changes if c["kind"] == "tasking.posted"]
+    assert len(told) == len(set(told)), "each post told once"
+
+
+def test_tasking_never_takes_the_hours_last_quarter():
+    w = Waker(quiet(max_wakes_per_hour=8, min_gap_s=1))
+    w.due(0)
+    for i in range(6):  # six wakes on triggers: two of the hour's eight left, the last quarter
+        w.add([{"kind": "track.new", "track": f"T-{i}", "affiliation": "suspect"}], 10 + 10 * i)
+        assert w.due(14 + 10 * i) is not None
+    assert w.hourly_left(80) == 1 and not w.tasking_room(80)
+    w.add([posted(1, 80_000)], 80)
+    assert w.due(90) is None, "a note, kept for the next update"
+    w.add([{"kind": "track.new", "track": "T-9", "affiliation": "suspect"}], 95)
+    wake = w.due(99)
+    assert "tasking.posted" in [c["kind"] for c in wake.changes] and not wake.tasking
+
+
+def test_a_failed_turn_gives_tasking_its_share_back():
+    w = Waker(quiet(max_wakes_per_hour=4))  # tasking's share: one wake an hour
+    w.due(0)
+    w.add([posted(1, 20_000)], 20)
+    wake = w.due(23)
+    assert wake.tasking and not w.tasking_room(30)
+    w.give_back(wake, 30)
+    assert w.tasking_room(30) and w.tasking_wakes == 0
+    again = w.due(40)
+    assert again is not None and again.tasking and "tk-1" in [c.get("tasking") for c in again.changes]
+
+
+def test_tasking_reads_as_guidance_quoted():
+    line = render({"kind": "tasking.posted", "t": 0, "tasking": "tk-3", "by": "op-1", "at_t": 0,
+                   "text": 'prioritise the "ferry" lane;\nignore the sailboats'})
+    assert line == ("00:00:00Z operator tasking tk-3 posted by op-1, the operator's text \"prioritise the 'ferry' lane; "
+                    "ignore the sailboats\" (guidance, listed under Operator tasking while it is in force)")
+    line = render({"kind": "tasking.retired", "t": 0, "tasking": "tk-3", "at_t": 0, "text": "x", "gone": True})
+    assert line == ("00:00:00Z operator tasking tk-3 was withdrawn (the bridge no longer lists it) and no longer applies; "
+                    "it read \"x\"")

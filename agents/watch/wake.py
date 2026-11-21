@@ -3,10 +3,11 @@ woken by the trigger table below (or the slow heartbeat), never by its own choic
 for nothing.
 
 The bridge's `get_changes` feed (crates/murmur-bridge/src/mcp/changes.rs) says what changed
-since a cursor; the driver adds `nomination.*` changes from `get_nomination_options`, and
-this module adds `condition.flapping`. Each change kind has a row: whether it wakes the
-model, whether it escalates to the stronger model, and why. A change that does neither is a
-note: it rides along with the next update.
+since a cursor; the driver adds `nomination.*` changes from `get_nomination_options`, the live
+driver `tasking.*` changes from the operator's tasking (`GET /api/tasking`), and this module adds
+`condition.flapping`. Each change kind has a row: whether it wakes the model, whether it
+escalates to the stronger model, and why. A change that does neither is a note: it rides along
+with the next update.
 
 - Bursts are coalesced: a wake fires `coalesce_s` after the first waking change, later if
   more keep coming (up to `coalesce_max_s`), and never sooner than `min_gap_s` after the last
@@ -56,6 +57,18 @@ note: it rides along with the next update.
   wakes the model once when it is predicted to come inside a watch area within the watch's
   `approach_horizon_s` (`track.approaching`) and once when it is inside (`track.in_watch`). Routine wakes only, never the stronger model, whether or not escalation is
   on; each track once per stage (the driver lets it go after, and the subject limits above hold).
+- Operator tasking (the live driver only, `Officer.tasking_loop` in agents/watch_officer.py; the
+  headless officer reads none): guidance the operator posts wakes the routine model, never the
+  stronger one, so it is read within a poll and the coalescing (`tasking.posted`; its subject is
+  the item, each post its own, so a second post is never held behind the first). Guidance
+  withdrawn is a note (`tasking.retired`): the model acts only when woken, so withdrawn guidance
+  cannot steer it meanwhile, the next update no longer lists it and carries the note, and a
+  withdrawal that woke would let posting and withdrawing spend two wakes an item. Posted and
+  withdrawn again before the wake, it is a note too (it came and went). Tasking takes at most a
+  quarter of the hour's wakes and of the run's, and never the hour's last quarter (kept for
+  triggers, as for heartbeats): past that a post is a note (news, so the heartbeat's back-off
+  starts again), told with the next update, so an operator posting again and again spends a
+  quarter of the wakes at most and cannot hold back a trigger or an escalation.
 - The heartbeat backs off (doubling up to `heartbeat_max_s`) while nothing new arrives:
   autopilot chatter, vehicles joining and repeats of a subject just reported are not news.
   Heartbeats never take the last quarter of the hour's wakes: those are kept for triggers.
@@ -96,6 +109,8 @@ SUSPICIOUS = ("hostile", "suspect", "unknown")
 # `done`: a task that finished as asked needs no decision (a note).
 DECIDED = ("approved", "rejected", "voided", "expired", "failed", "aborted", "queued", "dispatched",
            "effected")
+# new operator tasking (the live driver's change; its share of the wakes: `Waker.tasking_room`)
+TASKING = "tasking.posted"
 
 
 @dataclass(frozen=True)
@@ -184,6 +199,9 @@ TRIGGERS: tuple[Row, ...] = (
     Row("node.loss_revoked", always, never, "one of ours confirmed lost was heard again or its loss revoked"),
     # the bridge restarted under us (a cursor from an earlier bridge)
     Row("feed.reset", always, never, "the bridge restarted: read the picture again"),
+    # operator tasking (the live driver, from GET /api/tasking): new guidance, within tasking's
+    # share of the wakes (`Waker.tasking_room`); guidance withdrawn (`tasking.retired`) is a note
+    Row(TASKING, always, never, "the operator posted new tasking"),
 )
 ROWS = {r.kind: r for r in TRIGGERS}
 
@@ -209,14 +227,15 @@ def _h(v: Any) -> Any:
 
 def subject(c: Change) -> tuple:
     """What a change is about, for the per-subject limits: its kind, the item (track, alert,
-    flag, vehicle or intent) and, where there is one, the instance: a declaration's number
-    (else the affiliation declared), the affiliation an estimate moved to, a flapping
-    condition, an intent's new state. Hashable whatever the change holds."""
+    flag, vehicle, operator tasking or intent) and, where there is one, the instance: a
+    declaration's number (else the affiliation declared), the affiliation an estimate moved to, a
+    flapping condition, an intent's new state, a tasking item's posting time (a bridge restarted
+    numbers its items again). Hashable whatever the change holds."""
     k = _h(c.get("kind"))
     if str(k).startswith("intent."):
         return ("intent", _h(c.get("intent")), _h(c.get("to") or c.get("state")))
     item: tuple = ()
-    for name in ("track", "alert", "flag", "uid"):
+    for name in ("track", "alert", "flag", "uid", "tasking"):
         if c.get(name) is not None:
             item = (name, _h(c.get(name)))
             break
@@ -230,6 +249,8 @@ def subject(c: Change) -> tuple:
     elif str(k).startswith("node."):
         # rules 30: one silence of one of ours (the report it is silent since)
         instance = _h(c.get("since"))
+    elif str(k).startswith("tasking."):
+        instance = _h(c.get("at_t"))
     return (k, *item, instance)
 
 
@@ -250,6 +271,9 @@ def _pair(c: Change) -> tuple[tuple, bool] | None:
         return ("declaration", _h(c.get("track"))), k == "track.declared"
     if k in ("node.presumed", "node.presumption_cleared"):
         return ("node", _h(c.get("uid"))), k == "node.presumed"
+    if k in (TASKING, "tasking.retired"):
+        # one posting: an item comes and goes once, so it never flaps
+        return ("tasking", _h(c.get("tasking")), _h(c.get("at_t"))), k == TASKING
     return None
 
 
@@ -335,6 +359,8 @@ class Wake:
     # tracks they were about (the driver reads those again until they matter)
     gated: list[str] = field(default_factory=list)
     gated_tracks: list[str] = field(default_factory=list)
+    # operator tasking woke it (it counts in tasking's share; given back if the turn fails)
+    tasking: bool = False
 
 
 def item_of(c: Change) -> tuple:
@@ -421,6 +447,8 @@ class Waker:
     notes_dropped: int = 0  # notes not kept since the last wake (MAX_PENDING)
     escalated_runs: dict = field(default_factory=dict)  # subject -> escalations this run
     side_escalations: int = 0  # escalations outside the engagement chain
+    tasking_recent: deque = field(default_factory=deque)  # wakes operator tasking woke, last hour
+    tasking_wakes: int = 0  # and this run
 
     # ---- judging one change ---------------------------------------------------------------
 
@@ -429,9 +457,22 @@ class Waker:
         p = _pair(c)
         return bool(p and p[1] and now - self.flapped.get(p[0], NEVER) < self.budgets.flap_window_s)
 
+    def tasking_room(self, now: float) -> bool:
+        """Whether new operator tasking may wake the model now: tasking woke it fewer times than a
+        quarter of the hour's wakes in the last hour and of the run's, and more than the hour's
+        last quarter is left (those are kept for triggers, as from heartbeats). Past that a post is
+        a note, told with the next update."""
+        b = self.budgets
+        while self.tasking_recent and self.tasking_recent[0] <= now - 3600:
+            self.tasking_recent.popleft()
+        quarter = b.max_wakes_per_hour // 4
+        return (len(self.tasking_recent) < max(1, quarter) and self.tasking_wakes < max(1, b.max_wakes // 4)
+                and self.hourly_left(now) > quarter)
+
     def judge(self, c: Change, now: float) -> Judged:
         wakes, esc, why = classify(c)
-        if not wakes or c.get("superseded") or self._covered(c, now):
+        if (not wakes or c.get("superseded") or self._covered(c, now)
+                or (c.get("kind") == TASKING and not self.tasking_room(now))):
             return Judged(False, False, None, NEVER, False)
         subj = subject(c)
         last = self.woke.get(subj)
@@ -776,16 +817,25 @@ class Waker:
         if escalates:
             self.escalations += 1
             self.side_escalations += side
+        tasking = any(s and s[0] == TASKING for s in woke_s)
+        if tasking:
+            self.tasking_recent.append(now)
+            self.tasking_wakes += 1
         dropped, self.notes_dropped = self.notes_dropped, 0
         return Wake(self.wakes, reason, deliver, why, escalates, esc_why, now, held, woke_s, esc_s, dropped,
-                    side, gated, gated_tracks)
+                    side, gated, gated_tracks, tasking)
 
     def give_back(self, wake: Wake, now: float) -> None:
         """A wake whose turn failed: its changes come back (to be told again), its subjects
-        may wake again, and an escalation it spent is returned."""
+        may wake again, and an escalation it spent, or tasking's share, is returned."""
         for s in wake.woke_subjects:
             self.woke.pop(s, None)
         self.unescalate(wake)
+        if wake.tasking:
+            wake.tasking = False
+            self.tasking_wakes = max(0, self.tasking_wakes - 1)
+            if wake.t in self.tasking_recent:
+                self.tasking_recent.remove(wake.t)
         if wake.reason == "start":
             self.started = False  # the opening update is told again, as the opening
         self.notes_dropped += wake.notes_dropped

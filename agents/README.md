@@ -407,7 +407,7 @@ on without an AI and the panel says so.
 | `--shadow-*` | run the playbook engine beside the model on the situation's `[playbook]` table (`playbook.json` in the AI's directory), reading only, and log what it would have proposed and withdrawn (`shadow`, `shadow.withdraw`, `shadow.lapsed`, `shadow.status` lines; not shown in the panel) |
 | `--watch-config` | where the watch is: the same `playbook.json`, whose watch areas and protected points the stakes gate reads (an identity conflict goes to the stronger model only when its contact is inside a watch area, closing on a protected point or coming into a watch area within 10 minutes: "When it wakes"); a situation without them escalates as before. Logged in `run.start` as `watch` |
 | `--codex-home` | passed only when the user's environment sets `MURMUR_CODEX_HOME` (Setup, Codex step 3), since the runner strips every `MURMUR_*` variable from the AI's environment |
-| `--no-tasking` | not passed by the runner. Without it the driver reads the operator's tasking at each wake (`GET /api/tasking` on the `--url` host, no identity, 3 s timeout; a failed read means none) and puts the active items in the update under "Operator tasking", worded as guidance that is not an order and gives the model no authority; with none the update is as before. The headless officer never reads it |
+| `--no-tasking` | not passed by the runner. Without it the driver reads the operator's tasking (`GET /api/tasking` on the `--url` host, no identity, 3 s timeout; a failed read means none) at each poll, where new guidance wakes the routine model ("When it wakes"), and at each wake, where it puts the active items in the update under "Operator tasking", worded as guidance that is not an order and gives the model no authority; with none the update is as before. The headless officer never reads it |
 
 The runner starts it in an empty directory of its own for this run, outside the repository and
 outside the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md` and
@@ -597,6 +597,7 @@ characters. The table is `TRIGGERS` in `agents/watch/wake.py`:
 | one of its own proposals approved, rejected, voided, expired, failed, aborted, queued, dispatched or effected (also when it was decided before the driver saw it pending) | yes | |
 | rules 30: one of ours presumed lost by the engine (`node.presumed`), or a loss revoked (`node.loss_revoked`) | yes | |
 | the bridge restarted (the CLI is restarted too, and its tools checked again) | yes | |
+| the operator posted new tasking (`tasking.posted`, the live driver's read of `GET /api/tasking` each poll; within tasking's share of the wakes, below) | yes | never |
 
 Anything else is a note that rides along with the next update (a task of its own that ended
 `done` is a note: nothing to decide). Bursts are coalesced (3 s after the first waking
@@ -628,6 +629,27 @@ heartbeat wakes it every 60 s without a trigger, doubling up to 300 s while noth
 arrives (autopilot chatter, vehicles joining and repeats are not news), and never takes the
 last quarter of the hour's wakes, which stay for triggers; a heartbeat that finds a waking
 change still coalescing wakes for that change, escalated if it escalates.
+
+**Operator tasking** (the live driver only; the headless officer reads none). The driver reads
+`GET /api/tasking` every poll (2 s), beside the change feed so a slow read never holds it up
+(`Officer.tasking_loop`). An active item it has not read before is a `tasking.posted` change: it
+wakes the routine model, never the stronger one, so new guidance is read within a poll and the
+coalescing (3 s), about 5 s, unless a wake went less than 10 s before. Each post is its own
+subject, never held behind an earlier one's 5 minutes; the update says the item's id and text
+("operator tasking tk-3 posted by op-1, the operator's text ...") and lists it in full under
+"Operator tasking". Guidance withdrawn is a note (`tasking.retired`), told with the next update,
+which no longer lists it: the model acts only when woken, so withdrawn guidance cannot steer it
+meanwhile, and a withdrawal that woke would let posting and withdrawing spend two wakes an item.
+Posted and withdrawn before the wake fires, it is a note too (it came and went). Guidance
+already posted when the officer connects is the baseline: its opening update lists it, so it is
+not told again as new; an update that lists an item before a poll saw it has told it. Tasking
+takes at most a quarter of the hour's wakes (15 of 60) and of the run's (100 of 400), and never
+the hour's last quarter, kept for triggers as from heartbeats: past that a post is a note, news
+for the heartbeat's back-off, told with the next update. So an operator posting again and again
+spends a quarter of the wakes at most and cannot hold back a trigger (an escalation is never
+held by the hourly cap, and tasking spends none). A failed turn gives tasking's share back, as
+it does an escalation. A bridge without the channel (404) is read no more; were the bridge's own
+feed to carry `tasking.*` changes, the driver would stop its own read and leave them to it.
 
 **Stakes** (bd murmur-5xaf, `agents/watch/stakes.py`; DECISIONS.md 2026-11-14). An identity
 conflict, and a conflict coming and going, goes to the stronger model only when its contact

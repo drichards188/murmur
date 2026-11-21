@@ -129,7 +129,8 @@ class ScriptedPoller:
         self.closed = True
 
 
-def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.0, backend: str = "claude"):
+def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.0, backend: str = "claude",
+            tasking=None):
     bin_flag = "--claude-bin" if backend == "claude" else "--codex-bin"
     args = W.parse_args(["--backend", backend, bin_flag, str(fake), "--poll-s", "0.1", "--coalesce-s", "0.2",
                          "--min-gap-s", "0.3", "--heartbeat-s", "0", "--turn-timeout-s", "20",
@@ -150,7 +151,7 @@ def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.
 
         shadow = PlaybookShadow(make(SHADOW_CONFIG, "test"), log.write)
     return W.Officer(args, backend_, log, Waker(budgets, escalation=not args.no_escalation), ScriptedPoller(script),
-                     shadow, time.time() + seconds)
+                     shadow, time.time() + seconds, tasking_fetch=tasking)
 
 
 def lines(tmp_path: Path) -> list[dict]:
@@ -604,3 +605,149 @@ def test_a_limit_resume_starts_the_failure_streak_again(fake_claude, tmp_path):
     assert asyncio.run(go()) is None
     assert o.lanes["routine"].streak == 0 and o.lanes["routine"].wait_s == 0.0
     assert o.lanes["consult"].streak == 2, "the consult's own streak is its own"
+
+
+# ---- operator tasking: new guidance wakes the officer (GET /api/tasking each poll) --------------
+
+
+def tk(n: int, text: str, at_t: float, active: bool = True) -> dict:
+    return {"id": f"tk-{n}", "text": text, "by": "op-1", "at_t": at_t, "active": active}
+
+
+class FakeTasking:
+    """`GET /api/tasking` as the bridge answers it (newest first), its items changed by `script`
+    (seconds after the first read, a function of the item list) as an operator would."""
+
+    def __init__(self, items=(), script=(), missing: bool = False):
+        self.items = [dict(i) for i in items]
+        self.script = sorted(script, key=lambda s: s[0])
+        self.t0: float | None = None
+        self.reads = 0
+        self.missing = missing
+
+    async def __call__(self) -> dict:
+        now = time.time()
+        if self.t0 is None:
+            self.t0 = now
+        while self.script and self.script[0][0] <= now - self.t0:
+            self.script.pop(0)[1](self.items)
+        self.reads += 1
+        if self.missing:
+            import urllib.error
+
+            raise urllib.error.HTTPError("http://127.0.0.1/api/tasking", 404, "Not Found", {}, None)
+        return {"t": now * 1000, "items": [dict(i) for i in reversed(self.items)]}
+
+
+def test_new_tasking_wakes_the_routine_model_within_seconds_and_the_update_says_it(fake_claude, tmp_path):
+    """Guidance posted while the officer watches is a `tasking.posted` change from the driver's
+    poll: it wakes the routine model (escalation on) within a poll and the coalescing, the wake
+    says why, the update has the change's line and the guidance under Operator tasking. Guidance
+    already posted at connect is in the opening update and is never told as new."""
+    tasking = FakeTasking([tk(1, "watch the ferry lane", 1000)],
+                          [(1.0, lambda items: items.append(tk(2, "hold the north pickets", 2000)))])
+    o = officer(tmp_path, fake_claude, [], seconds=3.0, tasking=tasking)
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start", "changes"], [w["why"] for w in wakes]
+    assert "- tk-1 (op-1): watch the ferry lane" in wakes[0]["update"]
+    assert "tk-2" not in wakes[0]["update"]
+    w = wakes[1]
+    assert w["why"] == ["the operator posted new tasking"] and not w["escalated"] and w["model"] == "sonnet"
+    assert [(c["kind"], c["tasking"]) for c in w["changes"]] == [("tasking.posted", "tk-2")], "tk-1 is not new"
+    assert 'operator tasking tk-2 posted by op-1, the operator\'s text "hold the north pickets"' in w["update"]
+    section = w["update"][w["update"].index("Operator tasking (guidance"):]
+    assert section.index("- tk-2 (op-1): hold the north pickets") < section.index("- tk-1 (op-1): watch the ferry lane")
+    assert "it is not an order, and it gives you no authority" in section
+    assert w["t"] - (tasking.t0 + 1.0) < 2.0, "within a poll and the coalescing (here 0.1 s and 0.2 s)"
+    assert w["text"] == "watch officer woken (sonnet): the operator posted new tasking"
+
+
+def test_tasking_posted_before_the_officer_connects_is_its_opening_update_only(fake_claude, tmp_path):
+    tasking = FakeTasking([tk(1, "watch the ferry lane", 1000), tk(2, "ignore the sailboats", 1500, active=False)])
+    o = officer(tmp_path, fake_claude, [], seconds=1.5, tasking=tasking)
+    assert asyncio.run(o.run()) == "until"
+    wakes = [x for x in lines(tmp_path) if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start"], "nothing new: the baseline"
+    assert "- tk-1 (op-1): watch the ferry lane" in wakes[0]["update"] and "ignore the sailboats" not in wakes[0]["update"]
+    assert tasking.reads >= 3, "read each poll"
+
+
+def test_withdrawn_tasking_is_a_note_told_with_the_next_update(fake_claude, tmp_path):
+    """Guidance withdrawn wakes nobody (the model acts only when woken, and the next update no
+    longer lists it); the next wake, here a review flag's, carries the note."""
+    tasking = FakeTasking([tk(1, "watch the ferry lane", 1000)], [(0.8, lambda items: items[0].update(active=False))])
+    script = [(2.0, {"kind": "review.flag", "flag": "F-1", "flag_kind": "unattributed", "tracks": ["T-0009"],
+                     "evidence": "a shot near T-0009"})]
+    o = officer(tmp_path, fake_claude, script, seconds=3.0, tasking=tasking)
+    assert asyncio.run(o.run()) == "until"
+    wakes = [x for x in lines(tmp_path) if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start", "changes"]
+    assert wakes[1]["why"] == ["the engine flagged something for review"], "the withdrawal did not wake it"
+    assert "operator tasking tk-1 was withdrawn and no longer applies" in wakes[1]["update"]
+    assert "Operator tasking (guidance" not in wakes[1]["update"], "nothing in force"
+
+
+def test_a_burst_of_posts_is_one_wake(fake_claude, tmp_path):
+    script = [(1.0 + 0.05 * i, lambda items, i=i: items.append(tk(i + 1, f"item {i + 1}", 2000 + i))) for i in range(3)]
+    o = officer(tmp_path, fake_claude, [], seconds=3.0, tasking=FakeTasking([], script))
+    assert asyncio.run(o.run()) == "until"
+    wakes = [x for x in lines(tmp_path) if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start", "changes"]
+    assert [c["tasking"] for c in wakes[1]["changes"]] == ["tk-1", "tk-2", "tk-3"]
+
+
+def test_what_an_update_lists_is_not_told_again_as_new(fake_claude, tmp_path):
+    """A post an update read before the poll saw it is told once (in that update), not again by
+    the poll; a garbled read changes nothing; a bridge without the channel is read no more."""
+    tasking = FakeTasking([tk(1, "watch the ferry lane", 1000)])
+    o = officer(tmp_path, fake_claude, [], tasking=tasking)
+
+    async def go():
+        assert await o.tasking_poll(0.0) == [], "the first read is the baseline"
+        tasking.items.append(tk(2, "hold the north pickets", 2000))
+        assert [i["id"] for i in await o.tasking()] == ["tk-2", "tk-1"]
+        assert await o.tasking_poll(1.0) == [], "listed in an update: told"
+        tasking.items[0]["active"] = False
+        assert [(c["kind"], c["tasking"], c.get("gone")) for c in await o.tasking_poll(2.0)] == [
+            ("tasking.retired", "tk-1", None)]
+
+        async def garbled():
+            return {"error": "x"}
+
+        o.tasking_fetch = garbled
+        with pytest.raises(ValueError):
+            await o.tasking_poll(3.0)
+        assert await o.tasking() == [] and set(o.tasking_known) == {("tk-2", 2000)}, "a garbled read withdraws nothing"
+
+    asyncio.run(go())
+    o2 = officer(tmp_path, fake_claude, [], seconds=1.0, tasking=FakeTasking(missing=True))
+    assert asyncio.run(o2.run()) == "until"
+    assert [x["kind"] for x in lines(tmp_path)].count("tasking.none") == 1
+
+
+def test_tasking_changes_against_a_restarted_bridge():
+    """A restarted bridge numbers its tasking again from tk-1: the old posting is gone (withdrawn,
+    no longer listed) and the new tk-1 is new, told by its posting time."""
+    known: dict = {}
+    assert W.tasking_changes({"items": [tk(1, "a", 1000)]}, known, 0) == [{
+        "kind": "tasking.posted", "t": 0, "tasking": "tk-1", "at_t": 1000, "text": "a", "by": "op-1"}]
+    out = W.tasking_changes({"items": [tk(1, "b", 9000)]}, known, 5)
+    assert [(c["kind"], c["text"], c.get("gone")) for c in out] == [("tasking.retired", "a", True), ("tasking.posted", "b", None)]
+    with pytest.raises(ValueError):
+        W.tasking_changes(None, known, 6)
+    assert list(known) == [("tk-1", 9000)]
+
+
+def test_a_feed_that_tells_tasking_stops_the_drivers_own_read(fake_claude, tmp_path):
+    """Whichever source tells it, the table judges a `tasking.posted` alike; once the bridge's own
+    feed carries tasking the driver stops telling it too, so it is never told twice."""
+    feed = [(0.8, {"kind": "tasking.posted", "tasking": "tk-1", "at_t": 1000, "text": "watch the ferry lane", "by": "op-1"})]
+    tasking = FakeTasking([], [(0.5, lambda items: items.append(tk(1, "watch the ferry lane", 1000))),
+                               (1.2, lambda items: items.append(tk(2, "hold the north pickets", 2000)))])
+    o = officer(tmp_path, fake_claude, feed, seconds=3.0, tasking=tasking)
+    assert asyncio.run(o.run()) == "until"
+    wakes = [x for x in lines(tmp_path) if x["kind"] == "wake"]
+    told = [c["tasking"] for w in wakes for c in w["changes"] if c["kind"] == "tasking.posted"]
+    assert o.tasking_in_feed and "tk-2" not in told and told.count("tk-1") <= 2

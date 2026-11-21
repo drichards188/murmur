@@ -14,8 +14,10 @@ model), its presumption cleared, confirmed lost, its loss revoked; the change fe
 of these. Under older rules the first read finds no node items and it reads no more. A contact
 whose identity conflict the stakes gate kept from the stronger model (bd murmur-5xaf) is read by
 id every `stakes_every_s` until it matters to the watch (`Poller.stakes`: a
-`track.conflict_matters` change) or its conflict clears. Nothing it reads is logged by the
-bridge.
+`track.conflict_matters` change) or its conflict clears. The live driver (only) also reads the
+operator's tasking (`GET /api/tasking`) each poll and around each wake (agents/watch_officer.py
+`Officer.tasking_loop`): new guidance is a `tasking.posted` change, guidance withdrawn a
+`tasking.retired` one. Nothing it reads is logged by the bridge.
 """
 
 from __future__ import annotations
@@ -632,6 +634,13 @@ def render(c: dict) -> str:
                 "order; its orders ended")
     if k == "node.loss_revoked":
         return f"{t} {_who(c)} of ours: its loss was revoked (heard again, or an operator revoked it): it counts in every keep-out again"
+    if k == "tasking.posted":
+        return (f"{t} operator tasking {c.get('tasking')} posted by {c.get('by') or 'the operator'}, the operator's text "
+                f"{quote(c.get('text', ''))} (guidance, listed under Operator tasking while it is in force)")
+    if k == "tasking.retired":
+        gone = " (the bridge no longer lists it)" if c.get("gone") else ""
+        return (f"{t} operator tasking {c.get('tasking')} was withdrawn{gone} and no longer applies; it read "
+                f"{quote(c.get('text', ''))}")
     if k == "feed.reset":
         return f"{t} the bridge restarted (run {c.get('run')}): read the picture again"
     if k == "feed.truncated":
