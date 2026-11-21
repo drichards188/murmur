@@ -494,8 +494,15 @@ affiliation confidence), and every decision's `tracks_sha256` moves with them. R
 off (a supplement of the scale watch's policy setting `neutral_after_bar = false`), and with
 `run.started`'s rules version (32), policy schema (7) and layers, the logged policy's rules 33 keys
 and the own looks' sensor, level and confidence put back, it hashes to `9c465c64...` and
-`d19121bb...` byte for byte; with the rule on, to `cd20168e...` and `19ac81f6...`. Compare with
-this pair.
+`d19121bb...` byte for byte; with the rule on, to `cd20168e...` and `19ac81f6...`. Main's code
+just before rules 34 became the default (165b2d3, 2026-11-20, group orders built behind it) gave
+that pair again. Decision rules 34 (group orders, docs/SWARMS.md stage 10) give record
+`8190f4f5...` and audit `5312d1f9...` (6,099 events), the same events at the same times and the
+same decisions: its 54 opening orders each name one vehicle, so none is a group order. With
+`run.started`'s rules version (33), policy schema (8) and the two policy files' sha256 put back, the
+logged policy's `[group]` and its agent tier's `transit` dropped, and each decision's platform facts
+without their `formation` figures, it hashes to `8dca43c0...` and `7f073943...` byte for byte; each
+of those causes alone moves both. Compare with this pair.
 
 **Saturation's size, synthetic** (`tracks::tests::sense_par::sense_par_bench`, release: 3,602 of
 ours in Saturation's mix, 1,700 X10s at 100 m, 1,300 Pumas at 800 m, 200 Saildrones, 300

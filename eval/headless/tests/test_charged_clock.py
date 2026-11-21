@@ -512,10 +512,18 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: bcbeae2b...) byte for byte, so the only change is the two tools' schemas in the model's tool
 #: list (Harbor watch's 46 463 to 51 162 characters), and with it the prompt sizes, token estimates
 #: and dollars; the playbook's tool list names the tools only and did not move.
+#: Re-taken when decision rules 34 became the default (group orders, docs/SWARMS.md stage 10), with
+#: no event, decision or proposal moved in any of the three, and nothing but the audit log moved in
+#: each record: with, in each audit log, `run.started`'s `rules_version` put back to 33 and its
+#: `policy_schema` to 8, the logged policy's `[group]` dropped and its agent tier's `transit`, the
+#: watch policy's and the standing policy's sha256 in `policy_layers` put back (their text gained
+#: transit and `[group]`), and each decision's platform facts without their `formation` figures, this
+#: code gives the digests before (d6e6c3d9..., 7ce2d321..., e0b1e5bd...) byte for byte. No order
+#: here names more than one vehicle, so no group order moved anything.
 PAUSED = {
-    "model harbor-watch s1": "d6e6c3d94dcfda6f0af1388f98cf980791e6c41cd8c8db2d5d83828a712e6da7",
-    "playbook v2 fast-unknown 1000": "7ce2d32103294cf346ba7b2110af6ac8cd352713a5843daee8a0cce8e4b75950",
-    "model v2 fast-unknown 1000": "e0b1e5bd5b6069c33ec87fb69d3114faf0f7b4d7e0ece2dfdfd625872102e956",
+    "model harbor-watch s1": "74c9c2f822cffa1aed8639d588115d3b526ea4b2aebaece6dbf32bfdb55ff3de",
+    "playbook v2 fast-unknown 1000": "a0cb88ba5d67a85728560ee80a354c3f8d8b9bb386799a132591bc6bc759ba02",
+    "model v2 fast-unknown 1000": "533603626817f163520fa91f4b312eeccbb7a681630ff9a62182de67a3d16533",
 }
 
 

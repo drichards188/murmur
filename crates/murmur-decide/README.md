@@ -2632,7 +2632,7 @@ Rules versions:
   made the default last (`RULES_VERSION = RULES_NEWEST = 34`, `POLICY_SCHEMA` 9; a run asked for
   rules 33 logs schema 8, older 7, `RulesConfig::policy_schema`); no scenario but the group ones
   changes design (each other scenario's log differs only by the logged formation facts and the
-  policy's `[group]`), so none carries a `[since.34]`. Fixtures (a clean build of the flip):
+  policy's `[group]`), so none carries a `[since.34]`. Fixtures (a clean build of `3bb2285`):
   `tests/data/audit/v34-engagement-scenario-01.jsonl` (no group order: as rules 33 decided it,
   the formation facts and `[group]` aside), `v34-group-reforms-after-three-drop-scenario-166.jsonl`
   (relabelled rules 33, its group spec, member orders, layout and re-form are caught; with the

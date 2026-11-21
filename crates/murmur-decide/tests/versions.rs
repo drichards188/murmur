@@ -24,7 +24,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 93] = [
+const LOGS: [(&str, u32); 96] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -261,13 +261,20 @@ const LOGS: [(&str, u32); 93] = [
     // names the boat at 0.11, a `named` step, and identifies it at 0.65, ending the order)
     ("v33-engagement-scenario-01.jsonl", SCENARIO_SETTINGS_SINCE),
     ("v33-identify-goes-on-past-a-first-naming-scenario-149.jsonl", SCENARIO_SETTINGS_SINCE),
+    // rules 34 (group orders; a clean build of 3bb2285, docs/SWARMS.md stage 10): scenario 01 (no
+    // group order: the decisions rules 33 made, the formation figures in its facts and the policy's
+    // [group] aside), 166 (twenty X10s' group orbit, three drop, one re-form moving only the gaps'
+    // neighbours) and 172 (five X10s' group transit to stations along a line, each holding there)
+    ("v34-engagement-scenario-01.jsonl", GROUP_ORDER_SINCE),
+    ("v34-group-reforms-after-three-drop-scenario-166.jsonl", GROUP_ORDER_SINCE),
+    ("v34-group-transit-to-stations-scenario-172.jsonl", GROUP_ORDER_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v33-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v34-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2339,4 +2346,53 @@ fn an_identify_order_held_to_the_criteria_is_caught_under_older_rules() {
     }
     let r = with(&rechain(&ls), RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// Rules 34: scenario 166's and 172's logs relabelled rules 33 carry what no build of rules 33
+/// logged (a type's group-order figures in the facts, the policy's [group], a group order's spec,
+/// its layout, its member orders with their shares under its approval, its dispatch and re-form,
+/// a member's class, a transit) and are caught; with the policy's markers taken out as a rules 33
+/// build logged a policy (`common::claim_older_rules`), the group orders themselves still give
+/// them away; under their own rules they replay. Scenario 01's log, which has no group order,
+/// relabelled rules 33 is caught for the figures alone.
+#[test]
+fn a_group_order_is_caught_under_older_rules() {
+    let v34 = format!("\"rules_version\":{GROUP_ORDER_SINCE},");
+    for (name, whats_now, whats_still) in [
+        (
+            "v34-group-reforms-after-three-drop-scenario-166.jsonl",
+            &["a type's group-order figures", "a group order's spec, or the policy's [group]", "a member order's group order", "a member order's share", "a group order's layout", "a group order dispatched as its member orders", "a group order re-formed", "a member order approved under its group's approval"][..],
+            &["a group order's spec, or the policy's [group]", "a member order's group order", "a group order re-formed"][..],
+        ),
+        (
+            "v34-group-transit-to-stations-scenario-172.jsonl",
+            &["a type's group-order figures", "a transit order", "a group order dispatched as its member orders"][..],
+            &["a transit order", "a member order's share"][..],
+        ),
+    ] {
+        let ls = lines(&fixture(name));
+        assert!(ls[0].contains(&v34), "{name}");
+        let mut old = ls.clone();
+        old[0] = old[0].replacen(&v34, &format!("\"rules_version\":{SCENARIO_SETTINGS_SINCE},"), 1);
+        let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE))).iter().map(|s| s.to_string()).collect();
+        for what in whats_now {
+            assert!(w.iter().any(|m| m.starts_with(what)), "{name} {what}: {w:?}");
+        }
+        let mut events = parse_log(&ls.join("\n")).unwrap();
+        common::claim_older_rules(&mut events[0].body, SCENARIO_SETTINGS_SINCE);
+        let stripped: Vec<String> = events.iter().map(|e| serde_json::to_string(e).unwrap()).collect();
+        assert!(!stripped[0].contains("\"group\":{"), "{}", stripped[0]);
+        let w: Vec<String> = whats(&with(&rechain(&stripped), RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE))).iter().map(|s| s.to_string()).collect();
+        for what in whats_still {
+            assert!(w.iter().any(|m| m.starts_with(what)), "{name} {what}: {w:?}");
+        }
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(GROUP_ORDER_SINCE));
+        assert!(r.ok(), "{name}: {:?}", r.mismatches);
+    }
+    let ls = lines(&fixture(CURRENT));
+    assert!(!ls.iter().any(|l| l.contains("\"parent\":") || l.contains("\"type\":\"group.")), "scenario 01 has no group order");
+    let mut old = ls.clone();
+    old[0] = old[0].replacen(&v34, &format!("\"rules_version\":{SCENARIO_SETTINGS_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.starts_with("a type's group-order figures")), "{w:?}");
 }

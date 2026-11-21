@@ -1481,7 +1481,16 @@ dropped, the logged policy's rules 33 keys dropped (`[watch]`, `[rules.silent]`,
 (its sha256 recomputed, and every reference to it), and the playbook's configuration labels, its
 evidence's `bar` (was `classification_settled`) and its settle words put back, the new record and
 audit log hash to `1a7d4115...` and `34c3911e...` byte for byte; each of those causes alone moves
-both.
+both. Rules 34 (group orders, docs/SWARMS.md stage 10) re-took it to record `86cab038...`, audit
+`01e65e54...`, 152 events, with no event, decision or proposal moved: no Harbor watch order names
+more than one vehicle, so none is a group order. With `run.started`'s `rules_version` put back to
+33 and its `policy_schema` to 8, the logged policy's `[group]` dropped and its agent tier's
+`transit`, the sha256 of the watch policy and of the standing policy in `policy_layers` put back
+(their text names transit and writes `[group]` out now), and each decision's platform facts
+without their `formation` figures (the group-order figures every decision logs from rules 34), the
+new audit log hashes to `d9f2a2b3...` and the record to `47df670d...` byte for byte; each of
+those causes alone moves both. The paused digests moved by the same causes alone
+(test_charged_clock.py).
 
 ### 17.3 The bake tool
 
