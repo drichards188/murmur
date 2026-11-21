@@ -377,6 +377,28 @@ function StandingSection({ v, nodes, row, now, onReview, nameOf }: { v: Vehicle;
 
 /** Everything known about one vehicle: identity, live state, link, platform limits and its
  *  current task. Opened by clicking a fleet row; selecting for tasking is a separate control. */
+/** The details once the vehicle's whole report has come. A vehicle that has only ever been out of
+ *  view at scale is known by lite snapshots alone (push.rs: identity, a coarse position, mode,
+ *  link; no messages, battery or GPS), and the details read fields a lite one does not carry: it
+ *  crashed them when opened from the fleet list or the Sitrep. Opening it pins it, so its full
+ *  report comes with the next frame; until then the panel says so. */
+export function VehicleDetailsWhenFull(p: Props) {
+  if (Array.isArray(p.v.statustext)) return <VehicleDetails {...p} />
+  return (
+    <aside className="vdetails" aria-label={`Details for ${callsign(p.v)}`}>
+      <header className="vd-head">
+        <div className="vd-title">
+          <div className="vd-name">{callsign(p.v)}</div>
+          <div className="muted">Out of view until now: its full report comes with the next update.</div>
+        </div>
+        <button className="ghost mini" onClick={p.onClose} aria-label="Close details">
+          ✕
+        </button>
+      </header>
+    </aside>
+  )
+}
+
 export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onClose, following, onFollow, onEngage, nodeLoss = NO_NODE_LOSS, nodeRow, onReview, nameOf }: Props) {
   const limits = usePlatformLimits()
   const p = v.identity ? limits?.get(v.identity.platform) : undefined

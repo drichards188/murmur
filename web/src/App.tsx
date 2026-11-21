@@ -15,7 +15,7 @@ import { buildTrackLayers, trackLabelCandidates, trackTooltip } from './trackLay
 import { TracksPanel } from './TracksPanel'
 import type { Reveal } from './reveal'
 import { isTrackStale, type Track, trackPredicted } from './tracks'
-import { VehicleDetails } from './VehicleDetails'
+import { VehicleDetailsWhenFull } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
 import { callsign, DOMAIN_LABEL, domainOf, isStale, vehicleNamer } from './types'
 import { useBridge } from './useBridge'
@@ -1251,7 +1251,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         )}
         {detailsUid != null && byUidDetails(vehicles, detailsUid) && (
           <ErrorBoundary name="Vehicle details" className="floating">
-          <VehicleDetails
+          <VehicleDetailsWhenFull
             v={byUidDetails(vehicles, detailsUid)!}
             taskings={taskings}
             now={now}
