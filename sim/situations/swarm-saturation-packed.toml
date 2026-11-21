@@ -317,6 +317,7 @@ note = "Opening order: picket ring, central bay, east"
 id = "search-1"
 task = "patrol"
 vehicles = { swarm = "SEARCH-1" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.555, 37.790], [-122.555, 37.850]]
 note = "Opening order: search lane 1 over the inner gulf"
 
@@ -324,6 +325,7 @@ note = "Opening order: search lane 1 over the inner gulf"
 id = "search-2"
 task = "patrol"
 vehicles = { swarm = "SEARCH-2" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.565, 37.790], [-122.565, 37.850]]
 note = "Opening order: search lane 2 over the inner gulf"
 
@@ -331,6 +333,7 @@ note = "Opening order: search lane 2 over the inner gulf"
 id = "search-3"
 task = "patrol"
 vehicles = { swarm = "SEARCH-3" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.575, 37.790], [-122.575, 37.850]]
 note = "Opening order: search lane 3 over the inner gulf"
 
@@ -338,6 +341,7 @@ note = "Opening order: search lane 3 over the inner gulf"
 id = "search-4"
 task = "patrol"
 vehicles = { swarm = "SEARCH-4" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.585, 37.790], [-122.585, 37.850]]
 note = "Opening order: search lane 4 over the inner gulf"
 
@@ -345,6 +349,7 @@ note = "Opening order: search lane 4 over the inner gulf"
 id = "search-5"
 task = "patrol"
 vehicles = { swarm = "SEARCH-5" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.595, 37.790], [-122.595, 37.850]]
 note = "Opening order: search lane 5 over the inner gulf"
 
@@ -352,6 +357,7 @@ note = "Opening order: search lane 5 over the inner gulf"
 id = "search-6"
 task = "patrol"
 vehicles = { swarm = "SEARCH-6" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.605, 37.790], [-122.605, 37.850]]
 note = "Opening order: search lane 6 over the inner gulf"
 
@@ -359,6 +365,7 @@ note = "Opening order: search lane 6 over the inner gulf"
 id = "search-7"
 task = "patrol"
 vehicles = { swarm = "SEARCH-7" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.615, 37.790], [-122.615, 37.850]]
 note = "Opening order: search lane 7 over the inner gulf"
 
@@ -366,6 +373,7 @@ note = "Opening order: search lane 7 over the inner gulf"
 id = "search-8"
 task = "patrol"
 vehicles = { swarm = "SEARCH-8" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.625, 37.790], [-122.625, 37.850]]
 note = "Opening order: search lane 8 over the inner gulf"
 
@@ -373,6 +381,7 @@ note = "Opening order: search lane 8 over the inner gulf"
 id = "search-9"
 task = "patrol"
 vehicles = { swarm = "SEARCH-9" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.635, 37.790], [-122.635, 37.850]]
 note = "Opening order: search lane 9 over the inner gulf"
 
@@ -380,6 +389,7 @@ note = "Opening order: search lane 9 over the inner gulf"
 id = "search-10"
 task = "patrol"
 vehicles = { swarm = "SEARCH-10" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.645, 37.790], [-122.645, 37.850]]
 note = "Opening order: search lane 10 over the inner gulf"
 
@@ -389,6 +399,7 @@ note = "Opening order: search lane 10 over the inner gulf"
 id = "relay-1"
 task = "patrol"
 vehicles = { swarm = "RELAY-1" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.4560, 37.8040], [-122.5050, 37.7860]]
 note = "Opening order: relay chain along the Presidio shore, flown back and forth"
 
@@ -396,6 +407,7 @@ note = "Opening order: relay chain along the Presidio shore, flown back and fort
 id = "relay-2"
 task = "patrol"
 vehicles = { swarm = "RELAY-2" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.5150, 37.7950], [-122.5900, 37.8000]]
 note = "Opening order: relay chain off Ocean Beach, flown back and forth"
 
@@ -403,6 +415,7 @@ note = "Opening order: relay chain off Ocean Beach, flown back and forth"
 id = "relay-3"
 task = "patrol"
 vehicles = { swarm = "RELAY-3" }
+group = { alt_m = 800 }                      # rules 34: the layer base, the fleet's cruise_alt_m
 route = [[-122.5950, 37.8020], [-122.6550, 37.8100]]
 note = "Opening order: relay chain out toward the search lanes, flown back and forth"
 
@@ -450,6 +463,7 @@ note = "Opening order: USV lane north of Alcatraz"
 id = "undersea-1"
 task = "orbit"
 vehicles = { swarm = "UNDERSEA-1" }
+group = { alt_m = 25 }                       # rules 34: layers 25 to 40 m, 10 m or more above the seabed
 center = [-122.4783, 37.8199]
 radius_m = 300
 note = "Opening order: AUV ring under the bridge"

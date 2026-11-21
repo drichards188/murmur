@@ -242,6 +242,27 @@ def test_an_opening_order_for_an_armed_platform_is_refused(tmp_path: Path):
     assert [o.task for o in ok.orders] == ["hold"]
 
 
+def test_an_opening_order_takes_a_group_spec_and_a_transit(tmp_path: Path):
+    """Decision rules 34: an opening order's `group` table goes to the bridge as the order's own
+    group spec (the REST and MCP `group`, through `extra`), its keys the spec's; a transit needs a
+    route of one point or more."""
+    from eval.agent import _mcp_args, _rest_body
+
+    fleet = 'title = "T"\nbrief = "B"\nfleet = "sim/fleets/engage-keepout-demo.toml"\n'
+    sit = S.load_situation(_write(tmp_path, "group", fleet + '[[order]]\ntask = "transit"\nvehicles = {platform = "corsair"}\n'
+                                  + 'route = [[-122.47, 37.81]]\ngroup = { spread = "block", alt_m = 0 }\n'))
+    o = sit.orders[0]
+    assert o.task == "transit" and o.params["extra"] == {"group": {"spread": "block", "alt_m": 0}}
+    req = {"task": o.task, "uids": [1, 2], **dict(o.params)}
+    assert _rest_body(req, None)["group"] == {"spread": "block", "alt_m": 0}
+    assert _mcp_args(req)["group"] == {"spread": "block", "alt_m": 0}
+    for bad in ('group = { slots = 3 }\n', 'group = 3\n'):
+        with pytest.raises(S.SituationError):
+            S.load_situation(_write(tmp_path, "bad", fleet + '[[order]]\ntask = "orbit"\nvehicles = {platform = "corsair"}\ncenter = [-122.47, 37.81]\nradius_m = 300\n' + bad))
+    with pytest.raises(S.SituationError):
+        S.load_situation(_write(tmp_path, "noroute", fleet + '[[order]]\ntask = "transit"\nvehicles = {platform = "corsair"}\n'))
+
+
 def test_a_situation_step_needs_no_truth_label(tmp_path: Path):
     p = _write(
         tmp_path,

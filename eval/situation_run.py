@@ -16,7 +16,8 @@
    run's id and simulation token), so it outlives the runner: `make down` stops it.
 4. Takes the stack's clock (the link emulator's start: "situation time" counts from it, as the
    events files' `at_s` and the contacts' `start_s` do), waits until every vehicle is
-   navigation-ready, and issues the opening orders under the scripted id op-setup. Each is
+   navigation-ready, starts the autoplay operator or the scripted cosigner (5), and issues the
+   opening orders under the scripted id op-setup. Each is
    first an operator's dry run (`POST /api/intents/preview`, nothing logged): an order whose
    submission would be its own approval (a human tier) is proposed instead by the scripted
    agent agent-setup, so it waits for the person (live) or the autoplay operator (op-auto).
@@ -24,7 +25,8 @@
 5. Starts the AI in an empty directory of its own outside the repository (only `brief.md`;
    agents/README.md, "In a situation: the launch contract"), the autoplay operator
    (`eval/proxy.py`'s `ProxyOperator` as op-auto with `EngagementSigners` op-2 and op-3, all
-   scripted) or the scripted cosigner, and the timeline (`eval/storyline.py`; its proposals
+   scripted) or the scripted cosigner (before the opening orders, so op-auto decides one that
+   waits for a person), and the timeline (`eval/storyline.py`; its proposals
    and declarations say they are a script's). Its `red` steps, orders to the contacts, go to
    the contacts process's own API (`RedSteps`: `POST /orders` with the stack's simulation
    token, which the runner made and gives only to up.sh; never through the bridge).
@@ -1315,12 +1317,16 @@ class Runner:
             self.entry("phase", "stack up")
             await self.wait_ready(vehicles)
             await self.wait_handover()
-            await self.issue_orders()
-            self.set_phase("running", "the situation runs")
+            # the scripted operator first: an opening order routed to a person (agent-setup's,
+            # a human tier) is op-auto's to decide on autoplay while the rest go out, and a group
+            # order (decision rules 34) with a member it cannot place yet is one; issuing a large
+            # fleet's orders can take longer than an approval is held (Saturation's 36)
             scripted = self.scripted()
             if scripted is not None:
                 name = "the autoplay operator" if self.modes["operator"] == "autoplay" else f"the scripted {LIVE_SIGNERS_MODE[self.modes['cosigner']]}"
                 tasks.append(self.watch_task(name, scripted.run(story_stop)))
+            await self.issue_orders()
+            self.set_phase("running", "the situation runs")
             story, _ = self.storyline()
             if story is not None:
                 tasks.append(self.watch_task("the timeline", story.run(story_stop)))

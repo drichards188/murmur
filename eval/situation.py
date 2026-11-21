@@ -45,7 +45,7 @@ AI_LABEL = {
 # scripted (op-2 or op-3 adds the second after yours), scripted-pair (op-2 and op-3 sign a
 # nomination you made: the tutorial's, where the proposer may never sign)
 COSIGNERS = ("you", "scripted", "scripted-pair")
-ORDER_TASKS = ("orbit", "patrol", "hold", "rtl", "track")
+ORDER_TASKS = ("orbit", "patrol", "transit", "hold", "rtl", "track")  # transit: rules 34
 STORYLINE_PROPOSERS = ("agent", "operator")
 
 # Who is who in a situation's dev run. op-1 is the console's operator: the person, in live
@@ -151,7 +151,11 @@ HEADLESS_KEYS = {"domain_rule", "currents", "conditions"}
 DOMAIN_RULES = ("grid", "not_evaluated")
 CURRENTS = ("world", "none")
 CONDITIONS = ("world", "none")
-ORDER_KEYS = {"id", "task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "note"}
+ORDER_KEYS = {"id", "task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "note", "group"}
+#: decision rules 34: an opening order to several vehicles is one group order; its `group` table
+#: says how the members share it (crates/murmur-decide/src/group.rs `GroupSpec`, which the bridge
+#: checks: absent, the kind's defaults)
+GROUP_KEYS = {"spread", "min_members", "alt_m", "wait_s", "reform", "lanes", "lane_spacing_m", "swarm"}
 # what each step kind may carry (eval/storyline.py's docstring), besides id, at_s and kind
 STEP_COMMON = {"text", "director"}
 # a lay order's own keys on a propose step (rules 27)
@@ -362,6 +366,12 @@ def _order(i: int, raw: Any, sit: Path) -> Order:
             f"{sit}: order {oid!r}: needs vehicles ({{callsign = ...}}, {{platform = ...}}, {{uids = [...]}} or {{swarm = ...}})"
         )
     params = {k: raw[k] for k in ("center", "radius_m", "route", "target", "reserve_pct", "duration_s") if k in raw}
+    if "group" in raw:
+        g = raw["group"]
+        if not isinstance(g, dict) or set(g) - GROUP_KEYS:
+            raise SituationError(f"{sit}: order {oid!r}: group is a table of {sorted(GROUP_KEYS)}")
+        # passed on as the bridge's own key (the operator API's and MCP's `group`)
+        params["extra"] = {"group": dict(g)}
     if task == "orbit":
         if not _lonlat(params.get("center")) or not isinstance(params.get("radius_m"), (int, float)) or params["radius_m"] <= 0:
             raise SituationError(f"{sit}: order {oid!r}: an orbit needs center = [lon, lat] and radius_m > 0")
@@ -369,6 +379,10 @@ def _order(i: int, raw: Any, sit: Path) -> Order:
         route = params.get("route")
         if not isinstance(route, list) or len(route) < 2 or not all(_lonlat(p) for p in route):
             raise SituationError(f"{sit}: order {oid!r}: a patrol needs route = [[lon, lat], ...] (two points or more)")
+    if task == "transit":
+        route = params.get("route")
+        if not isinstance(route, list) or not route or not all(_lonlat(p) for p in route):
+            raise SituationError(f"{sit}: order {oid!r}: a transit needs route = [[lon, lat], ...] (one point or more)")
     if "center" in params and not _lonlat(params["center"]):
         raise SituationError(f"{sit}: order {oid!r}: center is [lon, lat] (opening orders name places, not tracks)")
     return Order(id=oid, task=str(task), vehicles=raw["vehicles"], params=params, note=str(raw.get("note", "")))
