@@ -103,6 +103,8 @@ fn harness_on(
 
 pub(super) fn app(e: &Erig, auth: Arc<Auth>) -> axum::Router {
     let api = crate::api::router(crate::api::App {
+        groups: Default::default(),
+        tasking: Default::default(),
         world: e.r.world.clone(),
         frames: Arc::new(watch::channel(None).0),
         decision: e.r.d.clone(),

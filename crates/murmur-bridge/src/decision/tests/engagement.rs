@@ -466,6 +466,8 @@ async fn the_dry_run_sees_a_platform_spent_by_its_effect() {
     // the console's API, as an operator
     let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default()).expect("auth");
     let api = crate::api::router(crate::api::App {
+        groups: Default::default(),
+        tasking: Default::default(),
         world: e.r.world.clone(),
         frames: Arc::new(tokio::sync::watch::channel(None).0),
         decision: e.r.d.clone(),
@@ -2170,6 +2172,8 @@ async fn a_claims_confirmation_takes_its_picture_under_the_decision_lock() {
 fn api_of(e: &Erig) -> axum::Router {
     let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default()).expect("auth");
     crate::api::router(crate::api::App {
+        groups: Default::default(),
+        tasking: Default::default(),
         world: e.r.world.clone(),
         frames: Arc::new(tokio::sync::watch::channel(None).0),
         decision: e.r.d.clone(),

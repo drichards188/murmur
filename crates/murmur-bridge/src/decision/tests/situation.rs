@@ -23,6 +23,8 @@ fn harness() -> H {
     let e = engage_rig_auth(None, PathBuf::from("memory"), AuthMode::Dev);
     let auth = Auth::new(AuthSettings::dev(), e.r.d.clone(), CredentialFile::default()).expect("auth");
     let api = crate::api::router(crate::api::App {
+        groups: Default::default(),
+        tasking: Default::default(),
         world: e.r.world.clone(),
         frames: Arc::new(watch::channel(None).0),
         decision: e.r.d.clone(),

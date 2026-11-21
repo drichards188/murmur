@@ -407,6 +407,7 @@ on without an AI and the panel says so.
 | `--shadow-*` | run the playbook engine beside the model on the situation's `[playbook]` table (`playbook.json` in the AI's directory), reading only, and log what it would have proposed and withdrawn (`shadow`, `shadow.withdraw`, `shadow.lapsed`, `shadow.status` lines; not shown in the panel) |
 | `--watch-config` | where the watch is: the same `playbook.json`, whose watch areas and protected points the stakes gate reads (an identity conflict goes to the stronger model only when its contact is inside a watch area, closing on a protected point or coming into a watch area within 10 minutes: "When it wakes"); a situation without them escalates as before. Logged in `run.start` as `watch` |
 | `--codex-home` | passed only when the user's environment sets `MURMUR_CODEX_HOME` (Setup, Codex step 3), since the runner strips every `MURMUR_*` variable from the AI's environment |
+| `--no-tasking` | not passed by the runner. Without it the driver reads the operator's tasking at each wake (`GET /api/tasking` on the `--url` host, no identity, 3 s timeout; a failed read means none) and puts the active items in the update under "Operator tasking", worded as guidance that is not an order and gives the model no authority; with none the update is as before. The headless officer never reads it |
 
 The runner starts it in an empty directory of its own for this run, outside the repository and
 outside the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md` and

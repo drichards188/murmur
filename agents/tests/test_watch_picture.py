@@ -284,3 +284,21 @@ def test_the_standing_of_ours_from_the_inboxs_review():
     p.session = s
     assert run(p.node_losses(now=100.0)) == [] and p.node_rules is False
     assert run(p.node_losses(now=200.0)) == [] and [n for n, _ in s.calls] == ["get_inbox"]
+
+
+def test_operator_tasking_is_labelled_guidance_and_absent_means_unchanged():
+    from watch.picture import compose
+    from watch_officer import active_tasking
+
+    wake = SimpleNamespace(n=3, reason="heartbeat", why=[], changes=[], notes_dropped=0, held=[])
+    plain = compose(wake, [], "Budget.", [], 141.0)
+    assert compose(wake, [], "Budget.", [], 141.0, tasking=[]) == plain
+    doc = {"items": [{"id": "tk-2", "text": "hold the north pickets", "by": "op-1", "active": True},
+                     {"id": "tk-1", "text": "old", "by": "op-1", "active": False},
+                     {"id": "tk-3", "text": "  ", "by": "op-1", "active": True}]}
+    items = active_tasking(doc)
+    assert [i["id"] for i in items] == ["tk-2"]
+    told = compose(wake, [], "Budget.", [], 141.0, tasking=items)
+    assert "Operator tasking" in told and "not an order" in told and "tk-2" in told
+    assert told.index("Operator tasking") < told.index("Your proposals")
+    assert active_tasking(None) == [] and active_tasking({"items": "x"}) == []

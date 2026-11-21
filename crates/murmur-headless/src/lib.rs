@@ -52,6 +52,10 @@ mod estimate;
 mod geo;
 #[cfg(not(test))]
 #[allow(dead_code)]
+#[path = "../../murmur-bridge/src/groups.rs"]
+mod groups;
+#[cfg(not(test))]
+#[allow(dead_code)]
 #[path = "../../murmur-bridge/src/heartbeat.rs"]
 mod heartbeat;
 #[cfg(not(test))]
@@ -90,6 +94,10 @@ mod space;
 #[allow(dead_code)]
 #[path = "../../murmur-bridge/src/swarms.rs"]
 mod swarms;
+#[cfg(not(test))]
+#[allow(dead_code)]
+#[path = "../../murmur-bridge/src/tasking.rs"]
+mod tasking;
 #[cfg(not(test))]
 #[allow(dead_code)]
 #[path = "../../murmur-bridge/src/tasks/mod.rs"]

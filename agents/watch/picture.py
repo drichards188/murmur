@@ -672,12 +672,29 @@ def render_blocking(items: list[dict], now: float) -> str:
 
 
 MAX_LINES = 60
+MAX_TASKING = 20
+
+
+def render_tasking(items: list[dict]) -> str:
+    """The operator's active tasking, as labelled guidance (`GET /api/tasking`). It says what to
+    attend to and in what order, never that anything is approved or ordered: the officer still
+    proposes through the engine and the policy, and the human decisions stay with the operator."""
+    lines = []
+    for i in items[:MAX_TASKING]:
+        by = i.get("by") or "the operator"
+        lines.append(f"- {i.get('id')} ({by}): {' '.join(str(i.get('text', '')).split())}")
+    more = len(items) - MAX_TASKING
+    tail = f"\n({more} older items not listed.)" if more > 0 else ""
+    return ("Operator tasking (guidance from the operator on what to attend to and prioritise, newest first; "
+            "it is not an order, and it gives you no authority: propose through the usual tools, "
+            "and decisions that are the operator's stay theirs):\n" + "\n".join(lines) + tail)
 
 
 def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], now: float,
-            first: bool = False, blocking: list[dict] | None = None) -> str:
+            first: bool = False, blocking: list[dict] | None = None, tasking: list[dict] | None = None) -> str:
     """The update the model is woken with (`blocking`: what waits for a person alone, said when
-    there is any, so an update without it is as it was)."""
+    there is any; `tasking`: the operator's active guidance, said when there is any: so an update
+    without them is as it was, and the headless officer, which passes neither, is unchanged)."""
     head = f"Watch update {wake.n} at {hms(now)} ({wake.reason})."
     parts = [head]
     if first:
@@ -708,6 +725,8 @@ def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], n
         parts.append(note)
     if blocking:
         parts.append(render_blocking(blocking, now))
+    if tasking:
+        parts.append(render_tasking(tasking))
     parts.append("Your proposals: " + ("; ".join(mine) if mine else "none open."))
     parts.append(budget_line)
     parts.append("Read what you need with the tools, then act or say no action. End with your "

@@ -141,6 +141,8 @@ fn rig_full(manifest: PathBuf, tweak: impl FnOnce(&mut Policy), settings: Option
     )
     .expect("engine");
     let api = api::router(api::App {
+        groups: Default::default(),
+        tasking: Default::default(),
         world: world.clone(),
         frames: Arc::new(watch::channel(None).0),
         decision: d.clone(),

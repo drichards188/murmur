@@ -817,3 +817,7 @@ mod groups;
 /// Rules 30 through the bridge: the review, confirming and revoking a loss, what it ends and
 /// closes, its alerts (`tests/node_loss.rs`).
 mod node_loss;
+
+/// Operator groups and tasking: the stores an operator writes and an agent only reads
+/// (`tests/operator_stores.rs`).
+mod operator_stores;

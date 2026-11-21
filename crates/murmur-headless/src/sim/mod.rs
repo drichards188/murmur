@@ -746,6 +746,8 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         tracks: tracks.clone(),
         lod: crate::push::LodSettings::from_env(),
         auth: auth.clone(),
+        groups: Default::default(),
+        tasking: Default::default(),
     })
     .merge(crate::emu::router(emu_view))
     .merge(crate::situation::router(crate::situation::Situation::from_env()));

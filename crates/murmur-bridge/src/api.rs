@@ -44,8 +44,15 @@
 //! `west,south,east,north`: only those vehicles, bd murmur-jvdc): each vehicle's radar, EO/IR and
 //! sonar reach per domain against a reference contact in the conditions where it is (weather,
 //! the sun), beside the catalog's clear-day reach, and what keeps it short (`limited_by`).
+//!
+//! Operator groups (`crate::groups`) and the watch officer's tasking (`crate::tasking`),
+//! conveniences an operator keeps, never decision inputs and never logged: `GET /api/groups`,
+//! `POST /api/groups`, `PATCH|DELETE /api/groups/{id}`; `GET /api/tasking`, `POST /api/tasking`,
+//! `POST /api/tasking/{id}/deactivate`. Anyone reads them; only an operator writes them (an
+//! agent's request, by its id header or a key, is refused 403), with no step-up.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
 use axum::Json;
 use axum::Router;
@@ -80,6 +87,10 @@ pub struct App {
     pub lod: LodSettings,
     /// Who is acting (rules 8): logins, step-ups and agent keys, or dev-mode headers.
     pub auth: Arc<crate::auth::Auth>,
+    /// operator groups: non-decision, in memory, never logged
+    pub groups: Arc<RwLock<crate::groups::GroupStore>>,
+    /// operator guidance for the live watch officer: non-decision, in memory, never logged
+    pub tasking: Arc<RwLock<crate::tasking::TaskingStore>>,
 }
 
 pub fn router(app: App) -> Router {
@@ -95,6 +106,10 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
         .route("/api/swarms", get(swarms))
+        .route("/api/groups", get(groups_list).post(groups_create))
+        .route("/api/tasking", get(tasking_list).post(tasking_post))
+        .route("/api/tasking/{id}/deactivate", post(tasking_deactivate))
+        .route("/api/groups/{id}", axum::routing::patch(groups_patch).delete(groups_delete))
         .route("/api/restores/write_off", post(write_off))
         .route("/api/restores/unspend", post(unspend))
         .route("/api/operator/view", post(operator_view))
@@ -961,4 +976,177 @@ async fn weather_grid(State(app): State<App>, Query(q): Query<WeatherGridQuery>)
         return Json(app.tracks.weather_grid_json([w,s,e,n], clock::wall())).into_response();
     }
     (StatusCode::BAD_REQUEST, Json(json!({"error": "bbox must be west,south,east,north within lat/lon bounds"}))).into_response()
+}
+
+// ---- operator groups: non-decision, never logged ----
+
+fn now_ms() -> u64 {
+    (clock::wall() * 1000.0) as u64
+}
+
+/// Who writes an operator-owned convenience store (groups, tasking): an operator, never an
+/// agent (403, whatever operator it names), and no step-up since nothing here is a decision.
+fn store_writer(app: &App, headers: &HeaderMap) -> Result<crate::decision::Actor, Box<Response>> {
+    // as the node-loss routes tell an agent: its id header, or any key (an operator's request
+    // carries a session cookie or, in a dev run, the operator header, never Authorization)
+    if headers.contains_key(crate::mcp::AGENT_HEADER) || headers.contains_key(header::AUTHORIZATION) {
+        return Err(Box::new(error(StatusCode::FORBIDDEN, "an agent may read this, only an operator writes it")));
+    }
+    app.auth.actor(headers, false).map_err(|e| Box::new(decision_error(e)))
+}
+
+fn known_uids(app: &App) -> HashSet<crate::vehicle::Uid> {
+    app.world.vehicles().iter().map(|v| v.uid).collect()
+}
+
+fn group_error(e: crate::groups::GroupError) -> Response {
+    error(StatusCode::BAD_REQUEST, e.to_string())
+}
+
+/// `GET /api/groups`: the operator groups. Read-only, no identity needed.
+async fn groups_list(State(app): State<App>) -> Response {
+    let groups = app.groups.read().unwrap_or_else(|e| e.into_inner()).list();
+    Json(json!({ "t": now_ms(), "groups": groups })).into_response()
+}
+
+#[derive(Deserialize)]
+struct GroupCreate {
+    name: String,
+    #[serde(default)]
+    members: Vec<crate::vehicle::Uid>,
+    #[serde(default)]
+    color: Option<String>,
+}
+
+/// `POST /api/groups`: 201 with the group and any `dropped` uids (not in the fleet).
+async fn groups_create(State(app): State<App>, headers: HeaderMap, body: Result<Json<GroupCreate>, JsonRejection>) -> Response {
+    if let Err(r) = store_writer(&app, &headers) {
+        return *r;
+    }
+    let req = match body {
+        Ok(Json(r)) => r,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
+    };
+    let known = known_uids(&app);
+    let made = app
+        .groups
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .create(&req.name, &req.members, req.color, &known, now_ms());
+    match made {
+        Ok((g, dropped)) => {
+            let mut v = serde_json::to_value(g).unwrap_or(Value::Null);
+            v["dropped"] = json!(dropped);
+            (StatusCode::CREATED, Json(v)).into_response()
+        }
+        Err(e) => group_error(e),
+    }
+}
+
+fn uid_list(v: Option<&Value>) -> Result<Option<Vec<crate::vehicle::Uid>>, &'static str> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|u| u.as_u64().ok_or("uids are integers"))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(_) => Err("uids are a list of integers"),
+    }
+}
+
+/// `PATCH /api/groups/{id}`: `name`, `color` (null clears), `add`, `remove`, `members`.
+async fn groups_patch(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap, body: Result<Json<Map<String, Value>>, JsonRejection>) -> Response {
+    if let Err(r) = store_writer(&app, &headers) {
+        return *r;
+    }
+    let b = match body {
+        Ok(Json(b)) => b,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
+    };
+    let name = match b.get("name") {
+        None => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => return error(StatusCode::BAD_REQUEST, "a name is text"),
+    };
+    let color = match b.get("color") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(s)) => Some(Some(s.clone())),
+        Some(_) => return error(StatusCode::BAD_REQUEST, "a colour is text or null"),
+    };
+    let (add, remove, members) = match (uid_list(b.get("add")), uid_list(b.get("remove")), uid_list(b.get("members"))) {
+        (Ok(a), Ok(r), Ok(m)) => (a.unwrap_or_default(), r.unwrap_or_default(), m),
+        (Err(r), _, _) | (_, Err(r), _) | (_, _, Err(r)) => return error(StatusCode::BAD_REQUEST, r),
+    };
+    let known = known_uids(&app);
+    let patch = crate::groups::Patch { name, color, add, remove, members };
+    let done = app.groups.write().unwrap_or_else(|e| e.into_inner()).patch(&id, patch, &known, now_ms());
+    match done {
+        Ok(Some((g, dropped))) => {
+            let mut v = serde_json::to_value(g).unwrap_or(Value::Null);
+            v["dropped"] = json!(dropped);
+            Json(v).into_response()
+        }
+        Ok(None) => error(StatusCode::NOT_FOUND, format!("no group {id}")),
+        Err(e) => group_error(e),
+    }
+}
+
+/// `DELETE /api/groups/{id}`: 204, or 404.
+async fn groups_delete(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Response {
+    if let Err(r) = store_writer(&app, &headers) {
+        return *r;
+    }
+    if app.groups.write().unwrap_or_else(|e| e.into_inner()).delete(&id) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        error(StatusCode::NOT_FOUND, format!("no group {id}"))
+    }
+}
+
+// ---- operator tasking for the watch officer: guidance, not a decision ----
+
+/// `GET /api/tasking`: every item, newest first (the officer sends only the active ones).
+/// Read-only, no identity needed.
+async fn tasking_list(State(app): State<App>) -> Response {
+    let items = app.tasking.read().unwrap_or_else(|e| e.into_inner()).list();
+    Json(json!({ "t": now_ms(), "items": items })).into_response()
+}
+
+#[derive(Deserialize)]
+struct TaskingPost {
+    text: String,
+}
+
+/// `POST /api/tasking`: 201 the item; 400 on empty or over-long text; 403 for an agent.
+async fn tasking_post(State(app): State<App>, headers: HeaderMap, body: Result<Json<TaskingPost>, JsonRejection>) -> Response {
+    let op = match store_writer(&app, &headers) {
+        Ok(op) => op,
+        Err(r) => return *r,
+    };
+    let req = match body {
+        Ok(Json(r)) => r,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
+    };
+    let made = app
+        .tasking
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .post(&req.text, op.operator().as_str(), now_ms());
+    match made {
+        Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// `POST /api/tasking/{id}/deactivate`: retire guidance that no longer applies.
+async fn tasking_deactivate(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Response {
+    if let Err(r) = store_writer(&app, &headers) {
+        return *r;
+    }
+    match app.tasking.write().unwrap_or_else(|e| e.into_inner()).deactivate(&id) {
+        Some(item) => Json(item).into_response(),
+        None => error(StatusCode::NOT_FOUND, format!("no tasking {id}")),
+    }
 }

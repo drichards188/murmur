@@ -36,6 +36,8 @@ fn rig30(carry: StartCarry) -> Erig {
 fn api(e: &Erig) -> axum::Router {
     let auth = crate::auth::Auth::new(crate::auth::Settings::dev(), e.r.d.clone(), murmur_auth::CredentialFile::default()).expect("auth");
     crate::api::router(crate::api::App {
+        groups: Default::default(),
+        tasking: Default::default(),
         world: e.r.world.clone(),
         frames: Arc::new(tokio::sync::watch::channel(None).0),
         decision: e.r.d.clone(),

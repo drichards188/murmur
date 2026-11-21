@@ -154,10 +154,40 @@ def make_run_dir(given: Path | None) -> Path:
     return d
 
 
+def active_tasking(doc) -> list[dict]:
+    """The active items of a `GET /api/tasking` answer (newest first, as served), pure."""
+    items = doc.get("items") if isinstance(doc, dict) else None
+    return [i for i in items or [] if isinstance(i, dict) and i.get("active") and isinstance(i.get("text"), str)
+            and i["text"].strip()]
+
+
+def tasking_fetcher(mcp_url: str):
+    """A reader of the bridge's `/api/tasking`, on the host the MCP endpoint is on (the live
+    runner's only; stdlib, a thread, a short timeout)."""
+    import json
+    import urllib.request
+    from urllib.parse import urlsplit
+
+    u = urlsplit(mcp_url)
+    url = f"{u.scheme}://{u.netloc}/api/tasking"
+
+    def read() -> dict:
+        with urllib.request.urlopen(url, timeout=3) as r:  # noqa: S310 (the bridge's own http URL)
+            return json.load(r)
+
+    async def fetch() -> dict:
+        return await asyncio.to_thread(read)
+
+    return fetch
+
+
 class Officer:
     def __init__(self, args, backend, log: SituationLog, waker: Waker, poller: Poller, shadow,
-                 until: float, watch=None, table=None, table_source: str | None = None):
+                 until: float, watch=None, table=None, table_source: str | None = None, tasking_fetch=None):
         self.args = args
+        # operator tasking: `async () -> dict` reading the bridge's GET /api/tasking, given only by
+        # the live runner (`main`); None (the headless design, never a live channel) tells nothing
+        self.tasking_fetch = tasking_fetch
         self.watch = watch  # agents/watch/stakes.py `Watch`, or None (no watch area known)
         # the situation's [playbook] table (a playbook Config, `--watch-config`), and the run's watch
         # settings (agents/roe.py `Roe`), read from the bridge's policy at each connect (`adopt`)
@@ -411,8 +441,9 @@ class Officer:
         notes = [] if escalate else list(self.consult_notes)
         # what waits for a person alone (the bridge's `blocking`): told, so the note can name it
         blocking = await self.blocking()
+        tasking = await self.tasking()
         text = compose(wake, mine, self.budget_line(wake), notes, now, first=wake.reason == "start",
-                       blocking=blocking)
+                       blocking=blocking, tasking=tasking)
         case = None
         if escalate:
             # a consult about a contact: the driver's case file at the end of its update
@@ -530,6 +561,17 @@ class Officer:
             return await self.poller.blocking()
         except Exception:  # noqa: BLE001
             return []
+
+    async def tasking(self) -> list[dict]:
+        """The operator's active tasking now (`GET /api/tasking`, read-only, no identity), or none
+        when this runner has no live channel or the read fails: an update goes out without it."""
+        if self.tasking_fetch is None:
+            return []
+        try:
+            r = await self.tasking_fetch()
+        except Exception:  # noqa: BLE001
+            return []
+        return active_tasking(r)
 
     def mcp_ok(self) -> bool:
         init = self.backend.init or {}
@@ -693,7 +735,8 @@ async def main_async(args) -> int:
               shadow_config=shadow_cfg.label if shadow_cfg else None,
               watch=watch.describe() if watch else None)
     officer = Officer(args, backend, log, waker, poller, shadow, until, watch=watch, table=table,
-                      table_source=str(args.watch_config) if args.watch_config else None)
+                      table_source=str(args.watch_config) if args.watch_config else None,
+                      tasking_fetch=None if args.no_tasking else tasking_fetcher(args.url))
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, officer.signal, sig.name)
@@ -718,6 +761,8 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--url", default="http://127.0.0.1:8765/mcp", help="the bridge's MCP endpoint")
     ap.add_argument("--agent", default="agent-watch", help="the agent id (a dev bridge: listed in MURMUR_AGENTS)")
     ap.add_argument("--key", help="the agent's key in a credentials run (default MURMUR_AGENT_KEY); never logged")
+    ap.add_argument("--no-tasking", action="store_true",
+                    help="do not read the operator's tasking (GET /api/tasking): the officer runs on its brief alone")
     ap.add_argument("--brief", type=Path, help="the situation brief, appended to the system prompt")
     ap.add_argument("--situation-log", type=Path, help="JSONL log of every wake and turn (appended)")
     ap.add_argument("--until", type=float, help="stop at this Unix time")

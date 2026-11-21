@@ -42,6 +42,7 @@ mod decision;
 mod emu;
 mod estimate;
 mod geo;
+mod groups;
 mod heartbeat;
 mod link;
 mod mav;
@@ -52,6 +53,7 @@ mod push;
 mod situation;
 mod space;
 mod swarms;
+mod tasking;
 mod tasks;
 mod telemetry;
 mod tracks;
@@ -342,6 +344,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracks,
         lod,
         auth: auth.clone(),
+        groups: Default::default(),
+        tasking: Default::default(),
     })
     .merge(emu::router(emu))
     // a situation runner's status for the console: display only, never a decision input
