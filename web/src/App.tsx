@@ -57,7 +57,8 @@ import { PendingStrip, WaitingStrip } from './WaitingStrip'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
-import { buildStationLayers } from './linkLayers'
+import { buildStationLayers, EXCLUDED_PICK_LAYER } from './linkLayers'
+import type { ExcludedMark } from './groupOrders'
 import { nodeLossView } from './nodeLoss'
 import { buildNodeRegionLayers } from './nodeLossLayers'
 import { useNodes } from './useNodes'
@@ -290,6 +291,14 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     for (const v of allVehicles) if (v.position && !isStale(v) && marks.ofUid.has(v.uid)) heard.set(v.uid, v.position)
     return swarmOutlines(marks, (uid) => heard.get(uid) ?? null, swarmSel, hoverGroup)
   }, [marks, allVehicles, swarmSel, hoverGroup])
+  // a group order's dry run (bd murmur-4nik): its slots drawn as ghosts in the group's colour when
+  // its members are one group's
+  const shownRoute = useMemo(() => {
+    if (!linkRoute?.slots?.length) return linkRoute
+    const ids = new Set(linkRoute.slots.map((sl) => marks.ofUid.get(Number(sl.uid))?.id ?? ''))
+    const only = ids.size === 1 ? marks.byId.get([...ids][0]) : undefined
+    return only ? { ...linkRoute, slotColor: only.rgb } : linkRoute
+  }, [linkRoute, marks])
   // the chips on the map: a click selects the group's members (as the Fleet list's group row does)
   // and brings its card into view in the Swarms drawer; nothing is sent
   const groupsOnMap = useMemo<GroupsOnMap | null>(() => {
@@ -706,7 +715,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const damagedUids = useMemo(() => new Set((listAlerts ?? []).filter((a) => (a.kind as string) === 'damaged').map((a) => a.uid)), [listAlerts])
   const alertedUids = useMemo(() => new Set(unfolded(listAlerts ?? []).map((a) => a.uid)), [listAlerts])
   // the full block of a track, lost contact or estimate under the pointer, while its label is not
-  const mapTooltip = useCallback((layer: string, object: unknown) => trackTooltip(layer, object, now()) ?? estimateTooltip(layer, object), [now])
+  const mapTooltip = useCallback(
+    (layer: string, object: unknown) =>
+      layer === EXCLUDED_PICK_LAYER ? { key: `x:${(object as ExcludedMark).uid}`, text: (object as ExcludedMark).text } : (trackTooltip(layer, object, now()) ?? estimateTooltip(layer, object)),
+    [now],
+  )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
     [now],
@@ -996,7 +1009,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           coverage={coverageImage}
           weather={showCoverage ? null : weatherView}
           reach={reachRings}
-          linkRoute={linkRoute}
+          linkRoute={shownRoute}
           onHover={onMapHover}
           labels={mapLabels}
           tooltip={mapTooltip}

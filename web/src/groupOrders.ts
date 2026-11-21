@@ -305,6 +305,26 @@ export function slotMarks(g: GroupPreview, lines: MemberLine[], posOf: (uid: str
   return out
 }
 
+/** A member the dry run leaves out: where it is drawn now (rendered metres: its height doubled as
+ *  the map draws it) and why, for the map's grey mark and its hover. */
+export interface ExcludedMark {
+  uid: string
+  at: [number, number, number]
+  text: string
+}
+
+/** The members left out, each at its place now (`at3`: none, not drawn) with its name and its
+ *  failing checks: "SKY 7 left out: readiness: navigation status stale". */
+export function excludedMarks(lines: MemberLine[], at3: (uid: string) => [number, number, number] | null, nameOf: (uid: string) => string): ExcludedMark[] {
+  const out: ExcludedMark[] = []
+  for (const l of lines) {
+    if (l.class !== 'excluded') continue
+    const at = at3(l.uid)
+    if (at) out.push({ uid: l.uid, at, text: `${nameOf(l.uid)} left out: ${l.why.join('; ') || 'excluded'}` })
+  }
+  return out
+}
+
 /** A group in force as GET /api/swarms lists it (`groups`; the bridge's `GroupView`). */
 export interface GroupInForce {
   intent: number

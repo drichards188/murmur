@@ -5,9 +5,10 @@
 // link's colours where there is a prediction), a mark saying what each added, and a mark where a
 // refused order meets what refuses it. Drawn on the surface like the draft it is about
 // (surfaceLayers.ts), over the scene so neither the terrain nor the seabed hides it.
-import { PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
+import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { STATE_RGB, type GroundStation, type LinkRouteDrawing, type LinkState, type RouteMark } from './coverage'
-import { layerColor, type SlotMark } from './groupOrders'
+import { layerColor, type ExcludedMark, type SlotMark } from './groupOrders'
+import { HEIGHT_EXAGGERATION } from './map3d'
 import { dashes, lift, type SurfaceScale } from './surfaceLayers'
 import type { LngLat } from './types'
 
@@ -74,20 +75,35 @@ export function buildStationLayers(stations: GroundStation[]) {
   ]
 }
 
-/** Rules 34: a group order's layout from the dry run: each member's slot a ring coloured by its
- *  layer (filled for a member sent, open for one waiting), a thin dashed line from where the member
- *  is to its slot (through its own route's points, a block's transit), and, for a small group, its
- *  name and altitude. On the surface, over the scene,
- *  as the rest of the drafted order. */
-function slotLayers(slots: SlotMark[], { surfaceZ, mPerPx }: SurfaceScale) {
-  if (!slots.length) return []
-  const at = (p: LngLat): XYZ => [p[0], p[1], surfaceZ(p)]
+// a slot's ghost: a white ring the IconLayer tints (mask), with a faint fill for a member the
+// order sends now, dashed and open for one that joins if heard in time
+const ghostSvg = (waiting: boolean) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><circle cx="24" cy="24" r="20" fill="#fff" fill-opacity="${waiting ? 0 : 0.35}" stroke="#fff" stroke-width="4.5"${waiting ? ' stroke-dasharray="7 5"' : ''}/></svg>`
+const ghostIcon = (waiting: boolean) => ({ id: waiting ? 'slot-waiting' : 'slot-sent', url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(ghostSvg(waiting))}`, width: 48, height: 48, anchorX: 24, anchorY: 24, mask: true })
+const GHOST_SENT = ghostIcon(false)
+const GHOST_WAITING = ghostIcon(true)
+const EXCLUDED: RGBA = [92, 102, 114, 235]
+
+/** Rules 34: a group order's layout from the dry run, before it is sent (bd murmur-4nik): each
+ *  member's slot a ghost at its planned height (its layer), in the group's colour when the members
+ *  are one group's (else its layer's), faint and filled for a member sent now, dashed and open for
+ *  one that waits to be heard, a stem down to the surface and a thin dashed line there from where
+ *  the member is to its slot (through its own route's points, a block's transit); each member left
+ *  out a grey cross where it is, its reason on hover; for a small group, names and altitudes. Gone
+ *  once the order is sent or the form closed (the dry run with it). */
+function slotLayers(d: LinkRouteDrawing, { surfaceZ, mPerPx }: SurfaceScale) {
+  const slots = d.slots ?? []
+  const excluded = d.excluded ?? []
+  if (!slots.length && !excluded.length) return []
+  const color = (s: SlotMark, a: number): RGBA => [...(d.slotColor ?? layerColor(s.layer)).slice(0, 3), a] as RGBA
+  const ghostAt = (s: SlotMark): XYZ => [s.at[0], s.at[1], s.alt_m == null ? surfaceZ(s.at) : s.alt_m * HEIGHT_EXAGGERATION]
   const ways: Line[] = []
   for (const s of slots) {
     if (!s.from) continue
-    for (const p of dashes(lift([s.from, ...s.via, s.at], surfaceZ), 4 * mPerPx, 4 * mPerPx)) ways.push({ path: p, color: [...layerColor(s.layer).slice(0, 3), 150] as RGBA, width: 1.5 })
+    for (const p of dashes(lift([s.from, ...s.via, s.at], surfaceZ), 4 * mPerPx, 4 * mPerPx)) ways.push({ path: p, color: color(s, 140), width: 1.5 })
   }
-  const pts = slots.map((s) => ({ s, at: at(s.at) }))
+  const pts = slots.map((s) => ({ s, at: ghostAt(s), foot: [s.at[0], s.at[1], surfaceZ(s.at)] as XYZ }))
+  const stems = pts.filter((p) => Math.abs(p.at[2] - p.foot[2]) > 2)
   const labelled = pts.filter((p) => p.s.label)
   return [
     new PathLayer<Line>({
@@ -99,19 +115,54 @@ function slotLayers(slots: SlotMark[], { surfaceZ, mPerPx }: SurfaceScale) {
       widthUnits: 'pixels',
       parameters: onTop,
     }),
-    new ScatterplotLayer<{ s: SlotMark; at: XYZ }>({
+    new PathLayer<{ s: SlotMark; at: XYZ; foot: XYZ }>({
+      id: 'group-slot-stems',
+      data: stems,
+      getPath: (p) => [p.foot, p.at],
+      getColor: (p) => color(p.s, 90),
+      getWidth: 1,
+      widthUnits: 'pixels',
+      parameters: onTop,
+    }),
+    new IconLayer<{ s: SlotMark; at: XYZ }>({
       id: 'group-slots',
       data: pts,
       getPosition: (p) => p.at,
-      getRadius: 6,
+      getIcon: (p) => (p.s.class === 'sent' ? GHOST_SENT : GHOST_WAITING),
+      getSize: 16,
+      sizeUnits: 'pixels',
+      getColor: (p) => color(p.s, p.s.class === 'sent' ? 210 : 240),
+      parameters: onTop,
+    }),
+    new ScatterplotLayer<ExcludedMark>({
+      id: 'group-slot-excluded',
+      data: excluded,
+      pickable: true,
+      getPosition: (e) => e.at,
+      getRadius: 9,
       radiusUnits: 'pixels',
       billboard: true,
       stroked: true,
       filled: true,
-      getFillColor: (p) => (p.s.class === 'sent' ? layerColor(p.s.layer) : DARK),
-      getLineColor: (p) => (p.s.class === 'sent' ? DARK : layerColor(p.s.layer)),
+      getFillColor: EXCLUDED,
+      getLineColor: DARK,
       getLineWidth: 2,
       lineWidthUnits: 'pixels',
+      parameters: onTop,
+    }),
+    new TextLayer<ExcludedMark>({
+      id: 'group-slot-excluded-x',
+      data: excluded,
+      getPosition: (e) => e.at,
+      getText: () => '✕',
+      getSize: 12,
+      getColor: WHITE,
+      getTextAnchor: 'middle',
+      getAlignmentBaseline: 'center',
+      fontFamily: FONT,
+      fontWeight: 600,
+      fontSettings: { sdf: true, fontSize: 48, buffer: 6 },
+      characterSet: 'auto',
       parameters: onTop,
     }),
     new TextLayer<{ s: SlotMark; at: XYZ }>({
@@ -134,6 +185,9 @@ function slotLayers(slots: SlotMark[], { surfaceZ, mPerPx }: SurfaceScale) {
     }),
   ]
 }
+
+/** the layer ids a member left out by a group order's dry run is picked on (its reason on hover) */
+export const EXCLUDED_PICK_LAYER = 'group-slot-excluded'
 
 export function buildLinkRouteLayers(d: LinkRouteDrawing, scale: SurfaceScale) {
   const { surfaceZ, mPerPx } = scale
@@ -160,7 +214,7 @@ export function buildLinkRouteLayers(d: LinkRouteDrawing, scale: SurfaceScale) {
   const markFill = (m: Mark): RGBA => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? rgba('down') : WHITE)
   const markLine = (m: Mark): RGBA => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? WHITE : m.mark.kind === 'routed' ? DARK : rgba('down'))
   return [
-    ...slotLayers(d.slots ?? [], scale),
+    ...slotLayers(d, scale),
     new PathLayer<XYZ[]>({
       id: 'link-route-planned',
       data: routed,

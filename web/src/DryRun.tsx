@@ -3,7 +3,7 @@ import { pct, REASON_WORDS, STATE_RGB, type VehicleLink } from './coverage'
 import type { DryRunAnswer, DryRunState } from './useDryRun'
 import type { Vehicle } from './types'
 import { callsign } from './types'
-import { counts, foldByRule, foldLine, foldTone, headline, layerColor, layoutLine, memberClasses, type GroupPreview } from './groupOrders'
+import { counts, foldByRule, foldLine, foldTone, headline, layoutLine, memberClasses, type GroupPreview } from './groupOrders'
 import type { Check } from './decisions'
 import './coverage.css'
 
@@ -116,7 +116,11 @@ export function GroupDry({ g, checks, uids, kind, nameOf }: { g: GroupPreview; c
   const folds = foldByRule(checks)
   const strength = checks.find((x) => x.rule === 'strength' && x.uid == null)
   const byLayer = new Map<number, number>()
-  for (const s of Object.values(g.layout.shares ?? {})) byLayer.set(s.layer ?? 0, (byLayer.get(s.layer ?? 0) ?? 0) + 1)
+  const altOf = new Map<number, number>()
+  for (const s of Object.values(g.layout.shares ?? {})) {
+    byLayer.set(s.layer ?? 0, (byLayer.get(s.layer ?? 0) ?? 0) + 1)
+    if (s.alt_m != null && !altOf.has(s.layer ?? 0)) altOf.set(s.layer ?? 0, s.alt_m)
+  }
   const shares = Object.entries(g.layout.shares ?? {}).sort((a, b) => a[1].slot - b[1].slot)
   return (
     <div className="grp-dry" aria-label="Group order">
@@ -138,12 +142,13 @@ export function GroupDry({ g, checks, uids, kind, nameOf }: { g: GroupPreview; c
             .sort((a, b) => a[0] - b[0])
             .map(([layer, n]) => (
               <span key={layer} className="grp-layer">
-                <i style={{ background: `rgb(${layerColor(layer).slice(0, 3).join(',')})` }} aria-hidden />
-                layer {layer + 1}: {n}
+                layer {layer + 1}
+                {altOf.has(layer) ? ` (${Math.round(altOf.get(layer)!)} m)` : ''}: {n}
               </span>
             ))}
         </p>
       )}
+      <p className="muted grp-ghosts">On the map, before it is sent: each slot a ghost at its height (filled: sent now; dashed: joins if heard), a grey ✕ on each member left out (hover for why).</p>
       <ul className="grp-folds" aria-label="Checks by rule">
         {folds
           .filter((f) => f.rule !== 'strength')
@@ -176,7 +181,6 @@ export function GroupDry({ g, checks, uids, kind, nameOf }: { g: GroupPreview; c
                   <td>{nameOf(uid)}</td>
                   <td>{s.slot + 1}</td>
                   <td>
-                    <i className="grp-dot" style={{ background: `rgb(${layerColor(s.layer ?? 0).slice(0, 3).join(',')})` }} aria-hidden />
                     {(s.layer ?? 0) + 1}
                   </td>
                   <td>{s.alt_m == null ? 'surface' : s.alt_m < 0 ? `${Math.round(-s.alt_m)} m deep` : `${Math.round(s.alt_m)} m`}</td>

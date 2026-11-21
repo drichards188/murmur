@@ -18,7 +18,8 @@ import { OptionLine } from './IdentifyForm'
 import { sendIdentify, useIdentifyOptions } from './identify'
 import { OPS_FOLD, orderSummary, STUCK_S } from './exceptions'
 import { useGroupOrders } from './policy'
-import { defaultMin, memberClasses, reforms, slotMarks, SPREAD_WORDS, SPREADS, type GroupSpec, type Spread } from './groupOrders'
+import { defaultMin, excludedMarks, memberClasses, reforms, slotMarks, SPREAD_WORDS, SPREADS, type GroupSpec, type Spread } from './groupOrders'
+import { drawnHeight } from './map3d'
 
 interface Props {
   vehicles: Vehicle[]
@@ -414,17 +415,27 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
       return v ? callsign(v) : null
     }
     const plan = planDrawing(a.routes, a.checks.filter((c) => c.outcome === 'fail'), name)
-    // rules 34: a group order's layout, each member's slot
+    // rules 34: a group order's layout, each member's slot, and the members it leaves out where
+    // they are (bd murmur-4nik: ghosts before it is sent)
+    const lines = a.group ? memberClasses(a.uids ?? [], a.checks) : []
     const slots = a.group
       ? slotMarks(
           a.group,
-          memberClasses(a.uids ?? [], a.checks),
+          lines,
           (uid) => byUid.get(Number(uid))?.position ?? null,
           (uid) => name(uid) ?? uid,
         )
       : []
-    if (!plan.routed?.length && !plan.marks.length && !slots.length) return link
-    return { ...link, routed: plan.routed, waypoints: plan.waypoints, marks: [...link.marks, ...plan.marks], slots }
+    const excluded = excludedMarks(
+      lines,
+      (uid) => {
+        const v = byUid.get(Number(uid))
+        return v?.position ? [v.position[0], v.position[1], drawnHeight(v)] : null
+      },
+      (uid) => name(uid) ?? uid,
+    )
+    if (!plan.routed?.length && !plan.marks.length && !slots.length && !excluded.length) return link
+    return { ...link, routed: plan.routed, waypoints: plan.waypoints, marks: [...link.marks, ...plan.marks], slots, excluded }
     // byUid follows the vehicles; the answer is what changes the drawing
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dry.answer, dry.order, dry.at])

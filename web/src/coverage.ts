@@ -15,7 +15,7 @@
 // not in it, and nothing here blocks an order.
 import { circle, distanceM } from './geo.ts'
 import type { LngLat, TaskKind } from './types.ts'
-import type { SlotMark } from './groupOrders.ts'
+import type { ExcludedMark, SlotMark } from './groupOrders.ts'
 
 export type LinkState = 'up' | 'degraded' | 'down'
 export type LinkReason = 'loss' | 'range' | 'terrain' | 'no_sat' | 'submerged' | 'surfaced'
@@ -526,6 +526,11 @@ export interface LinkRouteDrawing {
   waypoints?: LngLat[]
   /** rules 34: a group order's layout, each member's slot (where it goes, its layer and class) */
   slots?: SlotMark[]
+  /** rules 34: the members the order leaves out, where they are now and why (on hover) */
+  excluded?: ExcludedMark[]
+  /** the group's colour (swarmsModel GROUP_PALETTE) when the members are one group's: the slots
+   *  drawn as its ghosts; else each layer's colour */
+  slotColor?: [number, number, number, number]
 }
 
 export const EMPTY_ROUTE: LinkRouteDrawing = { lines: [], marks: [], dots: [] }
