@@ -49,7 +49,11 @@
 //! conveniences an operator keeps, never decision inputs and never logged: `GET /api/groups`,
 //! `POST /api/groups`, `PATCH|DELETE /api/groups/{id}`; `GET /api/tasking`, `POST /api/tasking`,
 //! `POST /api/tasking/{id}/deactivate`. Anyone reads them; only an operator writes them (an
-//! agent's request, by its id header or a key, is refused 403), with no step-up.
+//! agent's request, by its id header or a key, is refused 403), with no step-up. The one
+//! exception is the watch officer's acknowledgement, `POST /api/tasking/{id}/ack` (an agent only:
+//! an operator's request is refused 403), which moves an item's delivery state forward (seen,
+//! processed) and nothing else; and a read of `GET /api/tasking` by an agent is remembered, so the
+//! console can say whether an officer is connected. Neither is logged or read by a decision.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -109,6 +113,7 @@ pub fn router(app: App) -> Router {
         .route("/api/groups", get(groups_list).post(groups_create))
         .route("/api/tasking", get(tasking_list).post(tasking_post))
         .route("/api/tasking/{id}/deactivate", post(tasking_deactivate))
+        .route("/api/tasking/{id}/ack", post(tasking_ack))
         .route("/api/groups/{id}", axum::routing::patch(groups_patch).delete(groups_delete))
         .route("/api/restores/write_off", post(write_off))
         .route("/api/restores/unspend", post(unspend))
@@ -1107,11 +1112,19 @@ async fn groups_delete(State(app): State<App>, Path(id): Path<String>, headers: 
 
 // ---- operator tasking for the watch officer: guidance, not a decision ----
 
-/// `GET /api/tasking`: every item, newest first (the officer sends only the active ones).
-/// Read-only, no identity needed.
-async fn tasking_list(State(app): State<App>) -> Response {
-    let items = app.tasking.read().unwrap_or_else(|e| e.into_inner()).list();
-    Json(json!({ "t": now_ms(), "items": items })).into_response()
+/// `GET /api/tasking`: every item, newest first (the officer sends only the active ones), with
+/// how far the officer has each, and `officer`: the agent that last read it and when (null: none
+/// has). No identity needed; a read that names an agent (its id header or key, as `/mcp` takes
+/// them) is remembered as the officer's last read, one that names none or a wrong one is served
+/// all the same.
+async fn tasking_list(State(app): State<App>, headers: HeaderMap) -> Response {
+    let now = now_ms();
+    let mut store = app.tasking.write().unwrap_or_else(|e| e.into_inner());
+    if let Ok(Some(agent)) = app.auth.agent_of(&headers) {
+        store.read_by(agent.as_str(), now);
+    }
+    let officer = store.reader().map(|(agent, t)| json!({ "agent": agent, "read_t": t }));
+    Json(json!({ "t": now, "items": store.list(), "officer": officer })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1137,6 +1150,45 @@ async fn tasking_post(State(app): State<App>, headers: HeaderMap, body: Result<J
     match made {
         Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
         Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskingAck {
+    state: crate::tasking::AckState,
+    #[serde(default)]
+    wake: Option<u64>,
+    #[serde(default)]
+    why: Option<String>,
+}
+
+/// `POST /api/tasking/{id}/ack` `{state: waiting|seen|processed|failed, wake, why}`: the watch
+/// officer says how far it has an item (`crate::tasking`): 200 the item; 403 for a request that
+/// names no agent (an operator's); 400 for an unknown state, a field other than these (an
+/// acknowledgement never carries text or `active`), or a state without its `wake` or `why`; 404
+/// for an unknown id; 409 for a state that would move the item back. Display only: never logged.
+async fn tasking_ack(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap, body: Result<Json<TaskingAck>, JsonRejection>) -> Response {
+    let agent = match app.auth.agent_of(&headers) {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return error(
+                StatusCode::FORBIDDEN,
+                "only the watch officer, an agent, acknowledges tasking (its X-Murmur-Agent header in a dev run, else its key)",
+            );
+        }
+        Err(e) => return decision_error(e),
+    };
+    let req = match body {
+        Ok(Json(r)) => r,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
+    };
+    let ack = crate::tasking::Ack { state: req.state, wake: req.wake, why: req.why.as_deref(), agent: agent.as_str() };
+    match app.tasking.write().unwrap_or_else(|e| e.into_inner()).ack(&id, ack, now_ms()) {
+        Ok(item) => Json(item).into_response(),
+        Err(crate::tasking::AckError::Unknown) => error(StatusCode::NOT_FOUND, format!("no tasking {id}")),
+        Err(crate::tasking::AckError::Invalid(why)) => error(StatusCode::BAD_REQUEST, why),
+        Err(crate::tasking::AckError::Behind(why)) => error(StatusCode::CONFLICT, why),
     }
 }
 

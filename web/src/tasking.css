@@ -14,3 +14,11 @@
 .tko-item p { margin: 0 0 6px; font-size: 13px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tko-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 11px var(--mono); color: var(--muted); }
 .tko-more { align-self: flex-start; margin-top: 6px; }
+.tko-meta > span:first-child { flex: 1; }
+/* how far the watch officer has an item (DeliveryChip): sent, seen, processed */
+.tko-dl { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; font: 10.5px var(--mono); color: var(--muted); white-space: nowrap; cursor: default; }
+.tko-dl .tko-ticks { letter-spacing: -0.25em; padding-right: 0.25em; }
+.tko-dl.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.tko-dl.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.tko-officer { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+.tko-officer.off { color: var(--warn); }

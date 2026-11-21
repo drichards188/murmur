@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ago, BOUNDARY, split, textLength, textProblem, TEXT_MAX } from './tasking'
+import { ago, BOUNDARY, deliveryOf, officerOf, split, textLength, textProblem, TEXT_MAX, type TaskingItem } from './tasking'
 import type { TaskingApi } from './useTasking'
 import './tasking.css'
 
@@ -19,6 +19,21 @@ export function TaskingButton({ api, open, onClick }: { api: TaskingApi; open: b
   )
 }
 
+/** How far the watch officer has an item: one tick sent, two seen, two in colour processed; the
+ *  times and the update number in its title. Nothing from a bridge that does not say. */
+function DeliveryChip({ item, nowMs }: { item: TaskingItem; nowMs: number }) {
+  const d = deliveryOf(item, nowMs)
+  if (!d) return null
+  return (
+    <span className={`tko-dl ${d.tone}`} title={d.title} aria-label={`${d.label}: ${d.title}`}>
+      <span className="tko-ticks" aria-hidden="true">
+        {d.ticks === 2 ? '✓✓' : '✓'}
+      </span>
+      {d.label}
+    </span>
+  )
+}
+
 export function TaskingPanel({ api, now, onClose, banners }: { api: TaskingApi; now: () => number; onClose: () => void; banners?: React.ReactNode }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -26,6 +41,7 @@ export function TaskingPanel({ api, now, onClose, banners }: { api: TaskingApi; 
   const { active, retired } = split(api.items)
   const problem = text ? textProblem(text) : null
   const nowMs = now()
+  const officer = officerOf(api.reader)
   const send = async () => {
     if (textProblem(text)) return
     setBusy(true)
@@ -87,6 +103,11 @@ export function TaskingPanel({ api, now, onClose, banners }: { api: TaskingApi; 
           In force <span>{active.length}</span>
           <small>the officer reads these each time it wakes</small>
         </h3>
+        {api.status === 'ok' && officer && (
+          <p className={`tko-officer ${officer.connected ? 'on' : 'off'}`} role="status">
+            {officer.text}
+          </p>
+        )}
         {api.status === 'ok' && active.length === 0 && <p className="empty muted">No guidance in force: the officer works from its brief alone.</p>}
         {active.map((i) => (
           <div key={i.id} className="tko-item">
@@ -95,6 +116,7 @@ export function TaskingPanel({ api, now, onClose, banners }: { api: TaskingApi; 
               <span>
                 {i.by} · {ago(i.at_t, nowMs)} ago
               </span>
+              <DeliveryChip item={i} nowMs={nowMs} />
               <button className="ghost mini" onClick={() => void api.deactivate(i.id)} title="Stop sending this guidance to the officer">
                 Retire
               </button>
@@ -114,6 +136,7 @@ export function TaskingPanel({ api, now, onClose, banners }: { api: TaskingApi; 
                     <span>
                       {i.by} · {ago(i.at_t, nowMs)} ago · retired
                     </span>
+                    <DeliveryChip item={i} nowMs={nowMs} />
                   </div>
                 </div>
               ))}

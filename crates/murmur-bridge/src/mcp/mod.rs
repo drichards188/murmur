@@ -159,22 +159,13 @@ pub const SESSIONS_PER_AGENT: usize = 8;
 
 impl Settings {
     pub fn from_env() -> Settings {
-        let list = std::env::var("MURMUR_AGENTS")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "agent-planner,agent-watch,agent-playbook".into());
         let idle = std::env::var("MURMUR_MCP_IDLE_S")
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .filter(|s| *s > 0)
             .map_or(IDLE_LIMIT, std::time::Duration::from_secs);
         Settings {
-            agents: list
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(AgentId::new)
-                .collect(),
+            agents: crate::auth::agents_from_env(),
             keys: None,
             idle,
         }

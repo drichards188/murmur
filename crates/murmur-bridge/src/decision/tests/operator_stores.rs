@@ -118,3 +118,59 @@ async fn tasking_is_posted_by_an_operator_read_by_anyone_and_logged_nowhere() {
 
     assert_eq!(h.log(), before, "tasking is not logged");
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_officer_acknowledges_tasking_forward_only_and_can_change_nothing_else() {
+    let h = harness();
+    let before = h.log();
+    h.call("POST", "/api/tasking", Some(json!({ "text": "watch the ferry lane" })), &OP).await;
+    let ack = |state: &str, wake: u64| json!({ "state": state, "wake": wake });
+
+    // before any agent reads it: no officer; then an agent's read is remembered, an operator's is not
+    let (_, _, v) = h.call("GET", "/api/tasking", None, &OP).await;
+    assert_eq!((v["officer"].clone(), v["items"][0]["delivery"].clone()), (json!(null), json!("posted")), "{v}");
+    let (_, _, v) = h.call("GET", "/api/tasking", None, &AGENT).await;
+    assert_eq!(v["officer"]["agent"], json!("agent-planner"), "{v}");
+    assert!(v["officer"]["read_t"].is_u64(), "{v}");
+
+    // only an agent acknowledges; an operator, nobody, or an id not in MURMUR_AGENTS cannot
+    for who in [&OP[..], &[][..], &[("x-murmur-agent", "agent-nobody")][..]] {
+        let (s, _, _) = h.call("POST", "/api/tasking/tk-1/ack", Some(ack("seen", 1)), who).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    // an unknown state, a missing wake, a field that is not the acknowledgement's: 400; a bad id: 404
+    for bad in [json!({ "state": "read", "wake": 1 }), json!({ "state": "seen" }), json!({ "state": "seen", "wake": 1, "text": "x" }),
+                json!({ "state": "seen", "wake": 1, "active": false }), json!({ "state": "waiting" })] {
+        let (s, _, v) = h.call("POST", "/api/tasking/tk-1/ack", Some(bad.clone()), &AGENT).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad} {v}");
+    }
+    let (s, _, _) = h.call("POST", "/api/tasking/tk-9/ack", Some(ack("seen", 1)), &AGENT).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // forward: seen, then processed; never back
+    let (s, _, v) = h.call("POST", "/api/tasking/tk-1/ack", Some(ack("seen", 3)), &AGENT).await;
+    assert_eq!((s, v["delivery"].clone(), v["seen_wake"].clone(), v["officer"].clone()), (StatusCode::OK, json!("seen"), json!(3), json!("agent-planner")), "{v}");
+    let (s, _, v) = h.call("POST", "/api/tasking/tk-1/ack", Some(json!({ "state": "failed", "wake": 3, "why": "the turn ended error" })), &AGENT).await;
+    assert_eq!((s, v["failed"]["why"].clone()), (StatusCode::OK, json!("the turn ended error")), "{v}");
+    let (s, _, v) = h.call("POST", "/api/tasking/tk-1/ack", Some(ack("processed", 4)), &AGENT).await;
+    assert_eq!((s, v["delivery"].clone(), v["processed_wake"].clone()), (StatusCode::OK, json!("processed"), json!(4)), "{v}");
+    for back in [ack("seen", 5), ack("processed", 5), json!({ "state": "waiting", "why": "x" })] {
+        let (s, _, _) = h.call("POST", "/api/tasking/tk-1/ack", Some(back), &AGENT).await;
+        assert_eq!(s, StatusCode::CONFLICT);
+    }
+
+    // the agent that acknowledges still cannot post, retire or edit
+    let (s, _, _) = h.call("POST", "/api/tasking", Some(json!({ "text": "x" })), &AGENT).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = h.call("POST", "/api/tasking/tk-1/deactivate", None, &AGENT).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, _, v) = h.call("GET", "/api/tasking", None, &[]).await;
+    let i = &v["items"][0];
+    assert_eq!((i["text"].clone(), i["by"].clone(), i["active"].clone(), i["delivery"].clone()), (json!("watch the ferry lane"), json!("op-1"), json!(true), json!("processed")), "{v}");
+
+    // a retired item keeps its last state
+    let (_, _, v) = h.call("POST", "/api/tasking/tk-1/deactivate", None, &OP).await;
+    assert_eq!((v["active"].clone(), v["delivery"].clone()), (json!(false), json!("processed")), "{v}");
+
+    assert_eq!(h.log(), before, "acknowledgements and reads are not logged");
+}

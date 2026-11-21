@@ -407,7 +407,7 @@ on without an AI and the panel says so.
 | `--shadow-*` | run the playbook engine beside the model on the situation's `[playbook]` table (`playbook.json` in the AI's directory), reading only, and log what it would have proposed and withdrawn (`shadow`, `shadow.withdraw`, `shadow.lapsed`, `shadow.status` lines; not shown in the panel) |
 | `--watch-config` | where the watch is: the same `playbook.json`, whose watch areas and protected points the stakes gate reads (an identity conflict goes to the stronger model only when its contact is inside a watch area, closing on a protected point or coming into a watch area within 10 minutes: "When it wakes"); a situation without them escalates as before. Logged in `run.start` as `watch` |
 | `--codex-home` | passed only when the user's environment sets `MURMUR_CODEX_HOME` (Setup, Codex step 3), since the runner strips every `MURMUR_*` variable from the AI's environment |
-| `--no-tasking` | not passed by the runner. Without it the driver reads the operator's tasking (`GET /api/tasking` on the `--url` host, no identity, 3 s timeout; a failed read means none) at each poll, where new guidance wakes the routine model ("When it wakes"), and at each wake, where it puts the active items in the update under "Operator tasking", worded as guidance that is not an order and gives the model no authority; with none the update is as before. The headless officer never reads it |
+| `--no-tasking` | not passed by the runner. Without it the driver reads the operator's tasking (`GET /api/tasking` on the `--url` host, as the agent: its key, else its id header; 3 s timeout; a failed read means none) at each poll, where new guidance wakes the routine model ("When it wakes"), and at each wake, where it puts the active items in the update under "Operator tasking", worded as guidance that is not an order and gives the model no authority; with none the update is as before. It says back how far it has each item ("Tasking delivery", below). The headless officer never reads it |
 
 The runner starts it in an empty directory of its own for this run, outside the repository and
 outside the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md` and
@@ -650,6 +650,23 @@ spends a quarter of the wakes at most and cannot hold back a trigger (an escalat
 held by the hourly cap, and tasking spends none). A failed turn gives tasking's share back, as
 it does an escalation. A bridge without the channel (404) is read no more; were the bridge's own
 feed to carry `tasking.*` changes, the driver would stop its own read and leave them to it.
+
+**Tasking delivery** (the console's Tasking drawer). The driver says back how far it has each
+item, display only: `POST /api/tasking/{id}/ack` as the agent (the one route an agent may write
+in the tasking store, and only an item's delivery fields: never its text, author or whether it
+is active, never a new item or a retirement; an operator's request is refused 403; never logged,
+no decision reads it). `seen` when the update listing the item goes to the model (just after the
+`wake` line, with that wake's number), `processed` when the turn on that update finished
+(success, its tool turns spent, or the budget reached), `failed` when it did not (an error, a
+crash, a usage limit, a time-out, a stop: the item stays seen and the next update lists it
+again), and `waiting`, with why, for an item read and not yet given to the model (past tasking's
+share, the hour's wakes spent, the routine model backing off). Each goes only forward (posted,
+seen, processed; the bridge refuses a step back with 409), once (a failure once a wake, a wait
+once a reason), queued and sent in order beside the watch so a slow bridge never holds a wake
+up, and flushed for a few seconds when the officer stops. A retired item keeps its last state.
+The driver's reads carry its identity too, and the bridge answers `officer` (the agent that last
+read the list, and when), so the drawer can say no officer is connected. A bridge whose items
+carry no `delivery` is not told.
 
 **Stakes** (bd murmur-5xaf, `agents/watch/stakes.py`; DECISIONS.md 2026-11-14). An identity
 conflict, and a conflict coming and going, goes to the stronger model only when its contact

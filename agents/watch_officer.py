@@ -11,7 +11,8 @@ agents/watch/wake.py) or on a slow heartbeat, gives the stronger model the conse
 moments (engagement chain, a lost link on an armed platform, a suspected spoof where the watch
 is: `--watch-config`, agents/watch/stakes.py; a consult about a contact is briefed with the
 driver's case file, agents/watch/casefile.py), reads the operator's tasking (`GET /api/tasking`:
-new guidance wakes the routine model, `Officer.tasking_loop`; `--no-tasking` reads none), enforces
+new guidance wakes the routine model, `Officer.tasking_loop`; `--no-tasking` reads none) and says
+back how far it has each item for the console (seen, processed: `Officer.ack`), enforces
 budgets, and writes every turn to the situation log (JSONL; agents/watch/situation.py lists
 its lines). The model proposes through the same tools as any agent: it cannot approve or
 sign anything, and humans sign every effect.
@@ -198,29 +199,55 @@ def tasking_changes(doc, known: dict, now: float) -> list[dict]:
     return out
 
 
-def tasking_fetcher(mcp_url: str):
-    """A reader of the bridge's `/api/tasking`, on the host the MCP endpoint is on (the live
-    runner's only; stdlib, a thread, a short timeout)."""
+def tasking_client(mcp_url: str, agent: str, key: str | None):
+    """The bridge's operator tasking for the live runner, on the host the MCP endpoint is on:
+    `fetch()` reads `GET /api/tasking`, `ack(id, body)` posts `POST /api/tasking/{id}/ack` and
+    answers its HTTP status. Both as the agent, as `/mcp` takes it (its key, else its id header in
+    a dev run): the read so the console can say an officer is connected, the acknowledgement
+    because only an agent may make one. Stdlib, a thread each, a short timeout."""
     import json
+    import urllib.error
     import urllib.request
-    from urllib.parse import urlsplit
+    from urllib.parse import quote as q, urlsplit
 
     u = urlsplit(mcp_url)
     url = f"{u.scheme}://{u.netloc}/api/tasking"
+    who = {"Authorization": f"Bearer {key}"} if key else {"X-Murmur-Agent": agent}
 
     def read() -> dict:
-        with urllib.request.urlopen(url, timeout=3) as r:  # noqa: S310 (the bridge's own http URL)
+        req = urllib.request.Request(url, headers=who)
+        with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310 (the bridge's own http URL)
             return json.load(r)
+
+    def post(tid: str, body: dict) -> int:
+        req = urllib.request.Request(f"{url}/{q(tid, safe='')}/ack", data=json.dumps(body).encode(), method="POST",
+                                     headers={**who, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
 
     async def fetch() -> dict:
         return await asyncio.to_thread(read)
 
-    return fetch
+    async def ack(tid: str, body: dict) -> int:
+        return await asyncio.to_thread(post, tid, body)
+
+    return fetch, ack
+
+
+# How far an acknowledgement takes an item (the bridge's `delivery`): waiting and failed are
+# notes on a posted and a seen item, never a step
+STAGE = {"posted": 0, "waiting": 0, "seen": 1, "failed": 1, "processed": 2}
+# a turn that ended so finished its update (`processed`); any other end failed it
+FINISHED = ("success", "max_turns", "budget")
 
 
 class Officer:
     def __init__(self, args, backend, log: SituationLog, waker: Waker, poller: Poller, shadow,
-                 until: float, watch=None, table=None, table_source: str | None = None, tasking_fetch=None):
+                 until: float, watch=None, table=None, table_source: str | None = None, tasking_fetch=None,
+                 tasking_ack=None):
         self.args = args
         # operator tasking: `async () -> dict` reading the bridge's GET /api/tasking, given only by
         # the live runner (`main`); None (the headless design, never a live channel) tells nothing
@@ -230,6 +257,12 @@ class Officer:
         self.tasking_known: dict | None = None
         self.tasking_lock = asyncio.Lock()  # one read at a time, each applied in the order it was made
         self.tasking_in_feed = False  # the bridge's own change feed carries tasking: the loop stops
+        # how far the officer has each item, said back to the bridge for the console (`ack`):
+        # `async (id, body) -> HTTP status`, or None (no live channel: nothing is said)
+        self.tasking_ack = tasking_ack
+        self.acked: dict[tuple, str] = {}  # tasking_key -> the last said: seen, processed, failed:<n>, waiting:<why>
+        self.ack_queue: asyncio.Queue = asyncio.Queue()
+        self.ack_errors = 0
         self.watch = watch  # agents/watch/stakes.py `Watch`, or None (no watch area known)
         # the situation's [playbook] table (a playbook Config, `--watch-config`), and the run's watch
         # settings (agents/roe.py `Roe`), read from the bridge's policy at each connect (`adopt`)
@@ -377,8 +410,13 @@ class Officer:
                 changes = await self.tasking_poll(time.time())
                 errors = 0
                 if changes and not self.tasking_in_feed:
-                    self.waker.add(changes, time.time())
+                    now = time.time()
+                    self.waker.add(changes, now)
                     self.log_dropped()
+                    # past tasking's share of the wakes: a note, given with the next update
+                    held = [c for c in changes if c.get("kind") == "tasking.posted" and not self.waker.wakes_now(c, now)]
+                    self.ack([(self.tasking_known or {}).get((c.get("tasking"), c.get("at_t"))) for c in held], "waiting",
+                             why="tasking's share of the officer's wakes is spent for now: it goes with the next update")
             except Exception as e:  # noqa: BLE001 (the watch goes on without it)
                 if getattr(e, "code", None) == 404:
                     self.log.write("tasking.none", error="the bridge has no /api/tasking: no operator tasking this run")
@@ -387,6 +425,57 @@ class Officer:
                 if errors in (1, 5) or errors % 30 == 0:
                     self.log.write("tasking.error", error=f"{type(e).__name__}: {e}", misses=errors)
             await self.sleep(self.args.poll_s)
+
+    # ---- how far the officer has the tasking, said back for the console (display only) -----
+
+    def ack(self, items, state: str, wake: int | None = None, why: str | None = None) -> None:
+        """Say how far the officer has each of `items` (as read from the bridge; one without
+        `delivery`, an older bridge's, is never said): `seen` when an update listing it goes to the
+        model, `processed` when the turn on that update finished, `failed` when it did not (the next
+        update lists it again), `waiting` (read, not yet given to the model, and why). Each only
+        forward from what the bridge's read or this run last said, `failed` once a wake and
+        `waiting` once a reason; queued in order for `ack_loop`, so a slow bridge never holds a wake."""
+        if self.tasking_ack is None:
+            return
+        for i in items or []:
+            if not isinstance(i, dict) or "delivery" not in i or not i.get("id"):
+                continue
+            key = tasking_key(i)
+            said = self.acked.get(key)
+            stage = max(STAGE.get(str(i.get("delivery")), 0), STAGE.get((said or "posted").split(":")[0], 0))
+            mark = {"failed": f"failed:{wake}", "waiting": f"waiting:{why}"}.get(state, state)
+            if (said == mark or (state == "waiting" and stage > 0) or (state == "failed" and stage != 1)
+                    or (state in ("seen", "processed") and stage >= STAGE[state])):
+                continue
+            self.acked[key] = mark
+            body = {"state": state, **({"wake": wake} if wake is not None else {}), **({"why": why} if why else {})}
+            self.ack_queue.put_nowait((str(i["id"]), body))
+
+    def tasking_waiting(self, why: str) -> None:
+        """Every item read and not yet given to the model waits, and why (the hour's wakes spent,
+        the routine model backing off)."""
+        self.ack(list((self.tasking_known or {}).values()), "waiting", why=why)
+
+    async def ack_loop(self) -> None:
+        """Send the queued acknowledgements, in order. A 404 (the item gone, as after a bridge
+        restart) or a 409 (the bridge has it further already) needs nothing more; another answer,
+        or none, is logged now and then and not tried again: it is for display only."""
+        while True:
+            tid, body = await self.ack_queue.get()
+            bad = None
+            try:
+                status = await self.tasking_ack(tid, body)
+                if status not in (200, 404, 409):
+                    bad = f"HTTP {status}"
+            except Exception as e:  # noqa: BLE001 (display only: the watch goes on)
+                bad = f"{type(e).__name__}: {e}"
+            finally:
+                self.ack_queue.task_done()
+            if bad:
+                self.ack_errors += 1
+                if self.ack_errors in (1, 5) or self.ack_errors % 30 == 0:
+                    self.log.write("tasking.ack_error", error=bad, tasking=tid, state=body.get("state"),
+                                   misses=self.ack_errors)
 
     # ---- the run ---------------------------------------------------------------------------
 
@@ -413,6 +502,7 @@ class Officer:
         poller = asyncio.ensure_future(self.poll_loop())
         shadow = asyncio.ensure_future(self.shadow_loop()) if self.shadow is not None else None
         tasking = asyncio.ensure_future(self.tasking_loop()) if self.tasking_fetch is not None else None
+        acks = asyncio.ensure_future(self.ack_loop()) if self.tasking_ack is not None else None
         try:
             while True:
                 if self.stop.is_set():
@@ -432,6 +522,7 @@ class Officer:
                         wake = self.waker.due(now, escalating_only=True)
                     if wake is None:
                         self.log_dropped()
+                        self.tasking_waiting("the officer's model waits after a failed turn: it goes with the next wake")
                         await self.sleep(min(routine.until - now, self.args.poll_s))
                         continue
                 else:
@@ -443,6 +534,8 @@ class Officer:
                         self.log.write("budget.deferred", what="wakes per hour",
                                        max_wakes_per_hour=self.waker.budgets.max_wakes_per_hour,
                                        pending=len(self.waker.pending))
+                        self.tasking_waiting("the officer's wakes for this hour are spent: it goes with the next wake "
+                                             "the budget allows")
                     # changes arrive with every poll: look again at least that often
                     nxt = min(self.waker.next_check(now), self.until, now + self.args.poll_s)
                     await self.sleep(max(0.05, nxt - now))
@@ -461,6 +554,16 @@ class Officer:
                 task.cancel()
                 try:
                     await task
+                except BaseException:  # noqa: BLE001
+                    pass
+            if acks is not None:
+                try:  # what the last turn did, said before the officer goes (a few seconds at most)
+                    await asyncio.wait_for(self.ack_queue.join(), 3.0)
+                except asyncio.TimeoutError:
+                    pass
+                acks.cancel()
+                try:
+                    await acks
                 except BaseException:  # noqa: BLE001
                     pass
             await self.backend.stop()
@@ -544,23 +647,31 @@ class Officer:
                        **({"gated": wake.gated} if wake.gated else {}),
                        **({"case_file": {"tracks": casefile.consult_tracks(wake)[:casefile.MAX_SUBJECTS],
                                          "chars": len(case)}} if case else {}))
+        # the update listing the operator's tasking goes to the model now: seen, by this wake
+        self.ack(tasking, "seen", wake.n)
         deadline = min(now + self.args.turn_timeout_s, self.until)
         try:
             if escalate:
                 turn = await self.race(self.backend.escalate(text, deadline))
             else:
                 turn = await self.race(self.backend.turn(text, deadline))
+        except Stopped:
+            self.ack(tasking, "failed", wake.n, why="the officer stopped during the turn")
+            raise
         except LimitReached as e:
+            self.ack(tasking, "failed", wake.n, why="a usage limit")
             if e.turn is not None:
                 self.log.write("turn", n=wake.n, escalated=escalate, **e.turn.as_dict())
             return await self.on_limit(e.hit, escalate, wake)
         except LockdownBreach as e:
+            self.ack(tasking, "failed", wake.n, why="a lockdown breach stopped the officer")
             if e.turn is not None:
                 self.log.write("turn", n=wake.n, escalated=escalate, **e.turn.as_dict())
             self.log.write("lockdown.breach", n=wake.n, error=str(e))
             self.log.write("error", n=wake.n, error=f"lockdown breach: {e}; the run stops")
             return "lockdown"
         except BackendCrashed as e:
+            self.ack(tasking, "failed", wake.n, why="the CLI crashed")
             # a crashed turn reports no cost: what it spent is missing from the budget's
             # count (the CLI's own estimate comes only with a turn's result)
             self.log.write("backend.crashed", n=wake.n, escalated=escalate, error=str(e), code=e.code,
@@ -588,6 +699,7 @@ class Officer:
         if turn.stop == "error":
             # an error turn (overloaded after the CLI's retries, say): what it was told
             # comes back for the next wake, an escalation it spent is returned
+            self.ack(tasking, "failed", wake.n, why="the turn ended in an error")
             self.waker.give_back(wake, time.time())
             stop = self.failed(now, crashed=False, lane="consult" if escalate else "routine")
             if stop:
@@ -595,6 +707,10 @@ class Officer:
                 return stop.split(":")[0]
             return None
         self.lanes["consult" if escalate else "routine"].reset()
+        # the turn on the update finished (or ended short, timed out or interrupted: told again)
+        finished = turn.stop in FINISHED
+        self.ack(tasking, "processed" if finished else "failed", wake.n,
+                 why=None if finished else f"the turn ended: {turn.stop}")
         if not escalate and not self.init_logged and getattr(self.backend, "init", None):
             self.init_logged = True
             self.log.write("backend.init", **self.backend.init)
@@ -825,9 +941,10 @@ async def main_async(args) -> int:
               on_limit=args.on_limit, shadow=shadow.name if shadow else None,
               shadow_config=shadow_cfg.label if shadow_cfg else None,
               watch=watch.describe() if watch else None)
+    fetch, ack = (None, None) if args.no_tasking else tasking_client(args.url, args.agent, key)
     officer = Officer(args, backend, log, waker, poller, shadow, until, watch=watch, table=table,
                       table_source=str(args.watch_config) if args.watch_config else None,
-                      tasking_fetch=None if args.no_tasking else tasking_fetcher(args.url))
+                      tasking_fetch=fetch, tasking_ack=ack)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, officer.signal, sig.name)

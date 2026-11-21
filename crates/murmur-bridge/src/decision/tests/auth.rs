@@ -95,6 +95,7 @@ fn harness_on(
         passkey_rp: "localhost".into(),
         passkey_origins: crate::auth::passkey_origins("localhost", &default_origins(5173, 8765)),
         study: None,
+        agents: crate::auth::agent_list(None),
     };
     let auth = Auth::new(settings, e.r.d.clone(), c).expect("auth");
     let app = app(&e, auth.clone());
@@ -1268,4 +1269,34 @@ async fn a_loss_is_confirmed_with_a_step_up_asked_for_last() {
     assert!(r.ok(), "{:?}", r.mismatches);
     assert!(r.authenticated());
     h.no_secret_logged(&[&op1, &op2]);
+}
+
+/// Operator tasking in a credentials run: the officer acknowledges an item with its own key (and a
+/// read with it is remembered as the officer's); a bare id header, a wrong key or an operator's
+/// session cannot acknowledge, and the key still cannot post.
+#[tokio::test]
+async fn the_officer_acknowledges_tasking_with_its_own_key() {
+    let h = harness(Duration::from_secs(1800));
+    let op1 = h.login("op-1", PW1).await;
+    let (s, v) = h.post(&op1, "/api/tasking", json!({ "text": "watch the ferry lane" })).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let bearer = format!("Bearer {}", h.key);
+    let wrong = format!("Bearer {}x", &h.key[..h.key.len() - 1]);
+    let seen = json!({ "state": "seen", "wake": 1 });
+    let (s, _) = h.post(&op1, "/api/tasking/tk-1/ack", seen.clone()).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an operator's session");
+    for who in [vec![("x-murmur-agent", "agent-planner")], vec![("authorization", wrong.as_str())]] {
+        let (s, _, _) = h.call("POST", "/api/tasking/tk-1/ack", Some(seen.clone()), &who).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{who:?}");
+    }
+    let (s, _, _) = h.call("POST", "/api/tasking/tk-1/ack", Some(seen.clone()), &[("authorization", &bearer), ("x-murmur-agent", "agent-watch")]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the key is another agent's");
+    let (s, _, v) = h.call("POST", "/api/tasking/tk-1/ack", Some(seen), &[("authorization", &bearer)]).await;
+    assert_eq!((s, v["delivery"].clone(), v["officer"].clone()), (StatusCode::OK, json!("seen"), json!("agent-planner")), "{v}");
+    let (_, _, v) = h.call("GET", "/api/tasking", None, &[("authorization", &wrong)]).await;
+    assert_eq!(v["officer"], json!(null), "a wrong key is served, not remembered: {v}");
+    let (_, _, v) = h.call("GET", "/api/tasking", None, &[("authorization", &bearer)]).await;
+    assert_eq!(v["officer"]["agent"], json!("agent-planner"), "{v}");
+    let (s, _, _) = h.call("POST", "/api/tasking", Some(json!({ "text": "x" })), &[("authorization", &bearer)]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the key never posts");
 }

@@ -78,6 +78,7 @@ fn harness(with_keys: &[&str], edit: impl FnOnce(&mut Policy), study: Option<mur
         passkey_rp: "localhost".into(),
         passkey_origins: origins(),
         study,
+        agents: crate::auth::agent_list(None),
     };
     let auth = Auth::new(settings, e.r.d.clone(), c).expect("auth");
     let app = app(&e, auth.clone());
@@ -669,6 +670,7 @@ async fn an_unusable_decoy_key_stops_the_bridge_instead_of_changing_the_decoys()
         passkey_rp: "localhost".into(),
         passkey_origins: origins(),
         study: None,
+        agents: crate::auth::agent_list(None),
     };
     let err = Auth::new(settings, h.e.r.d.clone(), c).err().expect("refused");
     assert!(err.starts_with("passkey decoys: "), "{err}");

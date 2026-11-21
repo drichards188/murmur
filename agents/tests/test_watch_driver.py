@@ -751,3 +751,104 @@ def test_a_feed_that_tells_tasking_stops_the_drivers_own_read(fake_claude, tmp_p
     wakes = [x for x in lines(tmp_path) if x["kind"] == "wake"]
     told = [c["tasking"] for w in wakes for c in w["changes"] if c["kind"] == "tasking.posted"]
     assert o.tasking_in_feed and "tk-2" not in told and told.count("tk-1") <= 2
+
+
+# ---- how far the officer has the tasking, said back to the bridge (display only) ----------------
+
+
+class BridgeTasking(FakeTasking):
+    """FakeTasking with the bridge's delivery state and its acknowledgement route, forward only
+    (crates/murmur-bridge/src/tasking.rs `ack`), recording each acknowledgement it was sent."""
+
+    STAGE = {"posted": 0, "seen": 1, "processed": 2}
+
+    def __init__(self, items=(), script=()):
+        super().__init__([{**i, "delivery": "posted"} for i in items], script)
+        self.acks: list[tuple[str, dict]] = []
+
+    async def ack(self, tid: str, body: dict) -> int:
+        self.acks.append((tid, body))
+        i = next((x for x in self.items if x["id"] == tid), None)
+        if i is None:
+            return 404
+        st, now = body["state"], self.STAGE[i["delivery"]]
+        if st in ("seen", "processed"):
+            if now >= self.STAGE[st]:
+                return 409
+            i["delivery"] = st
+            i[f"{st}_wake"] = body["wake"]
+        elif st == "failed" and now != 1 or st == "waiting" and now != 0:
+            return 409
+        else:
+            i[st] = body
+        return 200
+
+    def said(self, tid: str) -> list[tuple]:
+        return [(b["state"], b.get("wake")) for t, b in self.acks if t == tid]
+
+
+def bridge_officer(tmp_path, fake, script, tasking: BridgeTasking, *extra, seconds=3.0):
+    o = officer(tmp_path, fake, script, *extra, seconds=seconds, tasking=tasking)
+    o.tasking_ack = tasking.ack
+    return o
+
+
+def test_the_officer_says_each_item_seen_then_processed_with_the_update_number(fake_claude, tmp_path):
+    """Seen when the update listing it goes to the model, processed when that turn finished, each
+    once, by the wake's number: guidance at connect by the opening update, a post by its own wake."""
+    tasking = BridgeTasking([tk(1, "watch the ferry lane", 1000)],
+                            [(1.0, lambda items: items.append({**tk(2, "hold the north pickets", 2000), "delivery": "posted"}))])
+    o = bridge_officer(tmp_path, fake_claude, [], tasking)
+    assert asyncio.run(o.run()) == "until"
+    assert tasking.said("tk-1") == [("seen", 1), ("processed", 1)], tasking.acks
+    assert tasking.said("tk-2") == [("seen", 2), ("processed", 2)], tasking.acks
+    assert [i["delivery"] for i in tasking.items] == ["processed", "processed"]
+    assert not any(x["kind"] == "tasking.ack_error" for x in lines(tmp_path))
+
+
+def test_a_failed_turn_says_failed_and_the_next_update_processes_it(fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SCENARIO", "error_once")
+    tasking = BridgeTasking([tk(1, "watch the ferry lane", 1000)])
+    o = bridge_officer(tmp_path, fake_claude, [], tasking, seconds=2.5)
+    assert asyncio.run(o.run()) == "until"
+    turns = [x for x in lines(tmp_path) if x["kind"] == "turn"]
+    assert [t["stop"] for t in turns][:2] == ["error", "success"]
+    said = tasking.said("tk-1")
+    assert said[:2] == [("seen", 1), ("failed", 1)] and said[-1] == ("processed", 2), said
+    assert next(b for t, b in tasking.acks if b["state"] == "failed")["why"] == "the turn ended in an error"
+
+
+def test_a_post_past_taskings_share_waits_and_says_why(fake_claude, tmp_path):
+    """Four wakes an hour: tasking's share is one. The first post wakes the officer (seen, processed);
+    the second is a note, so it waits for the next update, and the officer says why."""
+    tasking = BridgeTasking([], [(0.5, lambda items: items.append({**tk(1, "a", 1000), "delivery": "posted"})),
+                                 (1.5, lambda items: items.append({**tk(2, "b", 2000), "delivery": "posted"}))])
+    o = bridge_officer(tmp_path, fake_claude, [], tasking)
+    o.waker.budgets.max_wakes_per_hour = 4
+    assert asyncio.run(o.run()) == "until"
+    assert tasking.said("tk-1") == [("seen", 2), ("processed", 2)], tasking.acks
+    assert tasking.said("tk-2") == [("waiting", None)], tasking.acks
+    why = next(b for t, b in tasking.acks if t == "tk-2")["why"]
+    assert why.startswith("tasking's share of the officer's wakes is spent")
+
+
+def test_acknowledgements_only_go_forward_and_never_to_an_older_bridge(fake_claude, tmp_path):
+    o = officer(tmp_path, fake_claude, [])
+    sent: list = []
+    o.tasking_ack = lambda tid, body: sent.append((tid, body))
+    item = {**tk(1, "a", 1000), "delivery": "posted"}
+    o.ack([tk(2, "an older bridge's: no delivery", 2000)], "seen", 1)
+    o.ack([item], "waiting", why="x")
+    o.ack([item], "waiting", why="x")  # once a reason
+    o.ack([item], "failed", 1)  # nothing to fail yet
+    o.ack([item], "seen", 1)
+    o.ack([item], "seen", 2)  # seen once
+    o.ack([item], "waiting", why="y")  # never back
+    o.ack([item], "failed", 2)
+    o.ack([item], "processed", 3)
+    o.ack([item], "failed", 4)
+    o.ack([{**tk(3, "c", 3000), "delivery": "processed"}], "seen", 5)  # the bridge has it further
+    while not o.ack_queue.empty():
+        sent.append(o.ack_queue.get_nowait())
+    assert [(t, b["state"], b.get("wake"), b.get("why")) for t, b in sent] == [
+        ("tk-1", "waiting", None, "x"), ("tk-1", "seen", 1, None), ("tk-1", "failed", 2, None), ("tk-1", "processed", 3, None)]

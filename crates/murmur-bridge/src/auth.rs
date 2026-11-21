@@ -133,6 +133,26 @@ pub struct Settings {
     /// Rules 10: a study run (`MURMUR_STUDY=<participant>`; `MURMUR_STUDY_PASSWORD_STEP_UP=<why>`
     /// is the explicit override that lets the participant step up with a password).
     pub study: Option<murmur_decide::Study>,
+    /// Dev run: the agent ids an `X-Murmur-Agent` header may claim ([`agents_from_env`]).
+    pub agents: Vec<AgentId>,
+}
+
+/// The agent ids a dev run believes: `MURMUR_AGENTS`, comma-separated (default
+/// `agent-planner,agent-watch,agent-playbook`). `/mcp` and the REST routes an agent may use
+/// ([`Auth::agent_of`]) resolve an `X-Murmur-Agent` header against the same list.
+pub fn agents_from_env() -> Vec<AgentId> {
+    agent_list(std::env::var("MURMUR_AGENTS").ok().as_deref())
+}
+
+/// [`agents_from_env`] of a given value (`None` or blank: the default list).
+pub fn agent_list(v: Option<&str>) -> Vec<AgentId> {
+    v.filter(|s| !s.trim().is_empty())
+        .unwrap_or("agent-planner,agent-watch,agent-playbook")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(AgentId::new)
+        .collect()
 }
 
 /// The origins of `origins` on host `rp` (or a subdomain of it): where a passkey for `rp` may
@@ -205,6 +225,7 @@ impl Settings {
             idle: secs("MURMUR_SESSION_IDLE_S", 1800)?,
             max: secs("MURMUR_SESSION_MAX_S", 8 * 3600)?,
             origins,
+            agents: agents_from_env(),
         })
     }
 
@@ -222,6 +243,7 @@ impl Settings {
             passkey_rp: "localhost".into(),
             passkey_origins: passkey_origins("localhost", &default_origins(5173, 8765)),
             study: None,
+            agents: agent_list(None),
         }
     }
 }
@@ -583,6 +605,52 @@ impl Auth {
     /// `legacy`, the first operator).
     pub fn actor(&self, headers: &HeaderMap, legacy: bool) -> Result<Actor, DecisionError> {
         self.actor_as(headers, legacy, true)
+    }
+
+    /// The agent a REST request names, resolved as `/mcp` resolves it ([`crate::mcp::Mcp`]'s
+    /// `agent`): a credentials run, the agent whose key `Authorization: Bearer` carries (401 for a
+    /// key the file does not hold, or an `X-Murmur-Agent` header without one; 403 for a header
+    /// naming another agent); a dev run, the `X-Murmur-Agent` header, listed in `MURMUR_AGENTS`
+    /// (403 for another id). `Ok(None)`: the request names no agent (an operator's, or nobody's).
+    pub fn agent_of(&self, headers: &HeaderMap) -> Result<Option<AgentId>, DecisionError> {
+        let named = headers
+            .get(crate::mcp::AGENT_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if self.credentials() {
+            let Some(key) = bearer(headers) else {
+                return match named {
+                    Some(_) => Err(DecisionError::new(
+                        401,
+                        "an agent presents its own key: Authorization: Bearer <key> (murmur-auth agent-add)",
+                    )),
+                    None => Ok(None),
+                };
+            };
+            let Some((agent, _)) = self.agent_for_key(key) else {
+                return Err(DecisionError::new(401, "no agent holds that key"));
+            };
+            if let Some(n) = named
+                && n != agent.as_str()
+            {
+                return Err(DecisionError::new(403, format!("the key is {agent}'s, the request names {n}")));
+            }
+            return Ok(Some(agent));
+        }
+        let Some(n) = named else { return Ok(None) };
+        self.settings
+            .agents
+            .iter()
+            .find(|a| a.as_str() == n)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                DecisionError::new(
+                    403,
+                    format!("agent {n:?} is not in MURMUR_AGENTS (a dev run: ids are asserted, not authenticated)"),
+                )
+            })
     }
 
     /// [`Auth::actor`] for a report that is not an operator's action (the console's display

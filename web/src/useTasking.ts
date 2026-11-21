@@ -4,12 +4,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator } from './decisions'
-import { deactivated, type TaskingDoc, type TaskingItem } from './tasking'
+import { deactivated, inFlight, type OfficerRead, type TaskingDoc, type TaskingItem } from './tasking'
 
 export type TaskingStatus = 'loading' | 'ok' | 'missing' | 'error'
 
 export interface TaskingApi {
   items: TaskingItem[]
+  /** the bridge's last read by an agent and its clock then (officerOf); `officer` undefined: a
+   *  bridge that does not say */
+  reader: Pick<TaskingDoc, 't' | 'officer'>
   status: TaskingStatus
   error: string | null
   /** post guidance; the item as the bridge made it, or null (error says why) */
@@ -18,8 +21,11 @@ export interface TaskingApi {
 }
 
 const POLL_MS = 4000
+// while an item is on its way to the officer (posted or seen), so its ticks move without a reload
+const FAST_MS = 1500
 const MISSING_MS = 30_000
 const NONE: TaskingItem[] = []
+const UNSAID: Pick<TaskingDoc, 't' | 'officer'> = { t: 0, officer: undefined }
 
 const refusal = (res: Response, json: Record<string, unknown>) => String(json.detail ?? json.error ?? `the bridge returned ${res.status}`)
 
@@ -34,6 +40,7 @@ async function write(url: string, body?: unknown): Promise<{ res: Response; json
 
 export function useTasking(on = true): TaskingApi {
   const [items, setItems] = useState<TaskingItem[]>(NONE)
+  const [reader, setReader] = useState<Pick<TaskingDoc, 't' | 'officer'>>(UNSAID)
   const [status, setStatus] = useState<TaskingStatus>('loading')
   const [error, setError] = useState<string | null>(null)
   // a poll asked before a write must not overwrite the write's answer
@@ -56,14 +63,19 @@ export function useTasking(on = true): TaskingApi {
         if (res.status === 404) {
           setStatus('missing')
           setItems(NONE)
+          setReader(UNSAID)
           return MISSING_MS
         }
         if (!res.ok) throw new Error(`the bridge returned ${res.status}`)
         const doc = (await res.json()) as TaskingDoc
         if (stop || asked !== epoch.current) return POLL_MS
-        setItems(Array.isArray(doc?.items) ? doc.items : NONE)
+        const got = Array.isArray(doc?.items) ? doc.items : NONE
+        setItems(got)
+        const officer = doc && 'officer' in doc ? ((doc.officer ?? null) as OfficerRead | null) : undefined
+        setReader({ t: typeof doc?.t === 'number' ? doc.t : 0, officer })
         setStatus('ok')
         setError(null)
+        return inFlight(got) ? FAST_MS : POLL_MS
       } catch (e) {
         if (!stop) {
           setStatus((s) => (s === 'ok' ? s : 'error'))
@@ -119,5 +131,5 @@ export function useTasking(on = true): TaskingApi {
     }
   }, [])
 
-  return useMemo(() => ({ items, status, error, post, deactivate }), [items, status, error, post, deactivate])
+  return useMemo(() => ({ items, reader, status, error, post, deactivate }), [items, reader, status, error, post, deactivate])
 }
