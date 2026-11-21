@@ -1,0 +1,290 @@
+# Group command: one order, a hundred vehicles (sim/situations/README.md). A showcase of group
+# orders (decision rules 34, docs/SWARMS.md sections 2 to 5, bd murmur-4nik), made to be recorded:
+#   make situation NAME=group-command                     (autoplay: watch it, nothing to do)
+#   make situation NAME=group-command OPERATOR=live       (you approve the agent's cards)
+#
+# Ordinary fleet supervision only: no weapons, engagements, declarations or hostile acts. 105
+# stand-ins in five swarms (sim/fleets/group-command.toml): sixty X10 quadcopters (PICKET), eight
+# more (CRISSY), fifteen Puma fixed wings (SEARCH), twelve Corsair USVs mid-channel (STRAIT), and
+# eight Corsairs with two drifting sensor buoys off the Marina (MARINA). The harbor is quiet: three
+# ferries with their AIS (sim/scenarios/group-command.toml, which also serves the map the day's
+# archived weather).
+#
+# Before rules 34 an order to many vehicles was one intent judged all or nothing (one member's
+# stale report refused a hundred), and the task layer stacked the members' altitudes after the
+# checks, a step a vehicle (an X10 ring of a hundred to 591 m, a Puma's to 2.4 km), in no order,
+# no check and no log. Under rules 34 the engine lays each member out in its own slot and layer,
+# checks each member's own share, classes the members sent, waiting or left out against a minimum
+# strength, routes the group once and approves it once; each member order is logged and replayed
+# against the group's check; the group re-forms inside its approved envelope when members drop,
+# and below its minimum it stops and asks a person.
+#
+# The beats, on the situation's clock (the link emulator's start; the fleet is ready some 30 s in
+# and the opening orders go out then; the README's entry has the shot list):
+#   0:35  three opening orders (op-setup, a script, each after its dry run), each one group order
+#         the policy sends out at once (unarmed, inside the approved area): PICKET's orbit of 180 m
+#         east of the bridge's south tower (sixty slots 18.8 m apart at 60 m), SEARCH's patrol in
+#         three lanes 400 m apart west of the bridge (five Pumas a lane, each lane's five at five
+#         heights, since a lane is flown out and back over the same line), STRAIT's transit to a
+#         block west of the bridge along a route over Fort Point (the planner routes each member
+#         round it; each holds in its own cell).
+#   3:20  agent-scripted (the timeline, a script) proposes an orbit for CRISSY's eight: an agent's
+#         orbit waits for a person under the watch policy, as one card for the eight.
+#   4:30  agent-scripted proposes a patrol for everything off the Marina, MARINA's ten: the buoys
+#         cannot patrol, so the card leaves them out, saying why, and the group goes at its
+#         minimum (eight of ten).
+#   5:30  a sector of PICKET, ten in a row round the ring, lose their links
+#         (sim/link-events/group-command.toml): one lost-link card for the ten; the group drops
+#         them and re-forms round the fifty or so left, closing the gap.
+#   7:00  three of CRISSY lose their links: five left, under its minimum of seven, so it is
+#         suspended (one under-strength card) and re-forms no more.
+#   8:00  PICKET's ten are heard again: back after 30 s, they rejoin at the next re-form.
+#   9:30  CRISSY's three are heard again; CRISSY stays suspended, as decided (docs/SWARMS.md
+#         decision 4): a person orders it anew. At 10:00 agent-scripted proposes its orbit again,
+#         one card, approved by the person (live) or op-auto (autoplay).
+#  11:00  the close: what was asked of a person.
+#
+# Autoplay: op-auto (a script) decides the Inbox. Its rule book rejects a card with a failing check,
+# and a group card carries its left-out members' failing checks, so it grants every card of the
+# timeline's agent instead (`grant_agents`): read, then approved, its note saying what the rule
+# book alone would have done. Nothing else is scripted: the engine's checks and the policy's tiers
+# are the shipped ones (sim/situations/policies/watch.toml).
+title = "Group command: one order, a hundred vehicles"
+brief = """
+You have the watch at the Golden Gate on a clear June day, alone, over 105 of our unarmed vehicles
+in five swarms: sixty small quadcopters on Crissy Field (PICKET) and eight more at its west end
+(CRISSY); fifteen small fixed wings already aloft west of the bridge (SEARCH); twelve uncrewed
+surface vessels holding mid-channel east of the bridge (STRAIT); and off the Marina eight more of
+them with two drifting sensor buoys (MARINA). The harbor is quiet: ferries on their runs, nothing
+hostile, no weapons. The watch is ordinary fleet supervision.
+
+Every order to more than one vehicle is a group order: one order, one decision. The engine lays
+out each member's own share (its slot on a ring, its place on a lane, its cell in a block, its
+height), checks each share, and says which members go now, which wait to be heard and which it
+leaves out and why, against the minimum strength the order needs. The group is approved once; the
+engine then keeps it together inside what was approved, re-forming it as members drop or come
+back, and asks a person again when it falls below its minimum.
+
+The opening orders come from the setup script (op-setup, not a person) and go out by policy. An
+agent's proposal to move our vehicles (an orbit, a patrol) waits for the operator in the Inbox;
+the timeline's agent (agent-scripted, a script) makes some. The Swarms panel lists each swarm and
+each group order in force with its strength against its minimum. Any radio link can be lost.
+"""
+director = """
+Truth: nothing but our own vehicles, a quiet harbor and two scripted link cuts
+(sim/link-events/group-command.toml). From 5:30 to 8:00 ten of PICKET's sixty, ten slots in a row
+round its ring, lose their links both ways; their failsafe sends each home 10 s later, where it
+lands. From 7:00 to 9:30 three of CRISSY's eight lose theirs the same way. What a good watch sees:
+PICKET's ten as one lost-link card, not ten; the re-form some 15 s after the last of them drops
+(about fifty, above a minimum of 45: nothing to decide); the ten back once heard for 30 s, and the next
+re-form bringing them back; CRISSY suspended under its minimum (five of a minimum seven) with one
+under-strength card, and that it does not resume on its own when its three are heard again: a
+person orders it anew (live, from the Swarms panel and the order form, or by approving the agent's
+proposal at 10:00).
+"""
+
+world = "golden-gate"
+fleet = "sim/fleets/group-command.toml"
+contacts = "sim/scenarios/group-command.toml" # three ferries, and the day's weather
+events = ["sim/link-events/group-command.toml"]
+policy = "sim/situations/policies/watch.toml" # the shipped tiers, an agent's orbit or patrol waits for you
+tidewater = "golden-gate-2026-06"             # real tide, current, wind and terrain (tidewater/)
+at = "2026-06-14T19:00:00Z"                   # noon local: the weather archive's clearest hour that
+                                              # day (13 km, 38 % cloud; the contacts file says which)
+rate = 1
+duration_s = 720                              # 12 minutes of situation time
+ready_timeout_s = 120                         # 105 stand-ins: ready in seconds
+
+operator = "autoplay"
+ai = "none"                                   # no account needed: the agent here is the timeline's
+reveal = false
+seed = 1
+
+[summary]
+headline = "One order for many vehicles: each laid out in its own slot, checked, approved once, and kept together as members drop."
+bullets = [
+  "105 unarmed vehicles in five swarms at the Golden Gate; a quiet harbor, nothing hostile.",
+  "Three group orders go out by policy: a ring of sixty quadcopters, three lanes of fixed wings, a block of boats.",
+  "An agent's group order is one card in the Inbox, whatever its size: who goes, who waits, who is left out and why.",
+  "Links fail: a group re-forms by itself above its minimum, and below it stops and asks you.",
+]
+
+# ---- opening orders, once the fleet is ready: one group order per swarm, each issued by the setup
+# script (op-setup) after its dry run; each goes out by policy (the default tier: unarmed, inside
+# the approved area), so no card. Each names its swarm, the label the console shows.
+
+# Beat 1: sixty quadcopters, one ring. 2 pi 180 m / 60 = 18.8 m between slots, over the X10's
+# 15 m lateral minimum, so one layer at 60 m above the field. (A 140 m ring, 14.7 m apart, takes
+# two layers 10 m apart, and lays out; but a re-form that brings members back onto a layered ring
+# is refused: "10 and 6 would be 13 m apart at one height", 2026-11-20, a follow-up for the engine.)
+# The order states its minimum, 45 (the default would be 80 %, 48): a member whose battery has
+# not been reported yet when the order is checked is left out (the reserves check cannot be
+# evaluated; SKY 34 in four runs of six, 59 sent), and the ring must stay above its minimum when
+# the link cut takes ten.
+[[order]]
+id = "ring"
+task = "orbit"
+vehicles = { swarm = "PICKET" }
+center = [-122.4700, 37.8140]
+radius_m = 180
+group = { swarm = "PICKET", alt_m = 60, min_members = 45 }
+note = "Opening order: a picket ring east of the bridge's south tower, one group order for PICKET's sixty"
+
+# Beat 2: fifteen fixed wings in three lanes 400 m apart west of the bridge, five to a lane. A lane
+# of two points is flown out and back over the same line, so its five are laid in five layers 30 m
+# apart from 330 to 450 m round the layer base of 360 m (the Presidio's bluffs hide the strait
+# from the radio lower down). A lanes group does not re-form (the engine re-forms one ring or one route), so it is
+# ordered without it: a gap a member leaves stays open.
+[[order]]
+id = "lanes"
+task = "patrol"
+vehicles = { swarm = "SEARCH" }
+route = [[-122.5100, 37.8040], [-122.5100, 37.8220]]
+group = { swarm = "SEARCH", spread = "lanes", lanes = 3, lane_spacing_m = 400, alt_m = 360, reform = false }
+note = "Opening order: three search lanes west of the bridge, one group order for SEARCH's fifteen"
+
+# Beat 3: twelve boats move west of the bridge as a block (a grid round the route's end, the
+# Corsair's 30 m apart: four by three). Each flies the route moved as its cell sits from the end,
+# so the block keeps its shape; the route's leg runs over Fort Point, so the planner routes each
+# member round it (and 100 m clear of the south tower). The way home from each cell is open water.
+[[order]]
+id = "line"
+task = "transit"
+vehicles = { swarm = "STRAIT" }
+route = [[-122.4738, 37.8108], [-122.4880, 37.8100]]
+group = { swarm = "STRAIT", spread = "block" }
+note = "Opening order: the boats west under the bridge to a block off the Presidio shore, one group order for STRAIT's twelve"
+
+# ---- the timeline: the agent's proposals (agent-scripted, through MCP; each waits in the Inbox)
+
+# Beat 4: an agent's group order is one card. The timeline's proposals name no group spec (MCP's
+# propose_intent took none when this was written), so the engine's defaults: a ring, a minimum of
+# seven (80 % of eight), re-forming.
+[[step]]
+id = "crissy-orbit"
+at_s = 200
+kind = "propose"
+task = "orbit"
+vehicles = { swarm = "CRISSY" }
+center = [-122.4580, 37.8125]
+radius_m = 120
+rationale = "A watch off Crissy Field for the eight quadcopters of CRISSY: one ring, one decision."
+text = "The timeline's agent proposes an orbit for CRISSY's eight: one card in the Inbox"
+director = false
+
+# Beat 5: who can't go, and why: a patrol for everything off the Marina, its two buoys included.
+[[step]]
+id = "marina-patrol"
+at_s = 270
+kind = "propose"
+task = "patrol"
+vehicles = { swarm = "MARINA" }
+route = [[-122.4450, 37.8140], [-122.4340, 37.8140], [-122.4340, 37.8200], [-122.4450, 37.8200]]
+rationale = "A patrol north of the Marina for every craft of MARINA, as the swarm stands."
+text = "The timeline's agent proposes a patrol for all ten of MARINA, its two buoys included"
+director = false
+
+# Beat 7's end: CRISSY suspended, a person orders it anew (here the agent proposes it again and a
+# person approves; live you may do it yourself first, from the Swarms panel and the order form).
+[[step]]
+id = "crissy-again"
+at_s = 600
+kind = "propose"
+task = "orbit"
+vehicles = { swarm = "CRISSY" }
+center = [-122.4580, 37.8125]
+radius_m = 120
+rationale = "CRISSY was suspended below its minimum and its three are heard again: the same orbit for all eight, anew."
+text = "The timeline's agent proposes CRISSY's orbit again, for all eight"
+director = false
+
+# ---- the panel's narration, each as it comes due
+[[watch]]
+at_s = 0
+headline = "One operator, 105 vehicles, five swarms"
+bullets = ["Every order to many is one group order", "The Swarms panel lists each swarm and each group in force"]
+text = "One operator, 105 unarmed vehicles in five swarms at the Golden Gate. Every order to more than one of them is a group order: one order, one decision, each member laid out, checked and logged on its own."
+
+[[watch]]
+at_s = 35
+headline = "Beat 1: sixty quadcopters, one order"
+bullets = ["The engine gives each its own slot on the ring, 18.8 m apart", "Each share checked, at 60 m; the order's minimum is 45", "One approval (the policy's) covers the group"]
+text = "One order sends PICKET's sixty quadcopters to a ring east of the bridge's south tower. The engine lays out each member's own slot (sixty slots 18.8 m apart, over their 15 m minimum separation, so one layer at 60 m), checks each one's share (one whose facts it cannot judge yet is left out, saying why), counts them against the minimum strength the order states (45), and the policy approves the group once. The ring is formed some two minutes later. Before rules 34 the task layer stacked them 5 m a member from 98 m, the last at 393 m, unchecked and unlogged."
+
+[[watch]]
+at_s = 95
+headline = "Beat 2: three lanes of fixed wings"
+bullets = ["Fifteen Pumas, five to a lane, lanes 400 m apart", "Each lane's five at five heights, 330 to 450 m", "Before: every member flew one lane in trail"]
+text = "SEARCH's fifteen fixed wings take three search lanes west of the bridge, 400 m apart, five to a lane, each entering at its own place. A lane is flown out and back over the same line, so the engine puts each lane's five at five heights 30 m apart. Before rules 34 every member of a patrol flew the same lane in trail."
+
+[[watch]]
+at_s = 150
+headline = "Beat 3: twelve boats move as a block"
+bullets = ["A cell each in a block west of the bridge", "The route runs over Fort Point: the planner takes each boat round it", "Each holds in its own cell"]
+text = "STRAIT's twelve boats move west under the bridge as a block, a cell each, 30 m apart. The route drawn runs over Fort Point, so the route planner takes each boat round it, clear of the land and of the south tower; each holds in its own cell when it arrives."
+
+[[watch]]
+at_s = 205
+headline = "Beat 4: an agent's group order is one card"
+bullets = ["Eight members, one card in the Inbox", "It says how many go, the minimum and that it re-forms", "One approval sends all eight"]
+text = "The timeline's agent proposes an orbit for CRISSY's eight quadcopters. An agent's orbit waits for a person, and a group order waits as one card, never one per member: how many it sends, its minimum (seven) and that it re-forms itself above it. One approval sends all eight."
+
+[[watch]]
+at_s = 275
+headline = "Beat 5: who can't go, and why"
+bullets = ["Ten selected: eight boats and two drifting buoys", "The buoys can't patrol: left out, each with its reason", "Eight still go: the group's minimum"]
+text = "A patrol for everything off the Marina: eight boats and two drifting buoys. A buoy has no propulsion and takes no command, so the card leaves both out, saying why, and the group goes at its minimum, eight of ten. Before rules 34 one member that could not go refused the whole order."
+
+[[watch]]
+at_s = 335
+headline = "Beat 6: a sector of the ring goes silent"
+bullets = ["Ten of PICKET's sixty lose their links", "One lost-link card for the ten, not ten cards", "Their failsafe sends them home"]
+text = "Ten of PICKET's sixty, side by side on the ring, lose their radio links, and their failsafe sends each home. The Inbox folds their alerts into one card for the swarm. Thirty seconds after its last report each drops from the group."
+
+[[watch]]
+at_s = 380
+headline = "The ring closes the gap"
+bullets = ["About fifty left, above the minimum of 45", "The engine moves members to close the gap", "Inside what was approved: no new approval"]
+text = "About fifty are left, above the minimum of 45 PICKET's order stated, so the engine re-forms the ring by itself: it moves the members either side of the gap to close it, inside the envelope the policy approved (the same ring, band and members), each new member order checked and logged."
+
+[[watch]]
+at_s = 425
+headline = "Beat 7: three of CRISSY's eight go silent"
+bullets = ["Their failsafe sends them home", "Five would be left, under its minimum of seven", "Watch the Inbox and the Swarms panel"]
+text = "Three of CRISSY's eight lose their links, and their failsafe sends them home. Once they drop from the group, five are left: under the minimum of seven its approval set."
+
+[[watch]]
+at_s = 470
+headline = "Below its minimum, it waits for a person"
+bullets = ["CRISSY is suspended: one under-strength card", "It re-forms no more", "The five on their shares fly on"]
+text = "CRISSY is suspended: one under-strength card in the Inbox, and the group re-forms no more. The five on their shares fly on; what happens next is a person's decision, not the engine's."
+
+[[watch]]
+at_s = 495
+headline = "Beat 8: they come back"
+bullets = ["PICKET's ten are heard again", "After 30 s heard, each is back", "The next re-form brings them back to the ring"]
+text = "PICKET's ten are heard again. Once each has been heard for 30 s it is back, waiting to rejoin, and the next re-form sends each a new member order to a slot on the ring."
+
+[[watch]]
+at_s = 575
+headline = "CRISSY: heard again, still suspended"
+bullets = ["Its three are heard again", "A suspended group does not resume on its own", "A person orders it anew"]
+text = "CRISSY's three are heard again, but a group that fell below its own minimum has met the condition its approver set for being asked: it does not resume on its own. A person orders it anew (live: from the Swarms panel and the order form, or by approving the agent's proposal)."
+
+[[watch]]
+at_s = 665
+headline = "What was asked of a person"
+bullets = ["105 vehicles, six group orders, CRISSY's twice", "Three cards, none per member; alerts folded by swarm", "Every share and re-form is in the audit log, replayable"]
+text = "What the watch asked of a person: three cards, one per agent's group order, never one per member, and the alerts folded by swarm. Every member's share, every re-form and the suspension are in the audit log, which replays them against the group's check."
+
+# ---- the scripted operator on autoplay (eval/proxy.py): looks every few seconds, every card of the
+# timeline's agent read and approved (`grant_agents`: a group card carries its left-out members'
+# failing checks, which its rule book alone would reject; the note says what it would have done),
+# the reading time per check kept short (a group card has a check per member per rule) so a card
+# stays up some 10 to 20 s, long enough to read on a recording
+[autoplay]
+preset = "default"
+attend_s = 6.0
+read_s = 10.0
+read_per_check_s = 0.02
+grant_agents = ["agent-scripted"]

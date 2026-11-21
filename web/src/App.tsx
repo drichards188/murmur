@@ -1082,6 +1082,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
             }}
             onClose={() => setShowSwarms(false)}
+            heard={(uid) => {
+              const v = allVehicles.find((x) => String(x.uid) === uid)
+              return v != null && !isStale(v)
+            }}
           />
           </ErrorBoundary>
         )}

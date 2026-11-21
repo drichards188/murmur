@@ -370,6 +370,8 @@ def _order(i: int, raw: Any, sit: Path) -> Order:
         g = raw["group"]
         if not isinstance(g, dict) or set(g) - GROUP_KEYS:
             raise SituationError(f"{sit}: order {oid!r}: group is a table of {sorted(GROUP_KEYS)}")
+        if task == "track":
+            raise SituationError(f"{sit}: order {oid!r}: a track order has no group meaning")
         # passed on as the bridge's own key (the operator API's and MCP's `group`)
         params["extra"] = {"group": dict(g)}
     if task == "orbit":
@@ -823,6 +825,7 @@ def load_situation(path_or_name: str | Path) -> Situation:
     if not isinstance(steps, list):
         raise SituationError(f"{path}: [[step]] is a list of tables")
     sit.steps = _steps(steps, path, sit.duration_s, sit.contacts)
+    _steps_against_fleet(sit)
     watch = raw.get("watch", [])
     if not isinstance(watch, list):
         raise SituationError(f"{path}: [[watch]] is a list of tables")
@@ -949,6 +952,30 @@ def _orders_against_fleet(sit: Situation) -> None:
                 f"{sit.path}: order {o.id!r} is for an armed platform ({', '.join(armed)}): an opening order is a "
                 "script's, and armed platforms always need a person's decision"
             )
+
+
+def _steps_against_fleet(sit: Situation) -> None:
+    """A timeline proposal or link step may name a swarm (`vehicles = { swarm = ... }`, as an
+    opening order may): it names one of the fleet's, with members. The runner hands the storyline
+    its members' uids (`with_swarm_uids`)."""
+    named = [s for s in sit.steps if s.kind in ("propose", "link") and swarm_uids(s.params.get("vehicles"), []) is not None]
+    if not named:
+        return
+    if sit.fleet is None:
+        raise SituationError(f"{sit.path}: step {named[0].id!r} names a swarm, but the situation has no fleet")
+    vehicles = _planned_fleet(sit.fleet)
+    for s in named:
+        if not swarm_uids(s.params["vehicles"], vehicles):
+            raise SituationError(f"{sit.path}: step {s.id!r}: no swarm of {sit.fleet.name} is {s.params['vehicles']['swarm']!r}")
+
+
+def with_swarm_uids(step: Step, vehicles: list[dict[str, Any]]) -> Step:
+    """The step with a swarm selector (`{swarm = ...}`) replaced by its members' uids as the fleet
+    plans them (`swarm_uids`), which the storyline selects by; any other step as it is."""
+    uids = swarm_uids(step.params.get("vehicles"), vehicles)
+    if uids is None:
+        return step
+    return Step(id=step.id, kind=step.kind, at_s=step.at_s, params={**step.params, "vehicles": {"uids": uids}})
 
 
 def uses_planner(sit: Situation) -> bool:

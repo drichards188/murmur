@@ -864,3 +864,77 @@ def test_a_swarm_order_is_asked_again_only_while_facts_are_stale():
     assert not stale_only({"would_reach": "rejected", "checks": [stale, geofence]})
     assert not stale_only({"would_reach": "auto_approved", "checks": [stale]})
     assert not stale_only({"would_reach": "rejected", "checks": []})
+
+
+# ---- Group command: its fleet, orders and cuts (sim/situations/group-command.toml) -----------------
+
+
+@pytest.fixture(scope="module")
+def command():
+    from eval import situation as S
+    from eval.headless.tests.test_worlds_v3 import CATALOG, Grid, along
+
+    sit = S.load_situation("group-command")
+    terrain = S.REPO / "sim" / "headless" / "terrain"
+    events = tomllib.loads(sit.events[0].read_text())["event"]
+    return SimpleNamespace(S=S, sit=sit, vehicles=S._planned_fleet(sit.fleet), events=events, catalog=CATALOG, along=along,
+                           surface=Grid(terrain / "golden-gate.grid.gz"), depth=Grid(terrain / "golden-gate.water.grid.gz"))
+
+
+def test_group_command_orders_each_swarm_as_one_group_and_cuts_inside_them(command):
+    """Five swarms of 105, nothing armed; one opening group order each for PICKET, SEARCH and
+    STRAIT (their swarm the label), the agent's proposals naming CRISSY and MARINA (resolved to
+    their members as the fleet plans them); MARINA's two buoys can take no order; the first cut
+    takes ten of PICKET, which keeps it above the minimum its order states, the second three of
+    CRISSY, which takes it under its default minimum (80 % of eight, seven)."""
+    S, sit, vs = command.S, command.sit, command.vehicles
+    by = {sw: [v for v in vs if v["swarm"] == sw] for sw in ("PICKET", "CRISSY", "SEARCH", "STRAIT", "MARINA")}
+    assert len(vs) == 105 and [len(m) for m in by.values()] == [60, 8, 15, 12, 10]
+    assert not [v["callsign"] for v in vs if command.catalog[v["platform"]].get("armed")]
+    assert {(o.task, o.vehicles["swarm"], o.params["extra"]["group"]["swarm"]) for o in sit.orders} == {
+        ("orbit", "PICKET", "PICKET"), ("patrol", "SEARCH", "SEARCH"), ("transit", "STRAIT", "STRAIT")}
+    steps = [S.with_swarm_uids(s, vs) for s in sit.steps if s.kind == "propose"]
+    assert [s.params["vehicles"]["uids"] for s in steps] == [
+        [v["uid"] for v in by["CRISSY"]], [v["uid"] for v in by["MARINA"]], [v["uid"] for v in by["CRISSY"]]]
+    assert sorted(v["platform"] for v in by["MARINA"])[:2] == ["buoy", "buoy"] and command.catalog["buoy"]["behavior"] == "drifter"
+    ring, crissy = command.events
+    picket = {v["uid"] for v in by["PICKET"]}
+    assert len(ring["uids"]) == 10 and set(ring["uids"]) <= picket and ring["cut"]
+    assert 60 - 10 >= next(o for o in sit.orders if o.id == "ring").params["extra"]["group"]["min_members"]
+    assert len(crissy["uids"]) == 3 and set(crissy["uids"]) <= {v["uid"] for v in by["CRISSY"]}
+    assert 8 - 3 < math.ceil(0.8 * 8)
+    # in that order on the clock: the ring cut back before CRISSY's, and CRISSY's back before its order anew
+    assert ring["at_s"] + ring["duration_s"] < crissy["at_s"] + crissy["duration_s"] < steps[2].at_s
+
+
+def test_group_command_spawns_validly_and_its_block_can_go_home(command):
+    """Boats in water, quadcopters on Crissy Field at the ground's height, the Pumas aloft 100 m or
+    more over the strait. STRAIT's route runs over Fort Point (land: the planner has work), and the
+    way home from every cell of its block round the route's end is open water (a return is judged
+    straight); the way from its start to the route passes clear of PICKET's ring."""
+    bad = []
+    for v in command.vehicles:
+        lat, lon, alt, _ = v["home"]
+        d, s = command.depth.at(lat, lon), command.surface.at(lat, lon)
+        if v["domain"] == "surface":
+            if d is None or d < 1.0:
+                bad.append((v["callsign"], "water", d))
+        elif command.catalog[v["platform"]]["behavior"] == "plane":
+            if alt - (s or 0.0) < 100.0:
+                bad.append((v["callsign"], "aloft", alt, s))
+        elif not (d is not None and d <= 0 and s is not None and abs(alt - s) <= 3.0):
+            bad.append((v["callsign"], "ground", alt, s, d))
+    assert not bad, bad
+    o = next(o for o in command.sit.orders if o.id == "line")
+    (a_lon, a_lat), (b_lon, b_lat) = o.params["route"]
+    dry = lambda pts: [p for p in pts if (command.depth.at(p[1], p[0]) or 0.0) <= 0.0]  # noqa: E731
+    assert dry(command.along([[a_lon, a_lat], [b_lon, b_lat]], 10.0)), "the route's leg runs over land"
+    k = 111_320.0 * math.cos(math.radians(b_lat))
+    for v in (v for v in command.vehicles if v["swarm"] == "STRAIT"):
+        for dn in (-30.0, 0.0, 30.0):
+            for de in (-45.0, -15.0, 15.0, 45.0):
+                cell = [b_lon + de / k, b_lat + dn / 111_320.0]
+                assert not dry(command.along([cell, [v["home"][1], v["home"][0]]], 10.0)), (v["callsign"], dn, de)
+    center = next(o for o in command.sit.orders if o.id == "ring").params["center"]
+    first = [p for v in command.vehicles if v["swarm"] == "STRAIT" for p in command.along([[v["home"][1], v["home"][0]], [a_lon, a_lat]], 10.0)]
+    assert min(m_lonlat(p, center) for p in first) > 180 + 100

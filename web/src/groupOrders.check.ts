@@ -18,6 +18,7 @@ import {
   headline,
   layoutLine,
   memberClasses,
+  reformBody,
   slotMarks,
   strengthLine,
   strengthTone,
@@ -112,5 +113,15 @@ check(strengthLine({ intent: 41, kind: 'orbit', strength: 90, min: 80, reforms: 
 check(strengthTone({ strength: 70, min: 80, suspended: true, dropped: 30 }) === 'bad', 'under strength is bad')
 check(strengthTone({ strength: 90, min: 80, suspended: false, dropped: 10 }) === 'warn', 'drops are a warning')
 check(strengthTone({ strength: 100, min: 80, suspended: false, dropped: 0 }) === 'ok', 'full strength is ok')
+
+// re-forming a suspended group: the same task to the members heard, the minimum the engine's anew
+const suspended = { id: 79, kind: 'orbit', params: { center: [-122.458, 37.8125] as [number, number], radius_m: 120 }, uids: ['61', '62', '63', '64', '65', '66', '67', '68'], group: { spread: 'ring' as const, min_members: 7, reform: true } }
+const again = reformBody(suspended, { dropped: { '62': 'silent', '65': 'silent', '68': 'silent' }, back: [65] })
+check(again != null && JSON.stringify(again.uids) === JSON.stringify([61, 63, 64, 65, 66, 67]), `re-form: the members heard (${JSON.stringify(again?.uids)})`)
+check(again!.task === 'orbit' && again!.radius === 120 && JSON.stringify(again!.center) === JSON.stringify([-122.458, 37.8125]), 're-form: the same task')
+check(JSON.stringify(again!.group) === JSON.stringify({ spread: 'ring', reform: true }), 're-form: the spec without its minimum')
+check(JSON.stringify(reformBody(suspended, { dropped: { '62': 'silent', '65': 'silent', '68': 'silent' }, back: [] }, (u) => u !== '68')!.uids) === JSON.stringify([61, 62, 63, 64, 65, 66, 67]), 're-form: a dropped member heard now goes too')
+check(reformBody(suspended, { dropped: Object.fromEntries(suspended.uids.map((u) => [u, 'silent'])), back: [] }) === null, 're-form: none heard, nothing to send')
+check(reformBody({ ...suspended, uids: ['61', '62'] }, { dropped: { '62': 'silent' }, back: [] })!.group === undefined, 're-form: one member heard is an order of its own')
 
 console.log('groupOrders: ok')

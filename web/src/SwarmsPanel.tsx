@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import type { SwarmsFeed } from './swarms'
 import { ROLE_LABEL, ROLE_ORDER, type Swarm, type SwarmAlert, swarmColor, swarmTone, taskLine } from './swarmsModel'
-import { strengthLine, strengthTone, type GroupInForce } from './groupOrders'
+import { reformBody, strengthLine, strengthTone, type GroupInForce } from './groupOrders'
+import { submitIntent } from './decisions'
 import { alertLabel } from './swarms'
 import './swarms.css'
 
@@ -19,6 +20,8 @@ interface Props {
   alerts: SwarmAlert[]
   onSelect: (s: Swarm) => void
   onClose: () => void
+  /** rules 34: whether a vehicle is heard now (its link not stale), for Re-form's members */
+  heard?: (uid: string) => boolean
   /** the map's banners (App.tsx), shown under this drawer's header while it is open over the
    *  map's right edge, where they would otherwise sit over its top (bd murmur-76gv) */
   banners?: ReactNode
@@ -71,10 +74,46 @@ function Row({ s, selected, alerts, onSelect }: { s: Swarm; selected: boolean; a
   )
 }
 
+/** Rules 34: re-form a suspended group with one click (docs/SWARMS.md 4.3, bd murmur-ge6t): a new
+ *  group order, the same task to the members heard (`reformBody`), submitted as the console's
+ *  operator, whose submission is its approval as any of their orders is; the engine checks and
+ *  lays it out as any group order. Says what came of it. */
+function ReformButton({ g, heard }: { g: GroupInForce; heard?: (uid: string) => boolean }) {
+  const [busy, setBusy] = useState(false)
+  const [said, setSaid] = useState<string | null>(null)
+  const go = async () => {
+    setBusy(true)
+    setSaid(null)
+    try {
+      const res = await fetch(`/api/intents/${g.intent}`)
+      if (!res.ok) throw new Error(`the bridge returned ${res.status} for i${g.intent}`)
+      const body = reformBody((await res.json()).intent, g, heard)
+      if (!body) {
+        setSaid('No member is heard: nothing to send.')
+        return
+      }
+      const out = await submitIntent(body)
+      setSaid(`Ordered anew as i${out.intent.id}: ${out.intent.state.replace('_', ' ')}`)
+    } catch (e) {
+      setSaid(`Not re-formed: ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <span className="sw-reform">
+      <button className="ghost ix-btn" disabled={busy} onClick={go} title="A new group order: the same task to the members heard, approved by your submission">
+        {busy ? 'Re-forming...' : 'Re-form'}
+      </button>
+      {said && <span className="dim">{said}</span>}
+    </span>
+  )
+}
+
 /** Rules 34: one group order in force, the panel's own line: its strength against its minimum,
  *  what dropped and why, its re-forms, and its group alert (under strength: it re-forms no more;
  *  re-form refused: why), as the Inbox raises it. */
-function GroupLine({ g, alerts }: { g: GroupInForce; alerts: SwarmAlert[] }) {
+function GroupLine({ g, alerts, heard }: { g: GroupInForce; alerts: SwarmAlert[]; heard?: (uid: string) => boolean }) {
   const dropped = Object.keys(g.dropped ?? {}).length
   const tone = strengthTone({ ...g, dropped })
   const why = new Map<string, number>()
@@ -101,13 +140,14 @@ function GroupLine({ g, alerts }: { g: GroupInForce; alerts: SwarmAlert[] }) {
         </span>
       ))}
       {g.suspended && <span className="bad">It re-forms no more: order it anew, or order its members.</span>}
+      {g.suspended && <ReformButton g={g} heard={heard} />}
       {g.refused && <span className="warn">Last re-form refused: {g.refused}</span>}
       {!g.reforming && !g.suspended && <span className="dim">does not re-form ({g.kind})</span>}
     </div>
   )
 }
 
-export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, banners }: Props) {
+export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, heard, banners }: Props) {
   const swarms = feed.doc?.swarms ?? []
   const groups = feed.doc?.groups ?? []
   const total = swarms.reduce((n, s) => n + s.count, 0)
@@ -143,7 +183,7 @@ export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, banners
               <small>{groups.reduce((n, g) => n + g.selection, 0).toLocaleString()} vehicles</small>
             </h3>
             {groups.map((g) => (
-              <GroupLine key={g.intent} g={g} alerts={alerts} />
+              <GroupLine key={g.intent} g={g} alerts={alerts} heard={heard} />
             ))}
           </section>
         )}

@@ -107,6 +107,7 @@ from .situation import (
     status_doc,
     step_text,
     swarm_uids,
+    with_swarm_uids,
     up_starts_console,
 )
 from .stack import _swarm
@@ -274,6 +275,45 @@ class HandoverWatch:
             "last_left_queue_t": max(self.left_t.values()) if self.left_t else None,
             "last_running_t": max(self.running.values()) if self.running else None,
         }
+
+
+def group_lines(intents: dict[int, dict[str, Any]], members: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[str]:
+    """Decision rules 34 in the summary: each group order (its kind, label, selection, state), its
+    member orders folded by state, what re-formed it, suspended it or refused a re-form (the audit
+    log's `group.*`), and how many orders a person was asked to decide (a human tier's, member
+    orders never: their approval is their group's). Nothing when the run made no group order."""
+    groups = sorted((i for i in intents.values() if i.get("group")), key=lambda i: i["id"])
+    if not groups:
+        return []
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for m in members:
+        by_parent.setdefault(int(m["parent"]), []).append(m)
+    acts: dict[int, dict[str, int]] = {}
+    for e in events:
+        kind = str(e.get("type") or "")
+        if kind in ("group.reformed", "group.reform_refused", "group.suspended") and isinstance(e.get("intent"), int):
+            what = kind.split(".", 1)[1].replace("_", " ")
+            acts.setdefault(e["intent"], {}).setdefault(what, 0)
+            acts[e["intent"]][what] += 1
+    out = [f"  group orders (decision rules 34): {len(groups)}, with {len(members)} member orders"]
+    for g in groups:
+        spec = g.get("group") or {}
+        label = f", swarm {spec['swarm']}" if spec.get("swarm") else ""
+        states: dict[str, int] = {}
+        for m in by_parent.get(g["id"], []):
+            states[str(m.get("state"))] = states.get(str(m.get("state")), 0) + 1
+        mo = ", ".join(f"{n} {st}" for st, n in sorted(states.items(), key=lambda x: -x[1])) or "none"
+        did = "; ".join(f"{w} {n}x" for w, n in sorted(acts.get(g["id"], {}).items()))
+        src = g.get("source") or {}
+        ap = (g.get("approval") or {}).get("by")
+        how = f"approved by {ap}" if ap else f"by policy, tier {(g.get('policy') or {}).get('rule')}"
+        out.append(
+            f"    intent {g['id']} {g.get('kind')}{label}, {len(g.get('uids') or [])} selected, {spec.get('spread')}, minimum "
+            f"{spec.get('min_members')}, from {src.get('id')} ({how}): {g.get('state')}; member orders {mo}" + (f"; {did}" if did else "")
+        )
+    asked = [i for i in intents.values() if i.get("parent") is None and (i.get("policy") or {}).get("tier") == "human"]
+    out.append(f"  orders a person was asked to decide: {len(asked)}" + (f" (intents {', '.join(str(i['id']) for i in sorted(asked, key=lambda i: i['id']))})" if asked else ""))
+    return out
 
 
 def submits_itself(preview: dict[str, Any]) -> bool:
@@ -831,7 +871,7 @@ class Runner:
             elif verb == "confirmed":
                 self.entry("autoplay", f"{d.get('by')} (scripted) confirmed the rule declaration {d.get('declaration')} on {d.get('track')}: {d.get('result')}")
             elif verb:
-                grant = " (it grants every request of the AI)" if d.get("granted") else ""
+                grant = f" (it grants every request of {self.grantees()})" if d.get("granted") else ""
                 self.entry("autoplay", f"{d.get('by')} (scripted) {verb} intent {d.get('intent_id')}{grant}: {d.get('result')}")
         if self.ai_proc is not None and self.ai_status.get("status") == "running":
             code = self.ai_proc.poll()
@@ -1018,6 +1058,10 @@ class Runner:
                 raise SituationError(f"no vehicle matches {o.vehicles!r}")
             rec["vehicles"] = [(v.get("identity") or {}).get("callsign") or str(v["uid"]) for v in chosen]
             req = {"task": o.task, "uids": [v["uid"] for v in chosen], **dict(o.params)}
+            group = (o.params.get("extra") or {}).get("group")
+            if group is not None:
+                # rules 34: the group order's own spec, out in `extra` as the operator API takes it
+                rec["group"] = dict(group)
             note = o.note or f"opening order of situation {self.sit.name}"
             body = _rest_body(req, labelled(SCRIPTED_SETUP, note))
             # a swarm's order: its hundred vehicles' checks take the bridge longer, and one late
@@ -1240,9 +1284,18 @@ class Runner:
             return signers
         return None
 
+    def grantees(self) -> str:
+        """Whose requests the autoplay grants (`[autoplay] grant_agents`), as the panel says it: the
+        AI when those are the AI's ids, else the ids themselves (a timeline's agent, a script)."""
+        ids = [str(x) for x in (self.sit.autoplay or {}).get("grant_agents") or []]
+        if not ids or set(ids) <= {"agent-watch", "agent-playbook"}:
+            return "the AI"
+        return ", ".join(ids)
+
     def storyline(self) -> tuple[Storyline | None, Any]:
-        # the red steps are the runner's own (`red_steps`): the storyline never sees them
-        steps = [s for s in self.sit.steps if s.kind != "red"]
+        # the red steps are the runner's own (`red_steps`): the storyline never sees them; a step
+        # naming a swarm names its members as the fleet plans them
+        steps = [with_swarm_uids(s, self.planned) for s in self.sit.steps if s.kind != "red"]
         if not steps:
             return None, None
         kinds = {s.kind for s in steps}
@@ -1482,13 +1535,16 @@ class Runner:
                 states[str(i.get("state"))] = states.get(str(i.get("state")), 0) + 1
             lines.append("    their intents now: " + ", ".join(f"{n} {s}" for s, n in sorted(states.items(), key=lambda x: -x[1])))
         handed_ids = {i["id"] for i in handed}
-        # rules 34: member orders counted under their group (its line above, or its own below)
+        # rules 34: member orders counted under their group (its line above, or its own below),
+        # then every group order with its re-forms and suspensions (group_lines)
+        member_list = [i for i in others if i["id"] not in handed_ids and i.get("parent") is not None]
         others = [i for i in others if i["id"] not in handed_ids and i.get("parent") is None]
         for i in sorted(others, key=lambda i: i["id"]):
             src = i.get("source") or {}
             mine = members.get(int(i["id"]))
             parts = f"; its member orders: {member_counts(mine)}" if mine else ""
             lines.append(f"  intent {i['id']} {i.get('kind')} for vehicles {','.join(str(u) for u in i.get('uids') or [])} from {src.get('kind')} {src.get('id')}: {i.get('state')}{parts}")
+        lines += group_lines(intents, member_list, events)
         chain = self.chain.summary_lines()
         if chain:
             lines.append("  the engagement chain (audit log):")

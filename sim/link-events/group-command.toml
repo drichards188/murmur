@@ -1,0 +1,28 @@
+# Group command's link events (sim/situations/group-command.toml): two cuts on the stack's clock
+# (the link emulator's start), each a radio link lost both ways for two and a half minutes. Every
+# cut X10's lost-link failsafe sends it home (RTL, 10 s after its link goes: sim/links.toml's mesh
+# class) to its field at Crissy Field, where it lands; heard again, it waits there for an order.
+#
+# 1. Ten of PICKET's sixty from 5:30, a sector of the ring: the engine's slots 0 to 9 (from north,
+#    clockwise), which its layout gives these ten (the minimum-distance pairing from the launch
+#    block on Crissy Field; the same facts give the same pairing). Each drops 30 s after its last
+#    report (its stale limit and 20 s more), the group re-forms round the fifty left 15 s after the
+#    last drop (fifty is above the minimum of 45 its order states), and once they are heard again (from 8:00) and
+#    back (30 s), the next re-form brings them back.
+# 2. Three of CRISSY's eight from 7:00: five are left, below its minimum of seven, so it is
+#    suspended and re-forms no more; heard again from 9:30, it stays suspended until a person
+#    orders it again.
+
+[[event]]
+name = "a sector of PICKET cut off"
+at_s = 330
+duration_s = 150
+uids = [16, 57, 47, 27, 7, 58, 38, 18, 59, 39]
+cut = true
+
+[[event]]
+name = "three of CRISSY cut off"
+at_s = 420
+duration_s = 150
+uids = [62, 65, 68]
+cut = true

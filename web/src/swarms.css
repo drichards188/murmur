@@ -71,3 +71,6 @@
 .sw-gline .bad { color: var(--bad); }
 .sw-gline .warn { color: var(--warn); }
 .sw-galert { align-self: flex-start; font: 600 10px var(--mono); letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px; border: 1px solid #5a2a2a; color: var(--bad); }
+/* rules 34: re-form a suspended group (SwarmsPanel's ReformButton) */
+.sw-reform { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.sw-reform .ix-btn { padding: 2px 10px; }

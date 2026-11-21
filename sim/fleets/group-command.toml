@@ -1,0 +1,101 @@
+# Group command (sim/situations/group-command.toml; decision rules 34, docs/SWARMS.md, bd
+# murmur-4nik): 105 stand-ins at the Golden Gate in five swarms, built from the types stage 1 gave
+# group figures (sep_m, alt_band_m; sim/platforms.toml): the X10 quadcopter, the Puma fixed wing
+# and the Corsair USV, with two drifting sensor buoys that can take no order at all. Every member
+# is a stand-in, so the whole fleet runs in one engine process and is ready in seconds. Nothing
+# here is armed. uids follow the swarms in this order (sim/swarm.py, "swarms"): PICKET 1-60, CRISSY
+# 61-68, SEARCH 69-83, STRAIT 84-95, MARINA 96-105 (its eight Corsairs, then its two buoys).
+# Callsigns: SKY 1-68, PUMA 1-15, MARLIN 1-20 (the Corsair's), DRIFT 1-2.
+#
+# - PICKET, 60 X10s (SKY 1-60) on Crissy Field by the beach (Saturation's PICKET-1 field, on the
+#   baked grid at the ground's height), for a group orbit of 180 m east of the bridge's south
+#   tower: 60 slots 18.8 m apart, one layer.
+# - CRISSY, 8 X10s (SKY 61-68) on the field's west end (Saturation's PICKET-8 field), for an
+#   agent's small orbit off Crissy Field, the group that later falls below its minimum.
+# - SEARCH, 15 Pumas (PUMA 1-15) aloft west of the bridge, 420 to 480 m up over the strait: a
+#   stand-in fixed wing that starts aloft glides until its first order, which comes some 30 s in.
+#   Their LOS radio reaches the strait west of the bridge from Crissy Field's mast from about 300 m
+#   (lower, the Presidio's bluffs hide it: a first run's lanes laid out from the catalog's 80 m
+#   cruise lost six of them).
+# - STRAIT, 12 Corsair-class USVs (MARLIN 1-12) holding mid-channel just east of the bridge, for a
+#   group transit to a block off the Presidio shore west of it, along a route that runs over Fort
+#   Point: the planner (rules 22) routes each member round it, and each way home from the block is
+#   open water, as the domain rule judges a return straight (a first layout, from Horseshoe Bay,
+#   had every way home over Lime Point and was refused whole). Their way south to the route's start
+#   passes 200 m west of PICKET's ring, not under it.
+# - MARINA, 8 Corsairs (MARLIN 13-20) and 2 drifting sensor buoys (DRIFT 1-2) moored off the
+#   Marina: one selection, two kinds, for an order some of it cannot take (a buoy has no
+#   propulsion and takes no command).
+title = "Group command: 105 stand-ins in five swarms at the Golden Gate"
+
+[[swarm]]
+id = "PICKET"
+name = "Bridge ring"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 60
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, by the beach
+center = { lat = 37.80594, lon = -122.46730 }
+columns = 10
+spacing_m = 8
+alt_m = 2
+
+[[swarm]]
+id = "CRISSY"
+name = "Crissy Field watch"
+role = "picket"
+color = "#a0dc78"
+platform = "x10"
+count = 8
+sim = "standin"
+cruise_alt_m = 60
+layout = "block"                     # Crissy Field, west end
+center = { lat = 37.80779, lon = -122.47029 }
+columns = 4
+spacing_m = 8
+alt_m = 4
+
+[[swarm]]
+id = "SEARCH"
+name = "Gate lanes"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 15
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"                      # aloft over the strait west of the bridge, heading north
+from = { lat = 37.8030, lon = -122.5220 }
+to = { lat = 37.8210, lon = -122.5220 }
+alt_m = [420, 480]
+
+[[swarm]]
+id = "STRAIT"
+name = "Strait block"
+role = "surface"
+color = "#4fd1c5"
+platform = "corsair"
+count = 12
+sim = "standin"
+moored = true                        # held where they are (the current) until each first arms
+layout = "block"                     # mid-channel just east of the bridge, in 100 m of water
+center = { lat = 37.81850, lon = -122.47550 }
+columns = 4
+spacing_m = 30
+
+[[swarm]]
+id = "MARINA"
+name = "Marina craft"
+role = "surface"
+color = "#ff8c69"
+mix = [{ platform = "corsair", count = 8 }, { platform = "buoy", count = 2 }]
+count = 10
+sim = "standin"
+moored = true                        # tied up off the Marina until each first arms
+layout = "block"                     # off the Marina, in 15 to 20 m of water
+center = { lat = 37.81050, lon = -122.44000 }
+columns = 5
+spacing_m = 30

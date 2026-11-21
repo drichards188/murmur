@@ -53,7 +53,7 @@ def test_every_situation_loads():
         assert sit.title and sit.brief, p
         # fault-drill and world v3's watches run in the headless simulator only (the faults are the
         # simulator's; so is a world's conditions draw)
-        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", *WEAPON_SITUATIONS, "tutorial", "fault-drill", "swarm-saturation", "swarm-saturation-packed", "shore-battery", "road-mines", "hammerhead-line", *WATCHES_V3):
+        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", *WEAPON_SITUATIONS, "tutorial", "fault-drill", "swarm-saturation", "swarm-saturation-packed", "shore-battery", "road-mines", "hammerhead-line", "group-command", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
     for name in WATCHES_V3:
@@ -206,6 +206,13 @@ BASE = 'title = "T"\nbrief = "B"\nfleet = "sim/fleets/harbor-watch.toml"\n'
         BASE + 'autoplay = "fast"\n',
         BASE + 'order = 5\n',
         BASE + '[[order]]\ntask = "hold"\nvehicles = {uids = ["one"]}\n',
+        # rules 34: a group order's spec takes its own keys only; a transit needs its route; a
+        # track has no group meaning; a step's swarm is one of the fleet's
+        BASE + '[[order]]\ntask = "hold"\nvehicles = {uids = [1, 2]}\ngroup = {spread = "here", formation = "wedge"}\n',
+        BASE + '[[order]]\ntask = "hold"\nvehicles = {uids = [1, 2]}\ngroup = "ring"\n',
+        BASE + '[[order]]\ntask = "transit"\nvehicles = {uids = [1, 2]}\n',
+        BASE + '[[order]]\ntask = "track"\nvehicles = {uids = [1, 2]}\ntarget = 3\ngroup = {}\n',
+        BASE + '[[step]]\nkind = "propose"\ntask = "orbit"\nvehicles = {swarm = "NOPE"}\ncenter = [-122.47, 37.81]\nradius_m = 100\n',
         # a flood's templates take a proposal's keys only
         BASE + '[[step]]\nkind = "flood"\ncount = 2\ntemplates = [{task = "orbit", vehicles = {callsign = "PUMA 1"}, center = {track = {select = "most_suspicious"}}, radius_m = 500, operator = "op-1"}]\n',
         BASE + '[[step]]\nkind = "flood"\ncount = 2\ntemplates = ["orbit"]\n',
@@ -1278,6 +1285,39 @@ def _runner(tmp_path: Path, **modes: Any) -> Any:
         return R.Runner(hw, S.resolve_modes(hw, **modes), {}, {"checked": False}, out_dir=tmp_path / "run")
 
     return asyncio.run(make())
+
+
+def test_a_group_order_carries_its_spec_and_the_summary_folds_its_members(tmp_path: Path):
+    """Decision rules 34: an opening order's `group` goes to the operator API as the dry run's and
+    the submission's `group`. The summary lists each group order once, its member orders folded by
+    state (never a line each), its re-forms and suspensions from the audit log, and how many orders
+    a person was asked to decide (a member order's approval is its group's, never asked)."""
+    from eval import situation_run as R
+
+    runner = _runner(tmp_path, operator="autoplay", ai="none")
+    runner.bridge = OrderBridge()
+    spec = {"swarm": "PICKET", "min_members": 1}
+    o = S.Order(id="ring", task="orbit", vehicles={"uids": [4, 5]}, params={"center": [-122.47, 37.814], "radius_m": 180, "extra": {"group": spec}})
+    vehicles = [{"uid": 4, "identity": {"callsign": "SKY 4"}}, {"uid": 5, "identity": {"callsign": "SKY 5"}}]
+    rec = asyncio.run(runner.issue_order(o, vehicles, SetupAgent()))
+    assert rec["by"] == "op-setup" and rec["group"] == spec
+    assert [(c[0], c[1].get("group")) for c in runner.bridge.calls] == [("/api/intents/preview", spec), ("/api/intents", spec)]
+    groups = {
+        1: {"id": 1, "kind": "orbit", "uids": ["4", "5"], "group": {"swarm": "PICKET", "spread": "ring", "min_members": 1},
+            "source": {"id": "op-setup"}, "policy": {"tier": "auto", "rule": "default"}, "state": "done"},
+        9: {"id": 9, "kind": "orbit", "uids": ["6", "7"], "group": {"spread": "ring", "min_members": 2}, "source": {"id": "agent-scripted"},
+            "policy": {"tier": "human", "rule": "agent-tasking"}, "approval": {"by": "op-auto"}, "state": "dispatched"},
+    }
+    members = [{"id": 2, "parent": 1, "state": "done"}, {"id": 3, "parent": 1, "state": "done"}, {"id": 4, "parent": 1, "state": "superseded"},
+               {"id": 10, "parent": 9, "state": "dispatched", "policy": {"tier": "human"}}]
+    events = [{"type": "group.reformed", "intent": 1}, {"type": "group.reformed", "intent": 1}, {"type": "group.suspended", "intent": 9}]
+    lines = R.group_lines({**groups, **{m["id"]: m for m in members}}, members, events)
+    assert lines[0] == "  group orders (decision rules 34): 2, with 4 member orders"
+    assert lines[1].startswith("    intent 1 orbit, swarm PICKET, 2 selected, ring, minimum 1, from op-setup (by policy, tier default): done")
+    assert lines[1].endswith("member orders 2 done, 1 superseded; reformed 2x")
+    assert "(approved by op-auto): dispatched; member orders 1 dispatched; suspended 1x" in lines[2]
+    assert lines[3] == "  orders a person was asked to decide: 1 (intents 9)"
+    assert R.group_lines({1: {"id": 1, "kind": "hold", "uids": ["1"]}}, [], []) == []
 
 
 def test_opening_orders_never_authorize_a_human_tier(tmp_path: Path):

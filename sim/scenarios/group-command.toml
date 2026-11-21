@@ -1,0 +1,62 @@
+# Group command's contacts (sim/situations/group-command.toml): the day's weather and a quiet
+# harbor. A situation about supervising our own fleet, so nothing here is hostile, unknown or
+# armed: three ferries on their usual runs, each with its AIS (copied from
+# sim/scenarios/golden-gate.toml), away from the groups' stations. They are here for two reasons:
+# the contacts process needs a contact to run, and it is what serves the map its weather. (A car
+# carrier at anchor south of the Bay Bridge, also tried, was shown suspect: too far for its AIS to
+# be heard, a ship our sensors classified on their own; not what this situation is about.)
+# Format: crates/murmur-contacts/src/scenario.rs; points are [lon, lat].
+title = "Group command: a quiet harbor"
+seed = 34
+
+[sensing]
+model = "physical"
+misclassification_rate = 0.02
+terrain = "sim/headless/terrain/golden-gate.grid.gz"
+
+[sensing.weather]
+# The archive's hourly rows for 14 June 2026, 19:00 and 20:00 UTC, at the Golden Gate's 20 points
+# (HRRR through Open-Meteo, pinned for Fog watch: sim/headless/weather/README.md), as they were:
+# no timeline, so no scripted fog. 19:00 UTC (noon local) is the archive's clearest hour that day
+# at the Gate: 13 km of visibility, 38 % cloud, a 4.5 m/s west wind.
+archive = "sim/headless/weather/fog-watch.json"
+
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+start_s = 240
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-oakland"
+name = "Oakland ferry (Ferry Building to Jack London Square)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 11
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.3750, 37.7990], [-122.3550, 37.7980], [-122.3300, 37.7950], [-122.2900, 37.7900]]
+reverse = true
+dwell_s = 480
+ais = { mmsi = "366999103", name = "MV ESTUARY", ship_type = "passenger" }

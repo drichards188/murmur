@@ -350,6 +350,36 @@ export function strengthLine(g: Pick<GroupInForce, 'intent' | 'kind' | 'strength
   return parts.join(', ')
 }
 
+/** Re-form a suspended group (docs/SWARMS.md 4.3, bd murmur-ge6t): a new group order, the same task
+ *  to the members heard, as `POST /api/intents` takes it; its approval is the submitter's own, as
+ *  any operator order's is. The members heard are the selection less those dropped and neither back
+ *  nor heard now (`heardNow`, the console's own link state: a suspended group is not re-formed, so
+ *  a dropped member heard again may not be listed back); the spec is the group's (its spread, layer
+ *  base, wait, lanes, re-forming, label) without its minimum, which the engine fills for the new
+ *  selection. Null when none is heard. */
+export function reformBody(
+  intent: { id: number; kind: string; params: { center?: LngLat; radius_m?: number; route?: LngLat[] }; uids: string[]; group?: GroupSpec },
+  g: Pick<GroupInForce, 'dropped' | 'back'>,
+  heardNow: (uid: string) => boolean = () => false,
+): Record<string, unknown> | null {
+  const back = new Set((g.back ?? []).map(String))
+  const gone = new Set(Object.keys(g.dropped ?? {}).filter((u) => !back.has(u) && !heardNow(u)))
+  const uids = intent.uids.filter((u) => !gone.has(u)).map(Number)
+  if (!uids.length) return null
+  const { min_members: _min, ...spec } = intent.group ?? {}
+  const p = intent.params
+  const body: Record<string, unknown> = {
+    task: intent.kind,
+    uids,
+    rationale: `Re-form of group order i${intent.id}, suspended below its minimum: the same task to the ${uids.length} of its ${intent.uids.length} heard`,
+  }
+  if (uids.length > 1) body.group = spec
+  if (p.center) body.center = p.center
+  if (p.radius_m != null) body.radius = p.radius_m
+  if (p.route) body.route = p.route
+  return body
+}
+
 /** A group's tone: bad suspended or below its minimum, warn with a refused re-form or drops. */
 export function strengthTone(g: { strength: number; min: number; suspended: boolean; dropped: number; refused?: string | null }): 'ok' | 'warn' | 'bad' {
   if (g.suspended || g.strength < g.min) return 'bad'
