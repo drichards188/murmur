@@ -10,7 +10,7 @@
 // goes only round members heard; members crowding each other are a pile; chips that would overlap
 // stack; a cluster tile names its groups. Throws on the first failure, prints "swarms: ok" otherwise.
 import type { Alert } from './decisions'
-import { causeLines, chipStatus, convexHull, GROUP_STATE, groupState, shownTaskings, taskingGroup, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
+import { alarmKey, causeLines, chipStatus, convexHull, GROUP_STATE, groupState, heldAlarms, shownTaskings, stepAlarms, taskingGroup, type GroupMark, type GroupMarks, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
 import { cellChipText, cellGroups, chipSize, groupsOnScreen, stackChips, tileOf, type MemberOnScreen } from './groupScreen.ts'
 import { textWidth } from './declutter.ts'
 import type { GroupInForce } from './groupOrders.ts'
@@ -135,6 +135,23 @@ check(shownTaskings(tks, marks.ofUid, new Set(), new Set(), false).map((t) => t.
 check(shownTaskings(tks, marks.ofUid, new Set(['PICKET-1']), new Set(), false).map((t) => t.id).join() === '1,3,4', 'an open group shows its orders')
 check(shownTaskings(tks, marks.ofUid, new Set(), new Set([5]), false).map((t) => t.id).join() === '2,3,4', "a selected member shows its own order")
 check(shownTaskings(tks, marks.ofUid, new Set(), new Set(), true).length === 4, 'Space shows them all')
+
+// group alarms: raised once held, a blip never; the worst first; dismissed until a new one
+const mk = (id: string, over: Partial<GroupMark>): GroupMark => ({ ...marks.list[0], id, suspended: false, under: false, refused: null, ...over })
+const am = (list: GroupMark[]): GroupMarks => ({ list, byId: new Map(list.map((m) => [m.id, m])), ofUid: new Map() })
+const blip = [mk('A', { under: true })]
+let seen = stepAlarms(new Map(), blip, 1000)
+check(heldAlarms(seen, am(blip), 3000, new Set()).length === 0, 'an alarm not yet held is not raised')
+seen = stepAlarms(seen, [mk('A', {})], 3000)
+check(seen.size === 0, 'a blip that clears is forgotten')
+seen = stepAlarms(seen, blip, 4000)
+check(seen.get('A')!.since === 4000 && heldAlarms(stepAlarms(seen, blip, 9000), am(blip), 9000, new Set()).length === 1, 'raised once held five seconds, from its own start')
+const two = [mk('A', { refused: 'no room' }), mk('B', { suspended: true })]
+const s2 = stepAlarms(new Map(), two, 0)
+const held = heldAlarms(s2, am(two), 6000, new Set())
+check(held.map((h) => `${h.m.id}:${h.seen.alarm}`).join() === 'B:suspended,A:refused', 'the worst first')
+check(heldAlarms(s2, am(two), 6000, new Set([alarmKey('B', s2.get('B')!)])).map((h) => h.m.id).join() === 'A', 'a dismissed alarm stays down')
+check(stepAlarms(s2, [mk('B', { under: true })], 7000).get('B')!.since === 7000, 'a changed alarm starts again')
 
 // outlines: round the members heard now, a stale one left out
 const heard = new Map<number, LngLat>([[1, [-122.48, 37.82]], [2, [-122.46, 37.82]], [3, [-122.47, 37.84]]])

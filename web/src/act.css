@@ -32,3 +32,10 @@
 @media (prefers-reduced-motion: reduce) {
   .act-status { animation: none; }
 }
+/* a group's alarm (bd murmur-4nik): under strength or suspended in the red, a refused re-form in the
+   warning amber; under the other banners when they are up */
+.act-status.group-status .gcode { vertical-align: 1px; }
+.act-status.group-status.warn { border-color: var(--warn); background: rgba(36, 28, 10, .96); color: #fff3d6; box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(242, 193, 78, .3); animation: none; }
+.act-status.group-status.warn strong { color: var(--warn); }
+.act-status.group-status.warn button { border-color: var(--warn); background: #3a2e10; }
+.act-status.below2 { top: 116px; }

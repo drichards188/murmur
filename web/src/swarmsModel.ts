@@ -365,6 +365,59 @@ export function shownTaskings<T extends { ops: readonly { uid: number }[] }>(tas
   })
 }
 
+// ---- group alarms on the map's banner, once they have held --------------------------------------
+
+export type GroupAlarm = 'suspended' | 'under' | 'refused'
+
+/** An alarm's banner head and tone, the worst first. */
+export const GROUP_ALARM: Record<GroupAlarm, { head: string; tone: Tone; rank: number }> = {
+  suspended: { head: 'GROUP SUSPENDED', tone: 'bad', rank: 0 },
+  under: { head: 'GROUP UNDER STRENGTH', tone: 'bad', rank: 1 },
+  refused: { head: 'GROUP RE-FORM REFUSED', tone: 'warn', rank: 2 },
+}
+
+/** how long a group's alarm must hold before the banner raises it, ms: a link's blip that drops a
+ *  member for a second or two and back never flashes it */
+export const ALARM_HOLD_MS = 5000
+
+export interface AlarmSeen {
+  alarm: GroupAlarm
+  /** when it began, bridge ms */
+  since: number
+}
+
+/** A group's alarm now: its order suspended below its minimum, under its minimum, or its last
+ *  re-form refused. */
+export function groupAlarm(m: Pick<GroupMark, 'suspended' | 'under' | 'refused'>): GroupAlarm | null {
+  return m.suspended ? 'suspended' : m.under ? 'under' : m.refused ? 'refused' : null
+}
+
+/** Each group's alarm and since when, from the last summary's and this one's (`nowT`): an alarm
+ *  that goes on keeps its start, a new or changed one starts now, a gone one is dropped. */
+export function stepAlarms(prev: ReadonlyMap<string, AlarmSeen>, marks: readonly GroupMark[], nowT: number): Map<string, AlarmSeen> {
+  const out = new Map<string, AlarmSeen>()
+  for (const m of marks) {
+    const alarm = groupAlarm(m)
+    if (!alarm) continue
+    const was = prev.get(m.id)
+    out.set(m.id, was && was.alarm === alarm ? was : { alarm, since: nowT })
+  }
+  return out
+}
+
+/** A held alarm's key, for dismissing that one (a new one of the group comes up again). */
+export const alarmKey = (id: string, a: AlarmSeen) => `${id}:${a.alarm}:${a.since}`
+
+/** The alarms held ALARM_HOLD_MS or more and not dismissed, the worst and oldest first. */
+export function heldAlarms(seen: ReadonlyMap<string, AlarmSeen>, marks: GroupMarks, nowT: number, dismissed: ReadonlySet<string>): { m: GroupMark; seen: AlarmSeen }[] {
+  const out: { m: GroupMark; seen: AlarmSeen }[] = []
+  for (const [id, a] of seen) {
+    const m = marks.byId.get(id)
+    if (m && nowT - a.since >= ALARM_HOLD_MS && !dismissed.has(alarmKey(id, a))) out.push({ m, seen: a })
+  }
+  return out.sort((x, y) => GROUP_ALARM[x.seen.alarm].rank - GROUP_ALARM[y.seen.alarm].rank || x.seen.since - y.seen.since)
+}
+
 // ---- the group strip (GroupStrip.tsx): each group's state in a word -----------------------------
 
 export type GroupState = 'suspended' | 'under' | 'reforming' | 'station' | 'moving' | 'returning' | 'idle' | 'lost' | 'damaged'

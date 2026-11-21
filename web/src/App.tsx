@@ -66,7 +66,7 @@ import { buildSwarmLayers, useSwarms } from './swarms'
 import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
 import { HiddenLegend, type HiddenRow } from './HiddenLegend'
 import type { LabelStats } from './declutter'
-import { groupMarks, groupState, missingLines, selectedSwarm, shownTaskings, swarmOf, swarmOutlines, unfolded, type GroupState } from './swarmsModel'
+import { alarmKey, GROUP_ALARM, groupMarks, groupState, heldAlarms, missingLines, selectedSwarm, shownTaskings, stepAlarms, swarmOf, swarmOutlines, unfolded, type AlarmSeen, type GroupState } from './swarmsModel'
 import { GroupStrip } from './GroupStrip'
 import { latestOps, vehicleState } from './exceptions'
 import type { GroupsOnMap } from './GroupChips'
@@ -764,6 +764,14 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     }
     return out
   }, [marks, allVehicles, state?.taskings, damagedUids, swarmFeed.doc])
+  // group alarms (bd murmur-4nik): under strength, suspended, a re-form refused, raised on the map's
+  // banner once held ALARM_HOLD_MS (a link's blip never flashes one), the worst first
+  const [alarmSeen, setAlarmSeen] = useState<ReadonlyMap<string, AlarmSeen>>(new Map())
+  const [alarmDismissed, setAlarmDismissed] = useState<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    setAlarmSeen((prev) => stepAlarms(prev, marks.list, swarmFeed.doc?.t ?? 0))
+  }, [marks, swarmFeed.doc])
+  const groupAlarms = useMemo(() => heldAlarms(alarmSeen, marks, swarmFeed.doc?.t ?? 0, alarmDismissed), [alarmSeen, marks, swarmFeed.doc, alarmDismissed])
   // the strip's click: the map centred on the group's members, the group lit up for a moment
   const showGroup = useCallback(
     (id: string) => {
@@ -926,7 +934,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // header and the Review's, its urgent item included (bd murmur-76gv). The topmost drawer, as
   // they open over each other in this order.
   const drawer = showSwarms ? 'swarms' : showQueue ? 'queue' : showInbox ? 'inbox' : null
-  const banners = flyingImpact?.munition || visibleImpact || weaponBan || actBanner ? (
+  const groupBan = groupAlarms[0]
+  const bannersAbove = [flyingImpact?.munition || visibleImpact, weaponBan, actBanner].filter(Boolean).length
+  const banners = flyingImpact?.munition || visibleImpact || weaponBan || actBanner || groupBan ? (
     <>
       {flyingImpact?.munition && (
         <div className="impact-status" role="status" data-tutorial="impact-status">
@@ -964,6 +974,26 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             {actBanner.others ? ` · ${actBanner.others} more in the last minute` : ''}</span>
           <button onClick={() => focusAct(actBanner.d)}>View</button>
           <button className="act-dismiss" onClick={() => setActsDismissedAt(impactNowMs)} title="Take the acts drawn so far off the map (the Inbox's Review keeps them)">Dismiss</button>
+        </div>
+      )}
+      {groupBan && (
+        <div className={`act-status group-status ${GROUP_ALARM[groupBan.seen.alarm].tone}${bannersAbove ? ` below${bannersAbove > 1 ? '2' : ''}` : ''}`} role="status" data-group={groupBan.m.id}>
+          <span>
+            <strong>{GROUP_ALARM[groupBan.seen.alarm].head}</strong>
+            {' · '}
+            <span className="gcode" style={{ background: groupBan.m.color, color: groupBan.m.ink }}>
+              {groupBan.m.code}
+            </span>{' '}
+            {groupBan.m.id} {groupBan.m.doing}
+            {' · '}
+            {groupBan.seen.alarm === 'refused' ? `last re-form refused: ${groupBan.m.refused}` : groupBan.m.parts[0]?.text}
+            {' · '}seen {span(Math.max(0, (swarmFeed.doc?.t ?? 0) - groupBan.seen.since))}
+            {groupAlarms.length > 1 ? ` · ${groupAlarms.length - 1} more group${groupAlarms.length > 2 ? 's' : ''}` : ''}
+          </span>
+          <button onClick={() => showGroup(groupBan.m.id)}>View</button>
+          <button className="act-dismiss" onClick={() => setAlarmDismissed((d) => new Set([...d, alarmKey(groupBan.m.id, groupBan.seen)]))} title="Take this alarm off the banner (the Swarms drawer and the Inbox keep it; a new one comes up again)">
+            Dismiss
+          </button>
         </div>
       )}
     </>
