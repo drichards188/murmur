@@ -1,18 +1,9 @@
-import { agoWords, type Blocking, type Pending, stripLine, waited } from './blocking'
+import { type Blocking, type Pending, stripLine, waited } from './blocking'
 import './blocking.css'
-import { FLAG_LABEL, type FlagKind } from './ident'
+import { pendingLine } from './pendingLine'
 
 /** at most this many pending lines; the rest counted, the Review one click away */
 const PENDING_LINES = 3
-
-/** A pending item in words: "T-0008 declared hostile by rule 2 min ago", "conflicting evidence on
- *  T-0012, T-0013, raised 4 min ago". */
-function pendingLine(p: Pending, nowMs: number): string {
-  const ago = agoWords(p.t, nowMs)
-  if (p.kind === 'declaration') return `${p.tracks[0]} declared ${p.affiliation ?? 'hostile'} by rule ${ago} ago`
-  const what = (p.flag && FLAG_LABEL[p.flag as FlagKind]) || 'flagged'
-  return `${what} on ${p.tracks.join(', ')}, raised ${ago} ago`
-}
 
 /** The calm standing pointer under the top bar (docs/research/saturation-display.md R4): one line
  *  for each rule declaration awaiting confirmation and each open review flag, oldest first, while

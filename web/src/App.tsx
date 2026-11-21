@@ -17,7 +17,7 @@ import type { Reveal } from './reveal'
 import { isTrackStale, type Track, trackPredicted } from './tracks'
 import { VehicleDetailsWhenFull } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
-import { callsign, DOMAIN_LABEL, domainOf, isStale, vehicleNamer } from './types'
+import { callsign, DOMAIN_LABEL, domainOf, isStale, vehicleNamer, type Tasking } from './types'
 import { useBridge } from './useBridge'
 import { ErrorBoundary } from './ErrorBoundary'
 import { EngagePanel } from './EngagePanel'
@@ -66,7 +66,7 @@ import { buildSwarmLayers, useSwarms } from './swarms'
 import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
 import { HiddenLegend, type HiddenRow } from './HiddenLegend'
 import type { LabelStats } from './declutter'
-import { alarmKey, GROUP_ALARM, groupMarks, groupState, heldAlarms, missingLines, selectedSwarm, shownTaskings, stepAlarms, swarmOf, swarmOutlines, unfolded, type AlarmSeen, type GroupState } from './swarmsModel'
+import { alarmKey, GROUP_ALARM, groupMarks, groupState, heldAlarms, missingLines, selectedSwarm, shownTaskings, stepAlarms, swarmOf, swarmOutlines, unfolded, type AlarmSeen, type GroupState, type Swarm } from './swarmsModel'
 import { GroupStrip } from './GroupStrip'
 import { latestOps, vehicleState } from './exceptions'
 import type { GroupsOnMap } from './GroupChips'
@@ -74,6 +74,7 @@ import type { MapScreen } from './aloft'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
 import { useGroups } from './useGroups'
 import { groupOfSelection } from './groups'
+import { Sitrep } from './Sitrep'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -104,6 +105,10 @@ function readInvite(): { operator: string; code: string } | null {
   window.history.replaceState(null, '', window.location.pathname + window.location.search)
   return { operator: decodeURIComponent(m[1]), code: m[2] }
 }
+
+const NO_TASKINGS: Tasking[] = []
+const NO_SWARMS: Swarm[] = []
+const NO_TRACKS: Track[] = []
 
 /** No vehicles (the groups panel while closed). */
 const NO_UIDS: ReadonlySet<number> = new Set()
@@ -176,6 +181,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // swarms (docs/DECISIONS.md, "Swarm units"): the Swarms drawer, the card to bring into view in
   // it (a chip clicked on the map), and the group whose chip or card is under the pointer
   const [showSwarms, setShowSwarms] = useState(false)
+  // the situation report (Sitrep.tsx): read-only, a wide drawer
+  const [showSitrep, setShowSitrep] = useState(false)
   const [swarmFocus, setSwarmFocus] = useState<{ id: string; n: number } | null>(null)
   const [hoverGroup, setHoverGroup] = useState<string | null>(null)
   // Space held: every group's orders drawn (bd murmur-4nik; else a group's only while it is
@@ -962,7 +969,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // them at its head instead, under its own header: centred on the map they sat over that
   // header and the Review's, its urgent item included (bd murmur-76gv). The topmost drawer, as
   // they open over each other in this order.
-  const drawer = showSwarms ? 'swarms' : showQueue ? 'queue' : showInbox ? 'inbox' : null
+  const drawer = showSitrep ? 'sitrep' : showSwarms ? 'swarms' : showQueue ? 'queue' : showInbox ? 'inbox' : null
   const groupBan = groupAlarms[0]
   const bannersAbove = [flyingImpact?.munition || visibleImpact, weaponBan, actBanner].filter(Boolean).length
   const banners = flyingImpact?.munition || visibleImpact || weaponBan || actBanner || groupBan ? (
@@ -1051,6 +1058,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
         <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
+        <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} onClick={() => setShowSitrep((v) => !v)} title="The situation report: the whole picture, top-down, read-only">
+          Sitrep
+        </button>
         {(hasSwarms || swarmFeed.status === 'ok' || groupsApi.status === 'ok') && (
           <SwarmsButton feed={swarmFeed} mine={hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0 ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setShowSwarms((v) => !v)} />
         )}
@@ -1254,6 +1264,45 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             }}
             onClose={() => setShowQueue(false)}
           />
+          </ErrorBoundary>
+        )}
+        {showSitrep && (
+          <ErrorBoundary name="Sitrep" className="floating">
+            <Sitrep
+              banners={drawer === 'sitrep' ? banners : null}
+              vehicles={vehicles}
+              taskings={state?.taskings ?? NO_TASKINGS}
+              swarms={swarmFeed.doc?.swarms ?? NO_SWARMS}
+              marks={marks}
+              groups={groupsApi.groups}
+              tracks={tracks?.tracks ?? NO_TRACKS}
+              decisions={decisions}
+              damaged={damagedUids}
+              now={now}
+              onVehicle={(uid) => {
+                // its details, as a click on its fleet row opens them (the map flies there); they
+                // open over the map's left edge, under this wide drawer, so the report gives way
+                setShowSitrep(false)
+                setDetailsUid(uid)
+                setFollowing(true)
+                setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
+              }}
+              onWaiting={(id) => {
+                // the card is in the Inbox: this report gives way to it
+                setShowSitrep(false)
+                openWaiting(id)
+              }}
+              onIntent={(id) => {
+                setShowSitrep(false)
+                openIntent(id)
+              }}
+              onTrack={revealTrackId}
+              onSelect={(uids) => {
+                setSelected(new Set(uids))
+                revealVehicles(uids)
+              }}
+              onClose={() => setShowSitrep(false)}
+            />
           </ErrorBoundary>
         )}
         {showSwarms && (
