@@ -258,6 +258,12 @@ export interface GroupMark {
   tone: Tone
   /** its group order is suspended below its minimum: drawn apart from merely under strength */
   suspended: boolean
+  /** its group order is under its minimum, not (yet) suspended */
+  under: boolean
+  /** its group order's last re-form was refused: why */
+  refused: string | null
+  /** when its group order last re-formed (bridge ms), if it has */
+  reformedT: number | null
   /** the group order in force over most of it (rules 34), for the chip's hover: its members dropped
    *  (uid -> why) and back */
   dropped: [number, string][]
@@ -280,10 +286,13 @@ const worse = (a: Tone, b: Tone): Tone => (a === 'bad' || b === 'bad' ? 'bad' : 
  *  its minimum), "41/60 · under min 45" or "SUSPENDED · 5 of min 7"; members back and dropped when
  *  any; else how many run its largest task; and how many have lost their link. Never a bar: the
  *  numbers, and the chip's hover names who is missing and why. */
-export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pick<GroupMark, 'doing' | 'parts' | 'tone' | 'suspended' | 'dropped' | 'back' | 'intent'> {
+export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pick<GroupMark, 'doing' | 'parts' | 'tone' | 'suspended' | 'under' | 'refused' | 'reformedT' | 'dropped' | 'back' | 'intent'> {
   const parts: ChipPart[] = []
   let tone: Tone = 'ok'
   let suspended = false
+  let under = false
+  let refused: string | null = null
+  let reformedT: number | null = null
   let doing = 'no order'
   let dropped: [number, string][] = []
   let back: number[] = []
@@ -300,6 +309,7 @@ export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pic
       parts.push({ text: `SUSPENDED · ${g.strength} of min ${g.min}`, tone: 'bad' })
     } else if (g.strength < g.min) {
       tone = 'bad'
+      under = true
       parts.push({ text: `${g.strength}/${sel} · under min ${g.min}`, tone: 'bad' })
     } else {
       tone = g.strength < sel ? 'warn' : 'ok'
@@ -312,6 +322,8 @@ export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pic
     }
     dropped = Object.entries(whole?.dropped ?? {}).map(([u, why]) => [Number(u), why])
     back = whole?.back ?? []
+    refused = g.refused || whole?.refused || null
+    reformedT = g.reforms > 0 ? (whole?.last_t ?? null) : null
   } else {
     const t = [...(s.tasks ?? [])].sort((a, b) => b.count - a.count)[0]
     if (t) {
@@ -324,7 +336,44 @@ export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pic
     parts.push({ text: `${s.lost_link} lost link`, tone: t === 'ok' ? 'warn' : t })
     tone = worse(tone, t === 'ok' ? 'warn' : t)
   }
-  return { doing, parts, tone, suspended, dropped, back, intent }
+  return { doing, parts, tone, suspended, under, refused, reformedT, dropped, back, intent }
+}
+
+// ---- the group strip (GroupStrip.tsx): each group's state in a word -----------------------------
+
+export type GroupState = 'suspended' | 'under' | 'reforming' | 'station' | 'moving' | 'returning' | 'idle' | 'lost' | 'damaged'
+
+/** A state's icon and word, as the strip shows them (never colour alone). */
+export const GROUP_STATE: Record<GroupState, { icon: string; word: string; tone: Tone }> = {
+  suspended: { icon: '⏸', word: 'suspended', tone: 'bad' },
+  under: { icon: '▼', word: 'under strength', tone: 'bad' },
+  reforming: { icon: '↻', word: 're-forming', tone: 'warn' },
+  station: { icon: '●', word: 'on station', tone: 'ok' },
+  moving: { icon: '➜', word: 'moving', tone: 'ok' },
+  returning: { icon: '↩', word: 'returning', tone: 'ok' },
+  idle: { icon: '○', word: 'idle', tone: 'ok' },
+  lost: { icon: '✕', word: 'lost link', tone: 'bad' },
+  damaged: { icon: '✕', word: 'damaged', tone: 'bad' },
+}
+
+/** how long after a re-form the strip says "re-forming", ms */
+export const REFORMING_MS = 30_000
+
+/** A group's state in a word: its group order's (suspended, under strength, re-formed in the last
+ *  REFORMING_MS of `nowT`), else what most of its members do (counted by exceptions.ts's
+ *  vehicleState: on station, moving, returning, idle, lost link, damaged). */
+export function groupState(m: Pick<GroupMark, 'suspended' | 'under' | 'reformedT'>, counts: Partial<Record<Exclude<GroupState, 'suspended' | 'under' | 'reforming'>, number>>, nowT: number): GroupState {
+  if (m.suspended) return 'suspended'
+  if (m.under) return 'under'
+  if (m.reformedT != null && nowT - m.reformedT < REFORMING_MS) return 'reforming'
+  let best: GroupState = 'idle'
+  let n = 0
+  for (const s of ['station', 'moving', 'returning', 'idle', 'lost', 'damaged'] as const)
+    if ((counts[s] ?? 0) > n) {
+      best = s
+      n = counts[s] ?? 0
+    }
+  return best
 }
 
 /** Every swarm's marks from one summary: its code, colour (by its place in the summary) and chip. */

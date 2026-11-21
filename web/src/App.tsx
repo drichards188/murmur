@@ -66,7 +66,9 @@ import { buildSwarmLayers, useSwarms } from './swarms'
 import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
 import { HiddenLegend, type HiddenRow } from './HiddenLegend'
 import type { LabelStats } from './declutter'
-import { groupMarks, missingLines, selectedSwarm, swarmOf, swarmOutlines, unfolded } from './swarmsModel'
+import { groupMarks, groupState, missingLines, selectedSwarm, swarmOf, swarmOutlines, unfolded, type GroupState } from './swarmsModel'
+import { GroupStrip } from './GroupStrip'
+import { latestOps, vehicleState } from './exceptions'
 import type { GroupsOnMap } from './GroupChips'
 import type { MapScreen } from './aloft'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
@@ -171,6 +173,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showSwarms, setShowSwarms] = useState(false)
   const [swarmFocus, setSwarmFocus] = useState<{ id: string; n: number } | null>(null)
   const [hoverGroup, setHoverGroup] = useState<string | null>(null)
+  // a group lit up for a moment after the group strip centred the map on it
+  const [flashGroup, setFlashGroup] = useState<string | null>(null)
+  useEffect(() => {
+    if (!flashGroup) return
+    const t = window.setTimeout(() => setFlashGroup(null), 4000)
+    return () => window.clearTimeout(t)
+  }, [flashGroup])
   const [inboxTab, setInboxTab] = useState<InboxTab>('inbox')
   const [inboxSel, setInboxSel] = useState<InboxSelection>(null)
   // evaluation instrumentation: a track opened is attributed to the selected inbox card only
@@ -289,8 +298,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     if (!marks.list.length) return []
     const heard = new Map<number, LngLat>()
     for (const v of allVehicles) if (v.position && !isStale(v) && marks.ofUid.has(v.uid)) heard.set(v.uid, v.position)
-    return swarmOutlines(marks, (uid) => heard.get(uid) ?? null, swarmSel, hoverGroup)
-  }, [marks, allVehicles, swarmSel, hoverGroup])
+    return swarmOutlines(marks, (uid) => heard.get(uid) ?? null, swarmSel, hoverGroup ?? flashGroup)
+  }, [marks, allVehicles, swarmSel, hoverGroup, flashGroup])
   // a group order's dry run (bd murmur-4nik): its slots drawn as ghosts in the group's colour when
   // its members are one group's
   const shownRoute = useMemo(() => {
@@ -306,7 +315,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     return {
       marks,
       selected: swarmSel,
-      hovered: hoverGroup,
+      hovered: hoverGroup ?? flashGroup,
       onHover: setHoverGroup,
       onSelect: (id) => {
         const m = marks.byId.get(id)
@@ -328,7 +337,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         return missingLines(m, lostNow, (u) => (byUid.has(u) ? callsign(byUid.get(u)!) : `vehicle ${u}`))
       },
     }
-  }, [marks, swarmSel, hoverGroup, allVehicles])
+  }, [marks, swarmSel, hoverGroup, flashGroup, allVehicles])
   const reachRings = useMemo(() => {
     const fields = minefieldFeatures(minefields.data)
     if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) {
@@ -713,6 +722,36 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // the fleet list's exceptions: a damaged vehicle (its inbox alert), one with an alert of its own
   const listAlerts = decisions?.inbox.alerts
   const damagedUids = useMemo(() => new Set((listAlerts ?? []).filter((a) => (a.kind as string) === 'damaged').map((a) => a.uid)), [listAlerts])
+  // the group strip (bd murmur-4nik): each group's state, its order's or what most of its members do
+  const groupStates = useMemo(() => {
+    const out = new Map<string, GroupState>()
+    if (!marks.list.length) return out
+    const latest = latestOps(state?.taskings ?? [])
+    const byUid = new Map(allVehicles.map((v) => [v.uid, v]))
+    for (const m of marks.list) {
+      const counts: Partial<Record<string, number>> = {}
+      for (const u of m.members) {
+        const v = byUid.get(u)
+        if (!v) continue
+        const st = vehicleState(v, latest, damagedUids)
+        counts[st] = (counts[st] ?? 0) + 1
+      }
+      out.set(m.id, groupState(m, counts, swarmFeed.doc?.t ?? 0))
+    }
+    return out
+  }, [marks, allVehicles, state?.taskings, damagedUids, swarmFeed.doc])
+  // the strip's click: the map centred on the group's members, the group lit up for a moment
+  const showGroup = useCallback(
+    (id: string) => {
+      const m = marks.byId.get(id)
+      if (!m) return
+      const members = new Set(m.members)
+      const pts = allVehicles.flatMap((v) => (members.has(v.uid) && v.position ? [v.position] : []))
+      if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: showSwarms || showQueue || showInbox ? 430 : 70 }))
+      setFlashGroup(id)
+    },
+    [marks, allVehicles, showSwarms, showQueue, showInbox],
+  )
   const alertedUids = useMemo(() => new Set(unfolded(listAlerts ?? []).map((a) => a.uid)), [listAlerts])
   // the full block of a track, lost contact or estimate under the pointer, while its label is not
   const mapTooltip = useCallback(
@@ -1045,6 +1084,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         </ErrorBoundary>
         {!drawer && banners}
         <HiddenLegend rows={hiddenRows} drawer={drawer != null} />
+        {groupsOnMap && (
+          <ErrorBoundary name="Group strip" className="floating">
+            <GroupStrip marks={marks.list} states={groupStates} selected={swarmSel} hovered={hoverGroup ?? flashGroup} onHover={setHoverGroup} onShow={showGroup} drawer={drawer != null} />
+          </ErrorBoundary>
+        )}
         {showGlobe && (
           <ErrorBoundary name="Globe" className="floating">
           <GlobeInset

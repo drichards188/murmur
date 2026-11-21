@@ -10,7 +10,7 @@
 // goes only round members heard; members crowding each other are a pile; chips that would overlap
 // stack; a cluster tile names its groups. Throws on the first failure, prints "swarms: ok" otherwise.
 import type { Alert } from './decisions'
-import { causeLines, chipStatus, convexHull, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
+import { causeLines, chipStatus, convexHull, GROUP_STATE, groupState, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
 import { cellChipText, cellGroups, chipSize, groupsOnScreen, stackChips, tileOf, type MemberOnScreen } from './groupScreen.ts'
 import { textWidth } from './declutter.ts'
 import type { GroupInForce } from './groupOrders.ts'
@@ -117,6 +117,15 @@ check(marks.byId.get('PICKET-1')!.color === GROUP_PALETTE[0].color, "marks: the 
 const pm = { ...marks.byId.get('PICKET-1')!, ...chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 45, dropped: 3, back: 1 })] }), inForce) }
 const lines = missingLines(pm, [3], (u) => `SKY ${u}`)
 check(lines.join('|') === '2 dropped (lost link): SKY 7, SKY 8|1 dropped (ended): SKY 9|1 back, waiting to rejoin: SKY 12|1 link lost now: SKY 3', `who is missing and why (${lines.join('|')})`)
+
+// the group strip's state: its order's first, else what most members do
+const base = { suspended: false, under: false, reformedT: null as number | null }
+check(groupState({ ...base, suspended: true, under: true }, { station: 9 }, 0) === 'suspended', 'suspended before under strength')
+check(groupState({ ...base, under: true }, { station: 9 }, 0) === 'under', 'under strength before what members do')
+check(groupState({ ...base, reformedT: 100_000 }, { station: 9 }, 110_000) === 'reforming' && groupState({ ...base, reformedT: 100_000 }, { station: 9 }, 200_000) === 'station', 're-forming for a while after a re-form')
+check(groupState(base, { station: 3, moving: 5, lost: 1 }, 0) === 'moving', 'else what most members do')
+check(Object.values(GROUP_STATE).every((x) => x.icon && x.word), 'every state an icon and a word, never colour alone')
+check(belowMin.under && !belowMin.suspended && susp.suspended && !full.under, 'chip status flags')
 
 // outlines: round the members heard now, a stale one left out
 const heard = new Map<number, LngLat>([[1, [-122.48, 37.82]], [2, [-122.46, 37.82]], [3, [-122.47, 37.84]]])

@@ -128,3 +128,31 @@
 .sw-name .gcode { margin-right: 2px; vertical-align: 1px; }
 /* a chip stacked over another group's: a leader line down to its own group */
 .gchip.led::before { content: ''; position: absolute; left: 50%; top: 100%; width: 2px; margin-left: -1px; height: calc(var(--leader) + 4px); background: var(--g); opacity: .85; }
+
+/* the group strip (GroupStrip.tsx): every group in a row at the map's foot, right of the weather
+   legend and left of the zoom buttons, above the attribution; scrolls sideways when they do not fit */
+.gstrip { position: absolute; z-index: 2; right: 56px; bottom: 34px; max-width: calc(100% - 450px); display: flex; align-items: flex-end; gap: 6px; pointer-events: none; }
+.gstrip > * { pointer-events: auto; }
+.gstrip-toggle { flex: none; align-self: stretch; display: flex; align-items: center; gap: 6px; padding: 0 10px; background: rgba(13, 18, 24, .94); border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+.gstrip.folded .gstrip-toggle { height: 28px; }
+.gstrip-toggle:hover { color: var(--text); border-color: #33475d; }
+.gstrip-n { color: var(--text); }
+.gstrip-list { list-style: none; margin: 0; padding: 0 0 2px; display: flex; gap: 6px; overflow-x: auto; min-width: 0; scrollbar-width: thin; }
+.gstrip-list li { flex: none; }
+.gstrip-item {
+  display: flex; flex-direction: column; gap: 3px; padding: 5px 9px 5px 8px; text-align: left; cursor: pointer;
+  background: rgba(13, 18, 24, .94); border: 1px solid var(--line); border-left: 4px solid var(--g); border-radius: 5px;
+  font: 11px/1 var(--mono); color: #c3ccd6; white-space: nowrap;
+}
+.gstrip-item:hover, .gstrip-item.hov { border-color: #4a5d72; border-left-color: var(--g); background: #16202b; }
+.gstrip-item.sel { box-shadow: inset 0 0 0 1px var(--accent); }
+.gstrip-item.bad { border-color: #5a2a2a; border-left-color: var(--g); }
+.gstrip-top { display: flex; align-items: center; gap: 6px; }
+.gstrip-top b { font: 600 12.5px/1 var(--mono); color: var(--text); }
+.gstrip-state { margin-left: auto; padding-left: 8px; font-size: 10.5px; }
+.gstrip-state i { font-style: normal; }
+.gstrip-state.ok { color: var(--ok); }
+.gstrip-state.warn, .gstrip-line .warn { color: var(--warn); }
+.gstrip-state.bad, .gstrip-line .bad { color: var(--bad); font-weight: 600; }
+.gstrip-line .ok { color: var(--ok); }
+.gstrip.drawer { right: 446px; max-width: calc(100% - 840px); }
