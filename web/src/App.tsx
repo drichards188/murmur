@@ -75,6 +75,8 @@ import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
 import { useGroups } from './useGroups'
 import { groupOfSelection } from './groups'
 import { Sitrep } from './Sitrep'
+import { TaskingButton, TaskingPanel } from './TaskingPanel'
+import { useTasking } from './useTasking'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -183,6 +185,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showSwarms, setShowSwarms] = useState(false)
   // the situation report (Sitrep.tsx): read-only, a wide drawer
   const [showSitrep, setShowSitrep] = useState(false)
+  // guidance to the AI watch officer (TaskingPanel.tsx): never an order, never a decision
+  const [showTasking, setShowTasking] = useState(false)
+  const taskingApi = useTasking()
   const [swarmFocus, setSwarmFocus] = useState<{ id: string; n: number } | null>(null)
   const [hoverGroup, setHoverGroup] = useState<string | null>(null)
   // Space held: every group's orders drawn (bd murmur-4nik; else a group's only while it is
@@ -969,7 +974,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // them at its head instead, under its own header: centred on the map they sat over that
   // header and the Review's, its urgent item included (bd murmur-76gv). The topmost drawer, as
   // they open over each other in this order.
-  const drawer = showSitrep ? 'sitrep' : showSwarms ? 'swarms' : showQueue ? 'queue' : showInbox ? 'inbox' : null
+  const drawer = showTasking ? 'tasking' : showSitrep ? 'sitrep' : showSwarms ? 'swarms' : showQueue ? 'queue' : showInbox ? 'inbox' : null
   const groupBan = groupAlarms[0]
   const bannersAbove = [flyingImpact?.munition || visibleImpact, weaponBan, actBanner].filter(Boolean).length
   const banners = flyingImpact?.munition || visibleImpact || weaponBan || actBanner || groupBan ? (
@@ -1058,6 +1063,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
         <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
+        <TaskingButton api={taskingApi} open={showTasking} onClick={() => setShowTasking((v) => !v)} />
         <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} onClick={() => setShowSitrep((v) => !v)} title="The situation report: the whole picture, top-down, read-only">
           Sitrep
         </button>
@@ -1264,6 +1270,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             }}
             onClose={() => setShowQueue(false)}
           />
+          </ErrorBoundary>
+        )}
+        {showTasking && (
+          <ErrorBoundary name="Tasking" className="floating">
+            <TaskingPanel api={taskingApi} now={now} banners={drawer === 'tasking' ? banners : null} onClose={() => setShowTasking(false)} />
           </ErrorBoundary>
         )}
         {showSitrep && (

@@ -1,0 +1,16 @@
+/* tasking the AI watch officer (TaskingPanel.tsx) */
+.ix.tko { z-index: 5; }
+.ix-badge.tko-badge { background: var(--accent); color: #1c1505; }
+.tko-boundary { margin: 12px 0 0; padding: 8px 10px; font-size: 12.5px; line-height: 1.4; color: #c6cfd9; border: 1px dashed #3a4b5e; border-radius: 4px; background: #0f151c; }
+.tko-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.tko-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.tko-form textarea { resize: vertical; min-height: 70px; font: 13px/1.4 var(--sans); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 8px; }
+.tko-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tko-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tko-count { font: 11.5px var(--mono); color: var(--muted); }
+.tko-count.bad { color: var(--bad); }
+.tko-item { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px; background: var(--panel-2); }
+.tko-item.retired { border-left-color: #3a4b5e; opacity: 0.7; }
+.tko-item p { margin: 0 0 6px; font-size: 13px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tko-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 11px var(--mono); color: var(--muted); }
+.tko-more { align-self: flex-start; margin-top: 6px; }
