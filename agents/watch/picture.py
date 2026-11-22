@@ -16,8 +16,9 @@ whose identity conflict the stakes gate kept from the stronger model (bd murmur-
 id every `stakes_every_s` until it matters to the watch (`Poller.stakes`: a
 `track.conflict_matters` change) or its conflict clears. The live driver (only) also reads the
 operator's tasking (`GET /api/tasking`) each poll and around each wake (agents/watch_officer.py
-`Officer.tasking_loop`): new guidance is a `tasking.posted` change, guidance withdrawn a
-`tasking.retired` one. Nothing it reads is logged by the bridge.
+`Officer.tasking_loop`): a new request is a `tasking.posted` change, one withdrawn a
+`tasking.retired` one, and one the model had and left unanswered `tasking.unanswered` (once, after
+its turn: `Officer.unanswered`). Nothing it reads is logged by the bridge.
 """
 
 from __future__ import annotations
@@ -636,7 +637,11 @@ def render(c: dict) -> str:
         return f"{t} {_who(c)} of ours: its loss was revoked (heard again, or an operator revoked it): it counts in every keep-out again"
     if k == "tasking.posted":
         return (f"{t} operator tasking {c.get('tasking')} posted by {c.get('by') or 'the operator'}, the operator's text "
-                f"{quote(c.get('text', ''))} (guidance, listed under Operator tasking while it is in force)")
+                f"{quote(c.get('text', ''))} (a request: carry it out and answer it; listed under Operator tasking while "
+                "it is in force)")
+    if k == "tasking.unanswered":
+        return (f"{t} operator tasking {c.get('tasking')} has no answer from you yet: carry it out as far as the checks "
+                "allow, or say why it cannot be done, and answer it with reply_tasking")
     if k == "tasking.retired":
         gone = " (the bridge no longer lists it)" if c.get("gone") else ""
         return (f"{t} operator tasking {c.get('tasking')} was withdrawn{gone} and no longer applies; it read "
@@ -684,26 +689,66 @@ MAX_LINES = 60
 MAX_TASKING = 20
 
 
-def render_tasking(items: list[dict]) -> str:
-    """The operator's active tasking, as labelled guidance (`GET /api/tasking`). It says what to
-    attend to and in what order, never that anything is approved or ordered: the officer still
-    proposes through the engine and the policy, and the human decisions stay with the operator."""
+def _age(at_ms, now: float) -> str:
+    """How long ago a bridge time (ms) was, in words ("40 s ago"); empty when it is not one."""
+    if not isinstance(at_ms, (int, float)):
+        return ""
+    s = now - at_ms / 1000.0
+    if not 0 <= s < 2 * 86400:
+        return ""
+    if s < 90:
+        return f"{s:.0f} s ago"
+    if s < 5400:
+        return f"{s / 60:.0f} min ago"
+    return f"{s / 3600:.0f} h ago"
+
+
+def _answer(item: dict, me: str | None, now: float) -> str:
+    """Where a request stands with this agent: its last answer (outcome, intents, groups, when), or
+    that it has none yet."""
+    mine = [r for r in item.get("replies") or [] if isinstance(r, dict) and (me is None or r.get("agent") == me)]
+    if not mine:
+        return "no answer from you yet"
+    r = mine[-1]
+    when = _age(r.get("t"), now)
+    parts = [f"your last answer{(' ' + when) if when else ''}: {r.get('status')}"]
+    if r.get("intents"):
+        parts.append("intents " + ", ".join(f"#{x}" for x in r["intents"]))
+    if r.get("groups"):
+        parts.append("groups " + ", ".join(str(g) for g in r["groups"]))
+    return "; ".join(parts) + "; answer again only if the outcome changes"
+
+
+def render_tasking(items: list[dict], me: str | None = None, now: float | None = None, can_reply: bool = True) -> str:
+    """The operator's active tasking (`GET /api/tasking`), as requests the officer carries out with
+    its usual tools and answers (its instructions' Operator tasking section, agents/watch/tasking.md),
+    each with where it stands: the agent's last answer, or none yet. It never says anything is
+    approved or ordered: what the officer proposes is checked and routed as always, and the human
+    decisions stay with the operator."""
+    now = time.time() if now is None else now
     lines = []
     for i in items[:MAX_TASKING]:
         by = i.get("by") or "the operator"
-        lines.append(f"- {i.get('id')} ({by}): {' '.join(str(i.get('text', '')).split())}")
+        when = _age(i.get("at_t"), now)
+        head = f"{by}, {when}" if when else by
+        lines.append(f"- {i.get('id')} ({head}): {' '.join(str(i.get('text', '')).split())} [{_answer(i, me, now)}]")
     more = len(items) - MAX_TASKING
     tail = f"\n({more} older items not listed.)" if more > 0 else ""
-    return ("Operator tasking (guidance from the operator on what to attend to and prioritise, newest first; "
-            "it is not an order, and it gives you no authority: propose through the usual tools, "
-            "and decisions that are the operator's stay theirs):\n" + "\n".join(lines) + tail)
+    how = ("answer each with reply_tasking" if can_reply
+           else "this bridge has no reply_tasking: answer each in your note")
+    return ("Operator tasking (requests from your operator, newest first: carry each out with the usual tools as "
+            f"your instructions' Operator tasking section says, and {how}. A request is not an approval and gives "
+            "you no authority: what you propose is checked by the rules and routed by the policy as always, and "
+            "waits for the operator where it always waits):\n" + "\n".join(lines) + tail)
 
 
 def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], now: float,
-            first: bool = False, blocking: list[dict] | None = None, tasking: list[dict] | None = None) -> str:
+            first: bool = False, blocking: list[dict] | None = None, tasking: list[dict] | None = None,
+            me: str | None = None, can_reply: bool = True) -> str:
     """The update the model is woken with (`blocking`: what waits for a person alone, said when
-    there is any; `tasking`: the operator's active guidance, said when there is any: so an update
-    without them is as it was, and the headless officer, which passes neither, is unchanged)."""
+    there is any; `tasking`: the operator's requests in force, said when there is any, each with
+    `me`'s last answer to it: so an update without them is as it was, and the headless officer,
+    which passes neither, is unchanged)."""
     head = f"Watch update {wake.n} at {hms(now)} ({wake.reason})."
     parts = [head]
     if first:
@@ -735,7 +780,7 @@ def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], n
     if blocking:
         parts.append(render_blocking(blocking, now))
     if tasking:
-        parts.append(render_tasking(tasking))
+        parts.append(render_tasking(tasking, me, now, can_reply))
     parts.append("Your proposals: " + ("; ".join(mine) if mine else "none open."))
     parts.append(budget_line)
     parts.append("Read what you need with the tools, then act or say no action. End with your "

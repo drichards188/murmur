@@ -11,11 +11,14 @@ agents/watch/wake.py) or on a slow heartbeat, gives the stronger model the conse
 moments (engagement chain, a lost link on an armed platform, a suspected spoof where the watch
 is: `--watch-config`, agents/watch/stakes.py; a consult about a contact is briefed with the
 driver's case file, agents/watch/casefile.py), reads the operator's tasking (`GET /api/tasking`:
-new guidance wakes the routine model, `Officer.tasking_loop`; `--no-tasking` reads none) and says
-back how far it has each item for the console (seen, processed: `Officer.ack`), enforces
-budgets, and writes every turn to the situation log (JSONL; agents/watch/situation.py lists
-its lines). The model proposes through the same tools as any agent: it cannot approve or
-sign anything, and humans sign every effect.
+a new request wakes the routine model, `Officer.tasking_loop`; `--no-tasking` reads none), which
+the model carries out with its usual tools and answers (`reply_tasking`; agents/watch/tasking.md,
+appended to its instructions), says back how far it has each item for the console (seen,
+processed: `Officer.ack`), wakes the model once more for a request it had and left unanswered
+(`Officer.unanswered`), enforces budgets, and writes every turn to the situation log (JSONL;
+agents/watch/situation.py lists its lines). The model proposes through the same tools as any
+agent: it cannot approve or sign anything, a request from the operator gives it no authority, and
+humans sign every effect.
 
 Murmur never stores, reads, proxies or prompts for model credentials: it runs the CLI you
 installed and logged into yourself, with the API-key variables removed from its environment
@@ -53,6 +56,9 @@ from watch.situation import SituationLog  # noqa: E402
 from watch.wake import Budgets, Waker, Wake  # noqa: E402
 
 PROMPT = HERE / "watch" / "prompt.md"
+# what the model is told of the operator's tasking: only where the live driver reads it (the headless
+# officer, which reads none, is told nothing of it, so its prompt is as before)
+TASKING_PROMPT = HERE / "watch" / "tasking.md"
 DEFAULTS = {
     "claude": {"model": "sonnet", "effort": "medium", "strong_model": "opus", "strong_effort": "high"},
     "codex": {"model": "gpt-6-luna", "effort": "high", "strong_model": "gpt-6.1-sol", "strong_effort": "high"},
@@ -99,9 +105,13 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def build_prompt(brief: str | None) -> str:
-    base = PROMPT.read_text()
-    return base.rstrip() + "\n\n## Situation brief\n\n" + ((brief or "").strip() or "(no brief given)") + "\n"
+def build_prompt(brief: str | None, tasking: bool = False) -> str:
+    """The system prompt: agents/watch/prompt.md, the operator tasking section where the driver
+    reads the operator's tasking (`tasking`), and the run's brief."""
+    base = PROMPT.read_text().rstrip()
+    if tasking:
+        base += "\n\n" + TASKING_PROMPT.read_text().rstrip()
+    return base + "\n\n## Situation brief\n\n" + ((brief or "").strip() or "(no brief given)") + "\n"
 
 
 class RunDirError(ValueError):
@@ -161,6 +171,11 @@ def active_tasking(doc) -> list[dict]:
     items = doc.get("items") if isinstance(doc, dict) else None
     return [i for i in items or [] if isinstance(i, dict) and i.get("active") and isinstance(i.get("text"), str)
             and i["text"].strip()]
+
+
+def replied_by(item: dict, agent: str) -> bool:
+    """Whether `agent` has answered the item (its `replies`, as the bridge serves them)."""
+    return any(isinstance(r, dict) and r.get("agent") == agent for r in item.get("replies") or [])
 
 
 def tasking_key(item: dict) -> tuple:
@@ -263,6 +278,9 @@ class Officer:
         self.acked: dict[tuple, str] = {}  # tasking_key -> the last said: seen, processed, failed:<n>, waiting:<why>
         self.ack_queue: asyncio.Queue = asyncio.Queue()
         self.ack_errors = 0
+        # requests the model had and left unanswered, told once more (`unanswered`): by tasking_key
+        self.nudged: set[tuple] = set()
+        self.bridge_tools: set[str] = set()  # the bridge's MCP tools, as listed at connect
         self.watch = watch  # agents/watch/stakes.py `Watch`, or None (no watch area known)
         # the situation's [playbook] table (a playbook Config, `--watch-config`), and the run's watch
         # settings (agents/roe.py `Roe`), read from the bridge's policy at each connect (`adopt`)
@@ -495,6 +513,7 @@ class Officer:
         # bridge_run: the bridge's audit-log run (a line's own run is this driver's)
         self.log.write("bridge.connected", cursor=info["cursor"], bridge_run=info["run"], tools=info["tools"],
                        watch_settings=settings)
+        self.bridge_tools = set(info.get("tools") or [])
         if hasattr(self.backend, "murmur_tools"):
             self.backend.murmur_tools = set(info["tools"])
         started = await self.backend.start()
@@ -629,7 +648,7 @@ class Officer:
         blocking = await self.blocking()
         tasking = await self.tasking()
         text = compose(wake, mine, self.budget_line(wake), notes, now, first=wake.reason == "start",
-                       blocking=blocking, tasking=tasking)
+                       blocking=blocking, tasking=tasking, me=self.args.agent, can_reply=self.can_reply())
         case = None
         if escalate:
             # a consult about a contact: the driver's case file at the end of its update
@@ -711,6 +730,8 @@ class Officer:
         finished = turn.stop in FINISHED
         self.ack(tasking, "processed" if finished else "failed", wake.n,
                  why=None if finished else f"the turn ended: {turn.stop}")
+        if finished:
+            await self.unanswered(tasking, wake.n)
         if not escalate and not self.init_logged and getattr(self.backend, "init", None):
             self.init_logged = True
             self.log.write("backend.init", **self.backend.init)
@@ -779,6 +800,35 @@ class Officer:
         except Exception:  # noqa: BLE001
             return []
         return items
+
+    def can_reply(self) -> bool:
+        """Whether the model can answer the operator's tasking with its own tool: the bridge lists
+        `reply_tasking` (a bridge without it: the update says to answer in the note)."""
+        return "reply_tasking" in self.bridge_tools
+
+    async def unanswered(self, told: list[dict], n: int) -> None:
+        """After a turn that finished on an update listing the operator's tasking: each request it
+        listed that is still in force and has no answer from this agent wakes the model once more
+        (`tasking.unanswered`, within tasking's share of the wakes), so a request is never dropped
+        unanswered in silence; the console shows it as not answered meanwhile. Once a request: after
+        that its update says it is not answered, every time."""
+        if not told or not self.can_reply():
+            return
+        now_items = {tasking_key(i): i for i in await self.tasking()}
+        out = []
+        for i in told:
+            key = tasking_key(i)
+            cur = now_items.get(key)
+            if cur is None or key in self.nudged or replied_by(cur, self.args.agent):
+                continue
+            self.nudged.add(key)
+            out.append({"kind": "tasking.unanswered", "t": time.time(), "tasking": key[0], "at_t": key[1],
+                        "text": cur.get("text"), "by": cur.get("by")})
+        if out:
+            self.log.write("tasking.unanswered", n=n, tasking=[c["tasking"] for c in out],
+                           text=f"update {n} ended with no answer to {', '.join(c['tasking'] for c in out)}: told once more")
+            self.waker.add(out, time.time())
+            self.log_dropped()
 
     def mcp_ok(self) -> bool:
         init = self.backend.init or {}
@@ -864,7 +914,8 @@ async def main_async(args) -> int:
     log = SituationLog(args.situation_log, run_id, echo=not args.quiet)
     until = args.until if args.until else time.time() + args.minutes * 60
     brief = args.brief.read_text() if args.brief else None
-    prompt_text = build_prompt(brief)
+    # the operator tasking section only where the driver reads the operator's tasking
+    prompt_text = build_prompt(brief, tasking=not args.no_tasking)
     try:
         run_dir = make_run_dir(args.run_dir)
     except RunDirError as e:
@@ -970,8 +1021,9 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--agent", default="agent-watch", help="the agent id (a dev bridge: listed in MURMUR_AGENTS)")
     ap.add_argument("--key", help="the agent's key in a credentials run (default MURMUR_AGENT_KEY); never logged")
     ap.add_argument("--no-tasking", action="store_true",
-                    help="do not read the operator's tasking (GET /api/tasking, each poll and at each wake; new "
-                         "guidance wakes the routine model): the officer runs on its brief alone")
+                    help="do not read the operator's tasking (GET /api/tasking, each poll and at each wake; a new "
+                         "request wakes the routine model, which carries it out and answers it): the officer "
+                         "runs on its brief alone, and its prompt has no tasking section")
     ap.add_argument("--brief", type=Path, help="the situation brief, appended to the system prompt")
     ap.add_argument("--situation-log", type=Path, help="JSONL log of every wake and turn (appended)")
     ap.add_argument("--until", type=float, help="stop at this Unix time")

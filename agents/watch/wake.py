@@ -58,9 +58,11 @@ with the next update.
   `approach_horizon_s` (`track.approaching`) and once when it is inside (`track.in_watch`). Routine wakes only, never the stronger model, whether or not escalation is
   on; each track once per stage (the driver lets it go after, and the subject limits above hold).
 - Operator tasking (the live driver only, `Officer.tasking_loop` in agents/watch_officer.py; the
-  headless officer reads none): guidance the operator posts wakes the routine model, never the
+  headless officer reads none): a request the operator posts wakes the routine model, never the
   stronger one, so it is read within a poll and the coalescing (`tasking.posted`; its subject is
-  the item, each post its own, so a second post is never held behind the first). Guidance
+  the item, each post its own, so a second post is never held behind the first). A request the
+  model had and left unanswered when its turn finished wakes it once more (`tasking.unanswered`,
+  once a request: `Officer.unanswered`), in the same share of the wakes. Guidance
   withdrawn is a note (`tasking.retired`): the model acts only when woken, so withdrawn guidance
   cannot steer it meanwhile, the next update no longer lists it and carries the note, and a
   withdrawal that woke would let posting and withdrawing spend two wakes an item. Posted and
@@ -111,6 +113,9 @@ DECIDED = ("approved", "rejected", "voided", "expired", "failed", "aborted", "qu
            "effected")
 # new operator tasking (the live driver's change; its share of the wakes: `Waker.tasking_room`)
 TASKING = "tasking.posted"
+# a request the model had and left unanswered (the live driver's, once a request), in the same share
+UNANSWERED = "tasking.unanswered"
+TASKING_WAKES = (TASKING, UNANSWERED)
 
 
 @dataclass(frozen=True)
@@ -202,6 +207,7 @@ TRIGGERS: tuple[Row, ...] = (
     # operator tasking (the live driver, from GET /api/tasking): new guidance, within tasking's
     # share of the wakes (`Waker.tasking_room`); guidance withdrawn (`tasking.retired`) is a note
     Row(TASKING, always, never, "the operator posted new tasking"),
+    Row(UNANSWERED, always, never, "a request of the operator's has no answer from you yet"),
 )
 ROWS = {r.kind: r for r in TRIGGERS}
 
@@ -472,7 +478,7 @@ class Waker:
     def judge(self, c: Change, now: float) -> Judged:
         wakes, esc, why = classify(c)
         if (not wakes or c.get("superseded") or self._covered(c, now)
-                or (c.get("kind") == TASKING and not self.tasking_room(now))):
+                or (c.get("kind") in TASKING_WAKES and not self.tasking_room(now))):
             return Judged(False, False, None, NEVER, False)
         subj = subject(c)
         last = self.woke.get(subj)
@@ -817,7 +823,7 @@ class Waker:
         if escalates:
             self.escalations += 1
             self.side_escalations += side
-        tasking = any(s and s[0] == TASKING for s in woke_s)
+        tasking = any(s and s[0] in TASKING_WAKES for s in woke_s)
         if tasking:
             self.tasking_recent.append(now)
             self.tasking_wakes += 1

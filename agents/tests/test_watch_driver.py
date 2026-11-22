@@ -93,7 +93,7 @@ class ScriptedPoller:
 
     async def open(self):
         self.t0 = time.time()
-        return {"cursor": 0, "run": "test-run", "tools": ["get_changes"], "reset": False}
+        return {"cursor": 0, "run": "test-run", "tools": getattr(self, "tools", ["get_changes"]), "reset": False}
 
     async def poll(self):
         now = time.time() - self.t0
@@ -657,9 +657,9 @@ def test_new_tasking_wakes_the_routine_model_within_seconds_and_the_update_says_
     assert w["why"] == ["the operator posted new tasking"] and not w["escalated"] and w["model"] == "sonnet"
     assert [(c["kind"], c["tasking"]) for c in w["changes"]] == [("tasking.posted", "tk-2")], "tk-1 is not new"
     assert 'operator tasking tk-2 posted by op-1, the operator\'s text "hold the north pickets"' in w["update"]
-    section = w["update"][w["update"].index("Operator tasking (guidance"):]
+    section = w["update"][w["update"].index("Operator tasking (requests"):]
     assert section.index("- tk-2 (op-1): hold the north pickets") < section.index("- tk-1 (op-1): watch the ferry lane")
-    assert "it is not an order, and it gives you no authority" in section
+    assert "A request is not an approval and gives you no authority" in section
     assert w["t"] - (tasking.t0 + 1.0) < 2.0, "within a poll and the coalescing (here 0.1 s and 0.2 s)"
     assert w["text"] == "watch officer woken (sonnet): the operator posted new tasking"
 
@@ -686,7 +686,7 @@ def test_withdrawn_tasking_is_a_note_told_with_the_next_update(fake_claude, tmp_
     assert [w["reason"] for w in wakes] == ["start", "changes"]
     assert wakes[1]["why"] == ["the engine flagged something for review"], "the withdrawal did not wake it"
     assert "operator tasking tk-1 was withdrawn and no longer applies" in wakes[1]["update"]
-    assert "Operator tasking (guidance" not in wakes[1]["update"], "nothing in force"
+    assert "Operator tasking (requests" not in wakes[1]["update"], "nothing in force"
 
 
 def test_a_burst_of_posts_is_one_wake(fake_claude, tmp_path):
@@ -852,3 +852,79 @@ def test_acknowledgements_only_go_forward_and_never_to_an_older_bridge(fake_clau
         sent.append(o.ack_queue.get_nowait())
     assert [(t, b["state"], b.get("wake"), b.get("why")) for t, b in sent] == [
         ("tk-1", "waiting", None, "x"), ("tk-1", "seen", 1, None), ("tk-1", "failed", 2, None), ("tk-1", "processed", 3, None)]
+
+
+# ---- operator tasking: carried out and answered (agents/watch/tasking.md) -------------------------
+
+TASKING_TOOLS = ["get_changes", "get_groups", "make_group", "reply_tasking"]
+
+
+def test_the_tasking_section_is_in_the_prompt_only_where_the_driver_reads_tasking():
+    """The live driver reading the operator's tasking appends agents/watch/tasking.md before the
+    brief; without it (--no-tasking, and the headless officer, which calls build_prompt with the
+    brief alone) the prompt is byte for byte as before."""
+    plain = W.build_prompt("A quiet morning at the Gate.")
+    told = W.build_prompt("A quiet morning at the Gate.", tasking=True)
+    section = W.TASKING_PROMPT.read_text().rstrip()
+    assert "## Operator tasking" not in plain and plain == W.PROMPT.read_text().rstrip() + "\n\n## Situation brief\n\nA quiet morning at the Gate.\n"
+    assert told == W.PROMPT.read_text().rstrip() + "\n\n" + section + "\n\n## Situation brief\n\nA quiet morning at the Gate.\n"
+    # what the section holds to: carried out, answered, never an approval, never dropped
+    for must in ("Carry it out without asking first", "reply_tasking", "make_group", "get_groups",
+                 "A request is not an approval and gives you no authority",
+                 "approve, reject, declare, confirm, sign, accept or release", "Never drop a request silently",
+                 "never say\n  vehicles are doing it while their orders wait"):
+        assert must in section, must
+    assert "\u2014" not in section
+
+
+def test_a_request_left_unanswered_is_told_once_more_and_then_only_listed(fake_claude, tmp_path):
+    """The stand-in model never answers: the request it had wakes it once more after its turn
+    (`tasking.unanswered`, routine model), the update says it has no answer, and that is all: no
+    third wake for it. The bridge without reply_tasking is never told so (the other tests)."""
+    tasking = BridgeTasking([tk(1, "split the picket in two groups", time.time() * 1000)])
+    o = bridge_officer(tmp_path, fake_claude, [], tasking)
+    o.poller.tools = TASKING_TOOLS
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start", "changes"], [w["why"] for w in wakes]
+    w = wakes[1]
+    assert w["why"] == ["a request of the operator's has no answer from you yet"] and not w["escalated"]
+    assert [(c["kind"], c["tasking"]) for c in w["changes"]] == [("tasking.unanswered", "tk-1")]
+    assert "operator tasking tk-1 has no answer from you yet" in w["update"]
+    assert "split the picket in two groups [no answer from you yet]" in w["update"]
+    assert "answer each with reply_tasking" in w["update"]
+    assert [x["tasking"] for x in log if x["kind"] == "tasking.unanswered"] == [["tk-1"]], "once a request"
+    assert tasking.said("tk-1") == [("seen", 1), ("processed", 1)], "the delivery states as before"
+
+
+class AnsweringTasking(BridgeTasking):
+    """The bridge, with the model answering each item while its turn runs (its seen acknowledgement
+    comes first): the reply as reply_tasking leaves it."""
+
+    async def ack(self, tid: str, body: dict) -> int:
+        status = await super().ack(tid, body)
+        i = next((x for x in self.items if x["id"] == tid), None)
+        if status == 200 and body["state"] == "seen" and i is not None:
+            i["replies"] = [{"t": time.time() * 1000, "agent": "agent-watch", "status": "done",
+                             "text": "Proposed two patrols; both wait for you in the Inbox", "intents": [41, 42],
+                             "groups": ["og-1", "og-2"]}]
+        return status
+
+
+def test_an_answered_request_is_not_told_again_and_the_update_lists_its_answer(fake_claude, tmp_path):
+    tasking = AnsweringTasking([tk(1, "split the picket in two groups", time.time() * 1000)],
+                               [(1.2, lambda items: items.append({**tk(2, "watch the ferry lane", time.time() * 1000),
+                                                                   "delivery": "posted"}))])
+    o = bridge_officer(tmp_path, fake_claude, [], tasking)
+    o.poller.tools = TASKING_TOOLS
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    assert [w["reason"] for w in wakes] == ["start", "changes"], [w["why"] for w in wakes]
+    assert wakes[1]["why"] == ["the operator posted new tasking"], "the answered one woke nothing"
+    assert not [x for x in log if x["kind"] == "tasking.unanswered"]
+    update = wakes[1]["update"]
+    assert ("split the picket in two groups [your last answer" in update
+            and ": done; intents #41, #42; groups og-1, og-2; answer again only if the outcome changes]" in update), update
+    assert "watch the ferry lane [no answer from you yet]" in update or "watch the ferry lane [your last answer" in update

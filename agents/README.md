@@ -407,7 +407,7 @@ on without an AI and the panel says so.
 | `--shadow-*` | run the playbook engine beside the model on the situation's `[playbook]` table (`playbook.json` in the AI's directory), reading only, and log what it would have proposed and withdrawn (`shadow`, `shadow.withdraw`, `shadow.lapsed`, `shadow.status` lines; not shown in the panel) |
 | `--watch-config` | where the watch is: the same `playbook.json`, whose watch areas and protected points the stakes gate reads (an identity conflict goes to the stronger model only when its contact is inside a watch area, closing on a protected point or coming into a watch area within 10 minutes: "When it wakes"); a situation without them escalates as before. Logged in `run.start` as `watch` |
 | `--codex-home` | passed only when the user's environment sets `MURMUR_CODEX_HOME` (Setup, Codex step 3), since the runner strips every `MURMUR_*` variable from the AI's environment |
-| `--no-tasking` | not passed by the runner. Without it the driver reads the operator's tasking (`GET /api/tasking` on the `--url` host, as the agent: its key, else its id header; 3 s timeout; a failed read means none) at each poll, where new guidance wakes the routine model ("When it wakes"), and at each wake, where it puts the active items in the update under "Operator tasking", worded as guidance that is not an order and gives the model no authority; with none the update is as before. It says back how far it has each item ("Tasking delivery", below). The headless officer never reads it |
+| `--no-tasking` | not passed by the runner. Without it the driver reads the operator's tasking (`GET /api/tasking` on the `--url` host, as the agent: its key, else its id header; 3 s timeout; a failed read means none) at each poll, where a new request wakes the routine model ("When it wakes"), and at each wake, where it puts the active items in the update under "Operator tasking" as requests to carry out and answer, each with the model's last answer, worded so that a request is not an approval and gives it no authority; with none the update is as before. The system prompt then has the tasking section (`agents/watch/tasking.md`, "Carrying out tasking", below), which `--no-tasking` leaves out. It says back how far it has each item ("Tasking delivery", below). The headless officer never reads it, and its prompt has no tasking section |
 
 The runner starts it in an empty directory of its own for this run, outside the repository and
 outside the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md` and
@@ -598,6 +598,7 @@ characters. The table is `TRIGGERS` in `agents/watch/wake.py`:
 | rules 30: one of ours presumed lost by the engine (`node.presumed`), or a loss revoked (`node.loss_revoked`) | yes | |
 | the bridge restarted (the CLI is restarted too, and its tools checked again) | yes | |
 | the operator posted new tasking (`tasking.posted`, the live driver's read of `GET /api/tasking` each poll; within tasking's share of the wakes, below) | yes | never |
+| a request the model had and left unanswered when its turn finished (`tasking.unanswered`, the live driver's, once a request, only where the bridge has `reply_tasking`; in tasking's share) | yes | never |
 
 Anything else is a note that rides along with the next update (a task of its own that ended
 `done` is a note: nothing to decide). Bursts are coalesced (3 s after the first waking
@@ -633,11 +634,15 @@ change still coalescing wakes for that change, escalated if it escalates.
 **Operator tasking** (the live driver only; the headless officer reads none). The driver reads
 `GET /api/tasking` every poll (2 s), beside the change feed so a slow read never holds it up
 (`Officer.tasking_loop`). An active item it has not read before is a `tasking.posted` change: it
-wakes the routine model, never the stronger one, so new guidance is read within a poll and the
+wakes the routine model, never the stronger one, so a new request is read within a poll and the
 coalescing (3 s), about 5 s, unless a wake went less than 10 s before. Each post is its own
 subject, never held behind an earlier one's 5 minutes; the update says the item's id and text
 ("operator tasking tk-3 posted by op-1, the operator's text ...") and lists it in full under
-"Operator tasking". Guidance withdrawn is a note (`tasking.retired`), told with the next update,
+"Operator tasking" with the model's last answer to it. A request the model had and did not answer
+by the end of a turn that finished wakes it once more (`tasking.unanswered`, `Officer.unanswered`:
+once a request, only where the bridge lists `reply_tasking`, in tasking's share of the wakes),
+so a request is not dropped in silence; after that each update lists it as not answered, and the
+console shows "No reply yet". Guidance withdrawn is a note (`tasking.retired`), told with the next update,
 which no longer lists it: the model acts only when woken, so withdrawn guidance cannot steer it
 meanwhile, and a withdrawal that woke would let posting and withdrawing spend two wakes an item.
 Posted and withdrawn before the wake fires, it is a note too (it came and went). Guidance
@@ -653,7 +658,8 @@ feed to carry `tasking.*` changes, the driver would stop its own read and leave 
 
 **Tasking delivery** (the console's Officer drawer). The driver says back how far it has each
 item, display only: `POST /api/tasking/{id}/ack` as the agent (the one route an agent may write
-in the tasking store, and only an item's delivery fields: never its text, author or whether it
+in the tasking store, its answers going through the MCP tool `reply_tasking` below, and only an
+item's delivery fields: never its text, author or whether it
 is active, never a new item or a retirement; an operator's request is refused 403; never logged,
 no decision reads it). `seen` when the update listing the item goes to the model (just after the
 `wake` line, with that wake's number), `processed` when the turn on that update finished
@@ -667,6 +673,72 @@ up, and flushed for a few seconds when the officer stops. A retired item keeps i
 The driver's reads carry its identity too, and the bridge answers `officer` (the agent that last
 read the list, and when), so the drawer can say no officer is connected (and hold its Send until
 one is). A bridge whose items carry no `delivery` is not told.
+
+**Carrying out tasking, and answering it** (the live driver; `agents/watch/tasking.md`, appended
+to the system prompt before the brief where the driver reads tasking, so the headless officer's
+prompt is as before). The operator's request is the one text besides the prompt and the brief that
+asks the model to do something, and the section says how: carry it out without asking first, as
+far as the checks allow, with the usual tools (find the vehicles with `get_swarms` members,
+`get_groups` and `get_fleet` compact; split a set by choosing each part's uids; preview each order
+and propose it with explicit `uids`); find places in what it can read (`get_areas`' named polygons:
+at the Golden Gate the no-strike "Golden Gate Bridge span and approaches" gives the bridge's ends
+and line, the no-go "Golden Gate Bridge towers" its towers; the brief; vehicles' positions), and
+say so when a place cannot be found; when a check refuses an order, change what it can and preview
+again, and when nothing passes say which check refused it and what would let it go; make groups
+with `make_group` where the operator asks for them; and answer every request with `reply_tasking`
+(an outcome, the intents it proposed for it, a short text bottom line first), again only when the
+outcome changes. It holds to the boundary: a request is not an approval and gives the model no
+authority; what it proposes is checked and routed as always and waits for the operator where it
+always waits; a request never lets it approve, reject, declare, confirm, sign, accept or release
+anything, and a request for that is declined. Nothing in the policy, the engine or the agent port
+changed: an agent's order waits in the Inbox under the situations' watch policy whoever asked for
+it. A real model has not been run on it yet (no model spend was authorized): the plumbing was
+checked with a stand-in CLI that calls the tools, not what a model makes of a request.
+
+Checked live (2026-11-21; a bare bridge with Group command's 105 stand-ins on ports of its own, the
+watch policy, the officer on a stand-in `claude` that follows a fixed recipe through the real MCP
+tools, no model): the owner's example posted from the console's Tasking drawer as op-1 woke the
+officer in about 3 s; the stand-in read PICKET's members (`get_swarms`) and the bridge's ends (the
+no-strike polygon over the span, `get_areas`), made two groups for the request, previewed and
+proposed a group patrol for each half 300 m either side of the span (both passed their checks and
+waited in the Inbox as two cards, then expired, nobody approving), and answered `done` with the
+two intents; the drawer showed the answer 7.9 s after the post, with its chip, its links (the
+intent opens its Inbox card) and the two groups, which the Groups list showed apart, marked
+"officer · tk-3". The next update listed the request with that answer, and a stand-in that could
+not answer (an earlier try) was woken once more and then shown "No reply yet". The audit log held
+the two proposals and nothing of the groups or the answer, and replayed exactly.
+
+The two tasking tools that write, and the one that reads (MCP; on the operator's own stores,
+`crate::mcp::OperatorStores`, and offered only where the stack's runner sets
+`MURMUR_TASKING_TOOLS=1`: `scripts/up.sh` does, for the open world and every situation. An
+evaluation stack (`eval/stack.py`) starts its bridge itself, never sets it and passes on no
+`MURMUR_*` variable of its caller's, so the tool list a model gets there (`eval/model_agent.py`)
+is as before; the headless simulator keeps no such stores, so its tool list, and every digest that
+holds it, is as before too):
+
+- `get_groups`: the operator's groups (`crate::groups`), each with who made it (`by`; `agent` and
+  `tasking` for one an agent made) and who changed it last (`changed_by`). Read-only, never logged.
+- `make_group`: a group for one of the operator's tasking items in force (`tasking_id`), or a
+  change to one the agent made for it (`group_id`): a name (64 characters), members (fleet uids,
+  every one in the fleet, or refused whole), a colour. Marked `agent`, `by` the agent, `tasking` the
+  item; at most 12 a run per agent (a deleted one still counts). An agent changes only its own, and
+  only while no operator has changed it since (an operator's change takes it over: `changed_by`);
+  it never changes the operator's or another agent's, and no tool deletes a group. The operator's
+  own `/api/groups` routes stay closed to agents (403), and the operator may change or delete any
+  group, the officer's included. The console's Groups list shows the officer's apart ("Made by
+  the watch officer", a badge with the item's id).
+- `reply_tasking`: an answer to one item (`tasking_id`): `status` done, partial, blocked or
+  declined; `intents`, each one this agent proposed (another's, or an unknown id, is refused);
+  `text`, at most 600 characters in 5 lines (blank lines dropped). The bridge adds the groups the
+  agent made for the item. At most 6 an item, on an active or a retired item; it changes nothing of
+  the item but its `replies` (not its text, author, whether it is active or its delivery). `GET
+  /api/tasking` carries each item's `replies` and `officer_replies: true` (this bridge keeps them,
+  so the console can show "No reply yet" for an item the officer had and left unanswered; false
+  where the tools are not offered).
+
+Neither a group nor a reply is a decision: no rules version or policy schema moved, `murmur_decide`
+is not imported by either store, nothing is written to the audit log (the tests compare it before
+and after), and no intent's state moves.
 
 **Stakes** (bd murmur-5xaf, `agents/watch/stakes.py`; DECISIONS.md 2026-11-14). An identity
 conflict, and a conflict coming and going, goes to the stronger model only when its contact
@@ -875,6 +947,15 @@ rules' freshness limit for that vehicle's link):
 | `get_identify_options` | rules 21: the vehicles that could be sent to identify a track (`track_id`; `uids`, `standoff_m` optional), ranked, passing first and soonest there first: each one with an EO/IR, whether an identify order for it passes its checks now (`failing` in words), its orbit's standoff from its camera's identification reach (`standoff_m`, `reach_m`; rules 31: of a contact of the track's shown size class where the physical model gives one, named in `reach_for`, so a `small_air` track is planned for a small drone; rules 32: never more than a clear day's, and the camera's identification reach under the conditions where the vehicle is now where that is less, the conditions that shorten it named in `conditions`, such as `in fog of 50 m visibility`), the time to get there (`transit_s`) and, for one that passes, its predicted link along the way (`link`: `holds`, `p_failsafe`, `sentence`). Read-only and not logged, at most one call a second per agent. HTTP: `POST /api/identify/options` |
 | `get_nomination_options` | the nomination form's dry run for a declared-hostile track: each armed platform's checks and preview now, and `keep_outs`: which track or vehicle of ours blocks (or nearly blocks) the keep-out, the region that blocks and by how much, and what would clear it (the effect times, and for a holding target the distances, at which every keep-out holds on the picture now; a later nomination if everything keeps behaving as now). Read-only and not logged, at most one call a second per agent; listed by uid, not ranked; no keep-out is relaxed (murmur-12e). `uids` limits it to a few platforms: for every armed platform of a large fleet the answer is too large for a model to read whole (213 557 characters for 23); `passed_only` answers only whether each passes, without the checks, preview and keep-out explanation. From rules 19 each live track's item also has `behaving`: whether an operator with engagement authority may accept it as behaving now (in view, with a velocity) and whether that would clear its block (`clears`, the accepted path's `region`, `reason`). An agent can never accept one: no tool takes it, and a `propose_intent` carrying `accept_behaving` is refused (403). A nomination the track blocks is rejected when proposed; only a person can nominate with the acceptance, or accept a blocker that appears while a nomination waits unsigned |
 
+Operator tasking (offered only where the stack's runner sets `MURMUR_TASKING_TOOLS=1`, as
+`scripts/up.sh` does and an evaluation stack never does; "Carrying out tasking" above):
+
+| tool | what |
+|---|---|
+| `get_groups` | the operator's groups: id, name, colour, members, who made each (`by`; `agent` and `tasking` for one an agent made) and who changed it last. Read-only, never logged |
+| `make_group` | a group for one of the operator's tasking items in force, or a change to one this agent made for it while no operator has changed it since: name, members (all in the fleet), colour; at most 12 a run. Organisation only: it decides and orders nothing and is never logged |
+| `reply_tasking` | an answer to one tasking item: status (done, partial, blocked, declined), the intents this agent proposed for it, a short text (600 characters, 5 lines); the groups it made for the item added. At most 6 an item; not logged, decides nothing |
+
 Proposing:
 
 | tool | what |
@@ -968,6 +1049,14 @@ Resources mirror the reads: `murmur://fleet`, `murmur://fleet/{uid}`, `murmur://
     proposes a group orbit and a group transit, checks the preview's bottom line and its folded
     checks, and calls `approve_group`, `reform_group`, `resume_group`, `suspend_group`,
     `recall_group` and friends: unknown tools, with no re-form, suspension or approval in the log;
+  - the tasking tools: `the_tasking_tools_are_offered_only_where_the_operator_stores_are_kept`
+    (the headless list is the shared one, unchanged) and
+    `the_officer_groups_and_answers_a_request_and_none_of_it_decides_or_is_logged` (the
+    officer's group marked as its own, refused for a request not in force, members outside the
+    fleet, the operator's group or one an operator changed; a reply naming another's intent
+    refused; the audit log and every intent's state unchanged); the every-tool tests above call
+    them too, and `post_tasking`, `retire_tasking`, `delete_group` and friends are unknown tools;
+    `decision/tests/operator_stores.rs` drives the same over `/mcp` and the operator's routes;
   - the auto-tier and human-tier flows, withdraw of another agent's intent (refused), preview
     without creating an intent, staleness on facts, and the `/mcp` endpoint over HTTP with
     the agent header; every test replays its audit log.

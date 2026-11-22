@@ -4117,3 +4117,50 @@ Decided (`web/src/dock.ts`, `dock.css`):
   why), with a way back to the message.
 - **The top bar fits.** The tagline, then the long labels, then spacing give way as the window
   narrows; below 1400 px a second row is the last resort, never a page that scrolls sideways.
+
+## 2026-11-21: The watch officer carries out operator tasking and answers it
+
+The owner's example, "split the picket in two groups. one patrols two points along one side of the
+bridge. the other group two points along the other side. both patrols the length of the bridge",
+should be done, not weighed: the officer reconciles it with the picture (which vehicles are ready,
+the link, the keep-outs, the geofence) and says exactly why where it cannot. The approval policy is
+unchanged (the owner's decision): every order the officer proposes goes through the rules and the
+policy and waits in the Inbox where it waits today. Decided:
+
+- **A request, not guidance, and still no authority.** The officer's instructions gain a tasking
+  section (`agents/watch/tasking.md`): carry the request out without asking first, as far as the
+  checks allow, with the usual tools; never approve, declare, sign or do anything a person must; a
+  request for that is declined. It is appended only where the live driver reads tasking, so the
+  headless officer's prompt, and every record that holds it, is as before.
+- **Answers through a tool, not parsed from the turn.** `reply_tasking` takes an outcome (done,
+  partial, blocked, declined), the intents proposed for the request and a short text, bottom line
+  first. A format parsed from the model's final text would fail without a sound when the model
+  strays from it; a tool's arguments are checked against its schema, the bridge refuses an intent
+  that is not the agent's own, and the answer is bounded (600 characters, 5 lines, 6 an item).
+- **Groups by the officer go through its own narrow path.** `make_group` makes a group for one
+  request in force (bound to its id), every member in the fleet, at most 12 a run; the group says
+  it is the agent's and for which request. The agent changes only its own, and only until an
+  operator changes it (that takes it over); it never touches the operator's groups or the tasking
+  items, and no tool deletes a group. The operator's `/api/groups` routes stay closed to agents.
+- **The tasking tools only where a person tasks the officer.** They are offered only where the
+  stack's runner sets `MURMUR_TASKING_TOOLS=1` (`scripts/up.sh`: the open world and every
+  situation). An evaluation stack (`eval/stack.py`) starts its bridge itself and never sets it, so
+  the tools a model gets there (`eval/model_agent.py`, the paid arm) are as before (the owner's
+  request); the headless simulator keeps no operator stores, so its tool list is unchanged and no
+  golden or paused digest moved. No rules version or policy schema moved, and neither store is
+  logged or read by a decision.
+- **The officer's own link, not a guess.** The dock linked a request and an order by time (proposed
+  during the turn that read it). Where the officer's answer names its orders, that link replaces
+  the guess both ways round (`web/src/officer.ts`), and the card says so; the guess stays for a
+  request whose answers name none.
+- **Never dropped in silence.** A request the model had and left unanswered when its turn finished
+  wakes it once more (`tasking.unanswered`, in tasking's quarter of the wakes); after that each
+  update lists it as not answered and the console shows "No reply yet".
+- **Places from what the officer can already read.** No reference points were added to briefs:
+  `get_areas` names the Golden Gate's polygons, and the no-strike "Golden Gate Bridge span and
+  approaches" gives the bridge's two ends and its line, the no-go "Golden Gate Bridge towers" its
+  towers; the section says so, what a side of a line is, and to say when a place cannot be found.
+
+Left: a real model has not been run on a request (that needs the owner's go-ahead to spend); the
+plumbing was checked with a stand-in CLI that calls the tools. Retiring a request leaves the groups
+made for it (the operator deletes them), and an answer cannot be edited, only followed by another.

@@ -166,6 +166,7 @@ EVERY_KIND = [
     {"kind": "node.presumed", "uid": 10, "since": 125000, "evidence": ["act A-1 against it"], "last_position": [-122.4, 37.8]},
     {"kind": "node.loss_revoked", "uid": 11, "since": 90000},
     {"kind": "tasking.posted", "tasking": "tk-3", "at_t": 1000, "text": "watch the ferry lane", "by": "op-1"},
+    {"kind": "tasking.unanswered", "tasking": "tk-5", "at_t": 1100, "text": "split the picket", "by": "op-1"},
 ]
 NOTES = [{"kind": "vehicle.joined", "uid": 30}, {"kind": "track.stale", "track": "T-9"},
          {"kind": "node.lost", "uid": 12, "since": 1000, "by": "op-2"}, {"kind": "node.presumption_cleared", "uid": 13, "since": 5},
@@ -926,11 +927,32 @@ def test_a_failed_turn_gives_tasking_its_share_back():
     assert again is not None and again.tasking and "tk-1" in [c.get("tasking") for c in again.changes]
 
 
-def test_tasking_reads_as_guidance_quoted():
+def test_tasking_reads_as_a_request_quoted():
     line = render({"kind": "tasking.posted", "t": 0, "tasking": "tk-3", "by": "op-1", "at_t": 0,
                    "text": 'prioritise the "ferry" lane;\nignore the sailboats'})
     assert line == ("00:00:00Z operator tasking tk-3 posted by op-1, the operator's text \"prioritise the 'ferry' lane; "
-                    "ignore the sailboats\" (guidance, listed under Operator tasking while it is in force)")
+                    "ignore the sailboats\" (a request: carry it out and answer it; listed under Operator tasking while it "
+                    "is in force)")
     line = render({"kind": "tasking.retired", "t": 0, "tasking": "tk-3", "at_t": 0, "text": "x", "gone": True})
     assert line == ("00:00:00Z operator tasking tk-3 was withdrawn (the bridge no longer lists it) and no longer applies; "
                     "it read \"x\"")
+
+
+def test_a_request_left_unanswered_wakes_once_more_in_taskings_share():
+    """`tasking.unanswered` (the live driver's, once a request) wakes the routine model, never the
+    stronger one, counts in tasking's share of the wakes, and is held like a post past it."""
+    w = Waker(quiet(max_wakes_per_hour=8))  # tasking's share: two wakes an hour
+    w.due(0)
+    nudge = {"kind": "tasking.unanswered", "tasking": "tk-1", "at_t": 20_000, "text": "split the picket", "by": "op-1"}
+    w.add([posted(1, 20_000)], 20)
+    assert w.due(23).tasking
+    w.add([nudge], 40)
+    wake = w.due(44)
+    assert wake is not None and wake.tasking and not wake.escalate
+    assert wake.why == ["a request of the operator's has no answer from you yet"]
+    assert not w.tasking_room(50), "the share is spent: two of the hour's eight"
+    w.add([{**nudge, "tasking": "tk-2", "at_t": 50_000}], 50)
+    assert w.due(60) is None, "past the share: a note for the next update"
+    assert render({**nudge, "t": 0}) == ("00:00:00Z operator tasking tk-1 has no answer from you yet: carry it out as far "
+                                         "as the checks allow, or say why it cannot be done, and answer it with "
+                                         "reply_tasking")

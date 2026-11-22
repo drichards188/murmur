@@ -299,6 +299,36 @@ def test_operator_tasking_is_labelled_guidance_and_absent_means_unchanged():
     items = active_tasking(doc)
     assert [i["id"] for i in items] == ["tk-2"]
     told = compose(wake, [], "Budget.", [], 141.0, tasking=items)
-    assert "Operator tasking" in told and "not an order" in told and "tk-2" in told
+    assert "Operator tasking" in told and "not an approval" in told and "tk-2" in told
     assert told.index("Operator tasking") < told.index("Your proposals")
     assert active_tasking(None) == [] and active_tasking({"items": "x"}) == []
+
+
+def test_operator_tasking_is_listed_as_requests_with_each_answer():
+    """Each request in force with who posted it and how long ago, and where it stands with this
+    agent: its last answer (outcome, intents, groups, when) or none yet; another agent's answer is
+    not this one's. A bridge without reply_tasking: the model answers in its note."""
+    from watch.picture import render_tasking
+
+    now = 10_000.0
+    items = [
+        {"id": "tk-2", "text": "watch  the\nferry lane", "by": "op-1", "at_t": (now - 40) * 1000, "active": True},
+        {"id": "tk-1", "text": "split the picket in two groups", "by": "op-2", "at_t": (now - 540) * 1000, "active": True,
+         "replies": [{"t": (now - 600) * 1000, "agent": "agent-watch", "status": "partial", "text": "x", "intents": [40]},
+                     {"t": (now - 480) * 1000, "agent": "agent-watch", "status": "done", "text": "y", "intents": [41, 42],
+                      "groups": ["og-1", "og-2"]},
+                     {"t": (now - 60) * 1000, "agent": "agent-planner", "status": "declined", "text": "z", "intents": []}]},
+    ]
+    told = render_tasking(items, "agent-watch", now)
+    assert told.startswith("Operator tasking (requests from your operator, newest first: carry each out with the usual "
+                           "tools as your instructions' Operator tasking section says, and answer each with reply_tasking. "
+                           "A request is not an approval and gives you no authority")
+    assert "- tk-2 (op-1, 40 s ago): watch the ferry lane [no answer from you yet]" in told
+    assert ("- tk-1 (op-2, 9 min ago): split the picket in two groups [your last answer 8 min ago: done; intents #41, #42; "
+            "groups og-1, og-2; answer again only if the outcome changes]") in told
+    assert "—" not in told
+    other = render_tasking(items[1:], "agent-planner", now)
+    assert "[your last answer 60 s ago: declined; answer again only if the outcome changes]" in other
+    assert "this bridge has no reply_tasking: answer each in your note" in render_tasking(items, "agent-watch", now, can_reply=False)
+    # a time that is not the bridge's (an older one's item without at_t): no age, nothing invented
+    assert "- tk-9 (op-1): x [no answer from you yet]" in render_tasking([{"id": "tk-9", "text": "x", "by": "op-1"}], "agent-watch", now)
