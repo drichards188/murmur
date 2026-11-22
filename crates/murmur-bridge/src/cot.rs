@@ -107,6 +107,8 @@
 //! | `MURMUR_COT_MCAST_IFACE` | local IPv4 to send multicast from (default: OS choice) |
 //! | `MURMUR_COT_UDP` | unicast UDP targets, `host:port[,host:port]` |
 //! | `MURMUR_COT_TCP` | TAK Server plain-CoT input, `host:port` (e.g. 8087) |
+//! | `MURMUR_COT_TLS` | TAK Server TLS streaming input, `host:port` (e.g. 8089) |
+//! | `MURMUR_COT_TLS_CA`, `_CERT`, `_KEY` | PEM files: the CA, the client certificate, its key |
 //! | `MURMUR_COT_RATE_HZ` | steady rate per vehicle (default 1) |
 //! | `MURMUR_COT_MAX_HZ` | cap for change-driven early updates (default 2) |
 //! | `MURMUR_COT_MOVE_M` | move this far to send early (default 5 m; heading change 10 deg) |
@@ -117,8 +119,8 @@
 //! | `MURMUR_COT_LISTEN` | inbound: UDP `host:port`, joins the group when it is multicast |
 //! | `MURMUR_COT_INBOUND` | `1`: also read CoT coming back on the TCP connection |
 //!
-//! TLS (TAK Server 8089, client certificates) is not implemented: plain TCP 8087, UDP and
-//! multicast only. Use a TAK Server plain input on a trusted network, or stunnel in front.
+//! TLS (TAK Server 8089, client certificates) goes through `uas_cot::net::TlsSender` (rustls,
+//! no OpenSSL) on its own thread, output only. TAK hands out `.p12`; convert once to PEM.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -245,6 +247,10 @@ pub struct CotConfig {
     pub mcast_iface: Option<Ipv4Addr>,
     pub udp: Vec<String>,
     pub tcp: Option<String>,
+    pub tls: Option<String>,
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
     pub listen: Option<String>,
     pub tcp_inbound: bool,
     pub rate_hz: f64,
@@ -265,6 +271,10 @@ impl Default for CotConfig {
             mcast_iface: None,
             udp: Vec::new(),
             tcp: None,
+            tls: None,
+            tls_ca: None,
+            tls_cert: None,
+            tls_key: None,
             listen: None,
             tcp_inbound: false,
             rate_hz: 1.0,
@@ -319,6 +329,10 @@ impl CotConfig {
                 })
                 .unwrap_or_default(),
             tcp: text("MURMUR_COT_TCP"),
+            tls: text("MURMUR_COT_TLS"),
+            tls_ca: text("MURMUR_COT_TLS_CA"),
+            tls_cert: text("MURMUR_COT_TLS_CERT"),
+            tls_key: text("MURMUR_COT_TLS_KEY"),
             listen: text("MURMUR_COT_LISTEN"),
             tcp_inbound: flag("MURMUR_COT_INBOUND"),
             rate_hz: num("MURMUR_COT_RATE_HZ", d.rate_hz).clamp(0.05, 20.0),
@@ -333,7 +347,7 @@ impl CotConfig {
     }
 
     pub fn outputs_enabled(&self) -> bool {
-        self.multicast.is_some() || !self.udp.is_empty() || self.tcp.is_some()
+        self.multicast.is_some() || !self.udp.is_empty() || self.tcp.is_some() || self.tls.is_some()
     }
 }
 
@@ -859,6 +873,48 @@ async fn tcp_task(target: String, mut rx: mpsc::Receiver<String>, inbound: Optio
     }
 }
 
+/// TLS to a TAK Server streaming input (8089): the same queue and backoff as `tcp_task`, on its
+/// own thread because `uas_cot::net::TlsSender` is blocking std I/O.
+fn tls_task(target: String, tls: uas_cot::net::TlsConfig, mut rx: mpsc::Receiver<String>) {
+    use std::io::Write;
+    let mut backoff = 1u64;
+    loop {
+        match uas_cot::net::TlsSender::connect(&target, &tls) {
+            Ok(mut tak) => {
+                println!("cot: connected to TAK server {target} (TLS)");
+                backoff = 1;
+                while let Some(ev) = rx.blocking_recv() {
+                    let s = tak.stream_mut();
+                    if s.write_all(ev.as_bytes()).and_then(|()| s.flush()).is_err() {
+                        break;
+                    }
+                }
+                if rx.is_closed() {
+                    return;
+                }
+                println!("cot: TAK server {target} (TLS) disconnected");
+            }
+            Err(e) => eprintln!("cot: TLS {target}: {e} (retry in {backoff} s)"),
+        }
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(Duration::from_secs(backoff));
+        backoff = (backoff * 2).min(30);
+    }
+}
+
+fn tls_config(cfg: &CotConfig) -> std::io::Result<uas_cot::net::TlsConfig> {
+    let need = |v: &Option<String>, k: &str| {
+        v.clone().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{k} is not set"))
+        })
+    };
+    uas_cot::net::TlsConfig::from_pem_files(
+        need(&cfg.tls_ca, "MURMUR_COT_TLS_CA")?,
+        need(&cfg.tls_cert, "MURMUR_COT_TLS_CERT")?,
+        need(&cfg.tls_key, "MURMUR_COT_TLS_KEY")?,
+    )
+}
+
 async fn build_sinks(cfg: &CotConfig, inbound: Option<Arc<Inbound>>) -> Vec<Sink> {
     let mut sinks = Vec::new();
     if let Some(mc) = cfg.multicast {
@@ -890,6 +946,17 @@ async fn build_sinks(cfg: &CotConfig, inbound: Option<Arc<Inbound>>) -> Vec<Sink
         let (tx, rx) = mpsc::channel(512);
         tokio::spawn(tcp_task(t.clone(), rx, inbound.filter(|_| cfg.tcp_inbound)));
         sinks.push(Sink::Tcp(tx));
+    }
+    if let Some(t) = &cfg.tls {
+        match tls_config(cfg) {
+            Ok(tls) => {
+                let (tx, rx) = mpsc::channel(512);
+                let t = t.clone();
+                std::thread::spawn(move || tls_task(t, tls, rx));
+                sinks.push(Sink::Tcp(tx));
+            }
+            Err(e) => eprintln!("cot: TLS {t}: {e}"),
+        }
     }
     sinks
 }
@@ -1504,6 +1571,88 @@ mod tests {
         let mut buf = vec![0u8; 4096];
         let n = rx.recv(&mut buf).await.expect("recv");
         let got = String::from_utf8_lossy(&buf[..n]).into_owned();
+        assert_eq!(got, xml);
+        assert_eq!(parse_events(&got, 0.0)[0].cot_type, "a-f-A-M-F-Q");
+    }
+
+    /// A TAK-style TLS input that requires a client certificate gets the event, no stunnel.
+    #[test]
+    fn tls_sink_delivers_event_with_client_cert() {
+        use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
+        use std::io::Read;
+        use uas_cot::rustls;
+        let ca_key = KeyPair::generate().expect("key");
+        let mut p = CertificateParams::new(Vec::<String>::new()).expect("params");
+        p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca = p.self_signed(&ca_key).expect("ca");
+        let leaf = |name: &str| {
+            let key = KeyPair::generate().expect("key");
+            let p = CertificateParams::new(vec![name.to_string()]).expect("params");
+            (p.signed_by(&key, &ca, &ca_key).expect("leaf"), key)
+        };
+        let (srv_cert, srv_key) = leaf("localhost");
+        let (cli_cert, cli_key) = leaf("murmur");
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca.der().clone()).expect("root");
+        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            Arc::new(roots),
+            provider.clone(),
+        )
+        .build()
+        .expect("verifier");
+        let key = rustls::pki_types::PrivateKeyDer::try_from(srv_key.serialize_der()).expect("key");
+        let server_cfg = Arc::new(
+            rustls::ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .expect("versions")
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(vec![srv_cert.der().clone()], key)
+                .expect("server config"),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().expect("accept");
+            let conn = rustls::ServerConnection::new(server_cfg).expect("conn");
+            let mut tls = rustls::StreamOwned::new(conn, sock);
+            let (mut got, mut buf) = (Vec::new(), [0u8; 4096]);
+            while !String::from_utf8_lossy(&got).contains("</event>") {
+                let n = tls.read(&mut buf).expect("read");
+                assert!(n > 0, "closed before an event");
+                got.extend_from_slice(&buf[..n]);
+            }
+            String::from_utf8_lossy(&got).into_owned()
+        });
+
+        let dir = std::env::temp_dir().join(format!("murmur-cot-tls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let write = |name: &str, pem: String| {
+            let path = dir.join(name);
+            std::fs::write(&path, pem).expect("write");
+            path.to_string_lossy().into_owned()
+        };
+        let env: HashMap<&str, String> = [
+            ("MURMUR_COT_TLS", format!("localhost:{port}")),
+            ("MURMUR_COT_TLS_CA", write("ca.pem", ca.pem())),
+            ("MURMUR_COT_TLS_CERT", write("user.pem", cli_cert.pem())),
+            (
+                "MURMUR_COT_TLS_KEY",
+                write("user.key", cli_key.serialize_pem()),
+            ),
+        ]
+        .into();
+        let cfg = CotConfig::from_lookup(|k| env.get(k).cloned());
+        assert!(cfg.outputs_enabled());
+        let tls = tls_config(&cfg).expect("tls config");
+        let (tx, rx) = mpsc::channel(4);
+        let target = cfg.tls.clone().expect("target");
+        std::thread::spawn(move || tls_task(target, tls, rx));
+        let xml = build_event(&CotConfig::default(), &sample(), 1000.0, 1.0);
+        tx.blocking_send(xml.clone()).expect("queue");
+        let got = server.join().expect("server");
+        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(got, xml);
         assert_eq!(parse_events(&got, 0.0)[0].cot_type, "a-f-A-M-F-Q");
     }

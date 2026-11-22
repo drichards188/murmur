@@ -21,6 +21,8 @@ tokio = { version = "1.53.1", features = ["full"] }
 toml = { version = "1.1.6", features = ["preserve_order"] }
 quick-xml = "0.42.0"
 socket2 = { version = "0.6.5", features = ["all"] }
+# TAK Server TLS (8089, client certificates) for the CoT export: rustls, no OpenSSL.
+uas-cot = { version = "0.6.0", default-features = false, features = ["tls"] }
 # The MCP server for AI agents (Phase F): the official Rust SDK, streamable HTTP at /mcp.
 rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
 schemars = "1"
@@ -42,3 +44,5 @@ murmur-decide = { path = "../murmur-decide", features = ["soft-authenticator"] }
 # Rules 30: the stand-ins' own autopilots, whose lost-link failsafe the bridge reads
 # (decision/tests/lost_link.rs).
 murmur-standins = { path = "../murmur-standins" }
+# TAK TLS test: a CA, a server and a client certificate for a local 8089-style input.
+rcgen = "0.13"
