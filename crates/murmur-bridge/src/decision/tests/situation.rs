@@ -33,7 +33,7 @@ fn harness() -> H {
         auth: auth.clone(),
     })
     .merge(crate::situation::router(crate::situation::Situation::new(Some(TOKEN.into()))));
-    let agents = crate::mcp::Settings { agents: vec![AgentId::new("agent-planner")], keys: None, idle: crate::mcp::IDLE_LIMIT };
+    let agents = crate::mcp::Settings { agents: vec![AgentId::new("agent-planner")], keys: None, idle: crate::mcp::IDLE_LIMIT, operator: None };
     let app = crate::app_router(
         api,
         agents,

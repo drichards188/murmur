@@ -32,15 +32,25 @@
 //! Satellite reads go through the bridge's own `/api/space/*` handlers in process (the
 //! answers the console gets), all of them read-only. `get_changes` ([`changes`]) answers
 //! what changed since a cursor, for agents that poll, from the same read-only views.
+//!
+//! On a bridge whose runner asks for them ([`TASKING_TOOLS_ENV`]: `scripts/up.sh` sets it for the
+//! open world and the situations) agents also get the tasking tools ([`tools::operator_tools`]), on
+//! the operator's own stores ([`OperatorStores`], groups and the watch officer's tasking): the
+//! operator's groups to read, a group to make for one of the operator's tasking items, and an
+//! answer to one. They write to those stores only, never to the engine: no decision reads them,
+//! nothing is logged, and none of them approves, orders or decides anything. An evaluation stack
+//! (eval/stack.py, which passes no `MURMUR_*` variable it does not set itself) and the headless
+//! simulator (which keeps no such stores) offer none, so their agents' tool lists are as before.
 
 mod changes;
+mod operator;
 pub(crate) mod tools;
 mod world;
 #[cfg(test)]
 mod tests;
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::Router;
 use axum::body::Body;
@@ -52,7 +62,7 @@ use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, Implementation, InitializeRequestParams,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
+    ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -138,6 +148,26 @@ pub struct Settings {
     /// `MURMUR_MCP_IDLE_S`). Only clients on a protocol version before 2026-07-28 hold a
     /// session: from that version requests are served statelessly.
     pub idle: std::time::Duration,
+    /// The operator's own stores, shared with the API (the live bridge, `main.rs`): with them
+    /// agents get the tasking tools; without (the headless simulator) the tool list is as before.
+    pub operator: Option<OperatorStores>,
+}
+
+/// The variable a stack's runner sets to offer agents the tasking tools: `1` (or `on`, `true`,
+/// `yes`). Unset, as on an evaluation stack, the bridge offers none.
+pub const TASKING_TOOLS_ENV: &str = "MURMUR_TASKING_TOOLS";
+
+/// Whether `value` (of [`TASKING_TOOLS_ENV`]) asks for the tasking tools.
+pub fn tasking_tools_on(value: Option<&str>) -> bool {
+    matches!(value.map(|v| v.trim().to_ascii_lowercase()).as_deref(), Some("1" | "on" | "true" | "yes"))
+}
+
+/// The operator's own stores (`crate::groups`, `crate::tasking`), the same the API serves: never
+/// a decision input and never logged.
+#[derive(Clone, Default)]
+pub struct OperatorStores {
+    pub groups: Arc<RwLock<crate::groups::GroupStore>>,
+    pub tasking: Arc<RwLock<crate::tasking::TaskingStore>>,
 }
 
 /// An MCP session idle this long is dropped (a client whose connection vanished leaves no
@@ -168,6 +198,7 @@ impl Settings {
             agents: crate::auth::agents_from_env(),
             keys: None,
             idle,
+            operator: None,
         }
     }
 }
@@ -194,6 +225,8 @@ pub struct Mcp {
     sessions: Mutex<std::collections::BTreeMap<AgentId, Vec<Sess>>>,
     /// The session manager, to close a session past the cap (set by [`service`]).
     manager: std::sync::OnceLock<Arc<LocalSessionManager>>,
+    /// The operator's own stores, where this bridge keeps them ([`Settings::operator`]).
+    pub(crate) operator: Option<OperatorStores>,
 }
 
 /// One MCP session of an agent, for the cap.
@@ -257,7 +290,18 @@ impl Mcp {
             changes: changes::Feed::default(),
             sessions: Mutex::new(std::collections::BTreeMap::new()),
             manager: std::sync::OnceLock::new(),
+            operator: settings.operator,
         })
+    }
+
+    /// The tools this server offers: [`tools::tools`], and the tasking tools
+    /// ([`tools::operator_tools`]) where it keeps the operator's stores.
+    pub fn tool_list(&self) -> Vec<Tool> {
+        let mut all = tools::tools();
+        if self.operator.is_some() {
+            all.extend(tools::operator_tools());
+        }
+        all
     }
 
     /// Whether `agent` may run a nomination dry run now ([`DRY_RUN_INTERVAL`] since its last),
@@ -649,7 +693,7 @@ impl ServerHandler for Handler {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools::tools())
+        Ok(ListToolsResult::with_all_items(self.0.tool_list())
             .with_ttl_ms(LIST_TTL_MS)
             .with_cache_scope(CacheScope::Private))
     }

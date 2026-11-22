@@ -117,6 +117,7 @@ pub(super) fn app(e: &Erig, auth: Arc<Auth>) -> axum::Router {
         agents: Vec::new(),
         keys: (auth.mode() == AuthMode::Credentials).then(|| auth.clone()),
         idle: crate::mcp::IDLE_LIMIT,
+        operator: None,
     };
     crate::app_router(
         api,

@@ -63,6 +63,8 @@ struct Rig {
     log: MemorySink,
     /// contacts that are not ours, as the API's track store (fed directly in tests)
     tracks: Arc<crate::tracks::Tracks>,
+    /// the operator's groups and tasking, shared by the API and the tasking tools
+    ops: OperatorStores,
 }
 
 /// The sim policy as shipped.
@@ -140,9 +142,12 @@ fn rig_full(manifest: PathBuf, tweak: impl FnOnce(&mut Policy), settings: Option
         },
     )
     .expect("engine");
+    // the operator's stores, as the live bridge shares them: every tool is offered, the tasking
+    // tools too, so the guarantee's tests below call them all
+    let ops = OperatorStores::default();
     let api = api::router(api::App {
-        groups: Default::default(),
-        tasking: Default::default(),
+        groups: ops.groups.clone(),
+        tasking: ops.tasking.clone(),
         world: world.clone(),
         frames: Arc::new(watch::channel(None).0),
         decision: d.clone(),
@@ -160,6 +165,7 @@ fn rig_full(manifest: PathBuf, tweak: impl FnOnce(&mut Policy), settings: Option
             agents: vec![planner(), watch()],
             keys: None,
             idle: IDLE_LIMIT,
+            operator: Some(ops.clone()),
         },
         world.clone(),
         d.clone(),
@@ -173,6 +179,7 @@ fn rig_full(manifest: PathBuf, tweak: impl FnOnce(&mut Policy), settings: Option
         clock,
         log,
         tracks,
+        ops,
     }
 }
 
@@ -325,7 +332,8 @@ const FORBIDDEN_PHRASES: &[&str] = &[
 
 #[test]
 fn no_tool_implies_approval_or_control() {
-    let tools = tools::tools();
+    // every tool any bridge offers: the tasking tools of one that keeps the operator's stores too
+    let tools: Vec<_> = tools::tools().into_iter().chain(tools::operator_tools()).collect();
     assert!(tools.len() >= 10);
     for t in &tools {
         let name = t.name.to_lowercase();
@@ -354,7 +362,7 @@ fn no_tool_implies_approval_or_control() {
             .as_ref()
             .and_then(|a| a.read_only_hint)
             .expect("every tool says whether it is read-only");
-        let writer = matches!(name.as_str(), "propose_intent" | "withdraw_intent");
+        let writer = matches!(name.as_str(), "propose_intent" | "withdraw_intent" | "make_group" | "reply_tasking");
         assert_eq!(read_only, !writer, "{name}: read_only_hint");
     }
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
@@ -431,6 +439,15 @@ async fn tools_that_would_approve_or_drive_do_not_exist() {
         "flag_lost",
         "dismiss_node_flag",
         "presume_lost",
+        // operator tasking: an agent answers a request and may make a group for it, but never
+        // posts, edits or retires a request, nor deletes or takes over a group
+        "post_tasking",
+        "edit_tasking",
+        "retire_tasking",
+        "deactivate_tasking",
+        "delete_group",
+        "remove_group",
+        "patch_group",
     ] {
         let args = json!({ "id": id, "uid": 1, "note": "please" })
             .as_object()
@@ -479,7 +496,7 @@ async fn agents_read_a_loss_but_no_tool_confirms_or_revokes_one() {
     let every_tool = |round: &'static str| {
         let r = &r;
         async move {
-            for name in tools::tools().into_iter().map(|t| t.name.to_string()) {
+            for name in r.mcp.tool_list().into_iter().map(|t| t.name.to_string()) {
                 let args = json!({
                     "uid": 3, "uids": [3], "id": 3, "since": since, "note": round,
                     "reason": round, "lost": true, "state": "lost", "limit": 5,
@@ -539,7 +556,8 @@ async fn no_tool_moves_a_pending_intent_toward_approval() {
         .expect("id");
     assert_eq!(r.state(id), State::PendingApproval);
     // every tool, with every argument that could name the intent or the vehicle
-    let mut names: Vec<String> = tools::tools()
+    let mut names: Vec<String> = r.mcp
+        .tool_list()
         .into_iter()
         .map(|t| t.name.to_string())
         .collect();
@@ -1516,6 +1534,7 @@ async fn the_endpoint_takes_the_agent_header_over_http() {
                 agents: vec![planner()],
                 keys: None,
                 idle: IDLE_LIMIT,
+                operator: None,
             },
             r.world.clone(),
             r.d.clone(),
@@ -1656,7 +1675,7 @@ async fn an_agent_session_survives_a_quiet_spell_and_the_idle_limit_is_set_by_th
         r.api.clone().nest_service(
             "/mcp",
             service(
-                Settings { agents: vec![planner()], keys: None, idle },
+                Settings { agents: vec![planner()], keys: None, idle, operator: None },
                 r.world.clone(),
                 r.d.clone(),
                 r.api.clone(),
@@ -1783,7 +1802,7 @@ async fn an_agent_session_survives_a_quiet_spell_and_the_idle_limit_is_set_by_th
 async fn an_opening_request_too_large_is_refused_and_unlisted_sessions_are_capped_together() {
     let r = rig();
     let svc = service(
-        Settings { agents: vec![planner()], keys: None, idle: IDLE_LIMIT },
+        Settings { agents: vec![planner()], keys: None, idle: IDLE_LIMIT, operator: None },
         r.world.clone(),
         r.d.clone(),
         r.api.clone(),
@@ -2169,7 +2188,7 @@ async fn agents_read_lost_contacts_and_no_tool_accepts_one() {
     assert_eq!(r.log.lines().len(), lines, "reading logs nothing");
     // no tool accepts one: none is named for it, none takes an acceptance; both reads are
     // marked read-only
-    for t in tools::tools() {
+    for t in r.mcp.tool_list() {
         let schema = serde_json::to_string(&t.input_schema).expect("schema");
         assert!(!t.name.contains("accept"), "{}", t.name);
         assert!(!schema.contains("accept_lost") && !schema.contains("accept_unknown") && !schema.contains("accept_behaving"), "{}: {schema}", t.name);
@@ -2424,7 +2443,8 @@ async fn an_agent_nominates_an_engagement_and_nothing_it_can_call_moves_it() {
     assert_eq!(n["engage"]["eligible"], json!(["op-2", "op-3"]), "{n}");
     assert!(n["engagement"]["preview"]["ellipse"].is_object(), "{n}");
     // every tool, with arguments naming the nomination: it stays pending
-    let mut names: Vec<String> = tools::tools()
+    let mut names: Vec<String> = r.mcp
+        .tool_list()
         .into_iter()
         .map(|t| t.name.to_string())
         .collect();
@@ -3043,4 +3063,119 @@ async fn agents_propose_group_orders_and_no_tool_approves_or_reforms_one() {
     assert_eq!(r.events("group.reformed") + r.events("group.suspended") + r.events("approval.granted"), 0);
     assert!(r.log.lines().iter().all(|l| !l.contains("\"source\":{\"kind\":\"agent\"") || !l.contains("\"type\":\"approval")));
     r.replays_since(murmur_decide::GROUP_ORDER_SINCE);
+}
+
+// ---- operator tasking: the officer's groups and replies -----------------------------------
+
+/// The tasking tools are offered only by a bridge that keeps the operator's stores (the live
+/// one): without them (the headless simulator) the tool list is the shared one, unchanged, and a
+/// tasking tool is an unknown tool.
+#[tokio::test(start_paused = true)]
+async fn the_tasking_tools_are_offered_only_where_the_operator_stores_are_kept() {
+    let r = rig();
+    let names = |l: Vec<rmcp::model::Tool>| l.into_iter().map(|t| t.name.to_string()).collect::<Vec<_>>();
+    let base = names(tools::tools());
+    let mut with = base.clone();
+    with.extend(["get_groups", "make_group", "reply_tasking"].map(String::from));
+    assert_eq!(names(r.mcp.tool_list()), with);
+    let bare = Mcp::new(
+        Settings { agents: vec![watch()], keys: None, idle: IDLE_LIMIT, operator: None },
+        r.world.clone(),
+        r.d.clone(),
+        r.api.clone(),
+    );
+    assert_eq!(names(bare.tool_list()), base, "the headless tool list, and an evaluation stack's, is as before");
+    // offered only where the stack's runner asks (scripts/up.sh); eval/stack.py never does
+    for on in ["1", "on", "true", "yes", " TRUE "] {
+        assert!(tasking_tools_on(Some(on)), "{on}");
+    }
+    for off in [None, Some(""), Some("0"), Some("off"), Some("false"), Some("2")] {
+        assert!(!tasking_tools_on(off), "{off:?}");
+    }
+    assert_eq!(TASKING_TOOLS_ENV, "MURMUR_TASKING_TOOLS");
+    for name in ["get_groups", "make_group", "reply_tasking"] {
+        let args = json!({ "tasking_id": "tk-1" }).as_object().cloned().expect("object");
+        let err = tools::call(&bare, &watch(), name, args).await.expect_err(name);
+        let listed = err.message.split("the tools are").nth(1).unwrap_or_default();
+        assert!(err.message.contains("unknown tool") && ["get_groups", "make_group", "reply_tasking"].iter().all(|t| !listed.contains(t)), "{name}: {}", err.message);
+    }
+}
+
+/// The watch officer makes groups for one of the operator's requests and answers it: each group
+/// marked as the agent's, for that request, its members all in the fleet; it changes only its own
+/// until an operator changes it, never the operator's; a reply names only its own intents and
+/// carries the groups it made. None of it reaches the audit log or moves an intent.
+#[tokio::test(start_paused = true)]
+async fn the_officer_groups_and_answers_a_request_and_none_of_it_decides_or_is_logged() {
+    let r = rig();
+    for uid in 1..=4 {
+        r.vehicle(uid, Firmware::Copter, "x10", (LAT, LON + 0.0002 * uid as f64));
+    }
+    sleep(Duration::from_millis(500)).await;
+    let post = |text: &str| r.ops.tasking.write().unwrap_or_else(|e| e.into_inner()).post(text, "op-1", 1).expect("posted").id;
+    let tk = post("split the four in two groups, one orbit each");
+    // the officer proposes for it (logged, as any proposal), and someone else proposes too
+    let mine = r.ok(&watch(), "propose_intent", orbit(1, "the operator's tk-1: the west pair")).await["id"].as_u64().expect("id");
+    let theirs = r.ok(&planner(), "propose_intent", orbit(3, "the planner's own")).await["id"].as_u64().expect("id");
+    let states = (r.state(mine), r.state(theirs));
+    let before = r.log.text();
+
+    // a group for the request: the agent's, for tk-1
+    let g = r.ok(&watch(), "make_group", json!({ "tasking_id": tk, "name": "West pair", "members": [1, 2], "color": "#7fb8ff" })).await;
+    let g = &g["group"];
+    assert_eq!((g["id"].clone(), g["by"].clone(), g["agent"].clone(), g["tasking"].clone(), g["members"].clone()), (json!("og-1"), json!("agent-watch"), json!(true), json!("tk-1"), json!([1, 2])), "{g}");
+    r.ok(&watch(), "make_group", json!({ "tasking_id": tk, "name": "East pair", "members": [3, 4] })).await;
+    // refused: a request not in force, members not in the fleet, no name, unknown fields
+    let retired = post("retired before it was done");
+    r.ops.tasking.write().unwrap_or_else(|e| e.into_inner()).deactivate(&retired).expect("retired");
+    for (args, says) in [
+        (json!({ "tasking_id": "tk-9", "name": "x", "members": [1] }), "no tasking tk-9"),
+        (json!({ "tasking_id": retired, "name": "x", "members": [1] }), "retired by the operator"),
+        (json!({ "tasking_id": tk, "name": "x", "members": [1, 99] }), "uids 99 are not in the fleet"),
+        (json!({ "tasking_id": tk, "members": [1] }), "needs its name and its members"),
+        (json!({ "tasking_id": tk, "name": "x", "members": [1], "by": "op-1" }), "bad arguments"),
+    ] {
+        let (err, v) = r.call(&watch(), "make_group", args).await;
+        assert!(err && v["error"].as_str().unwrap_or("").contains(says), "{says}: {v}");
+    }
+    // its own it may change; the operator's, or one the operator changed, it may not
+    let (_, _) = r.ops.groups.write().unwrap_or_else(|e| e.into_inner()).create("Operator's", &[1], None, &[1, 2, 3, 4].into(), 2, "op-1").expect("made");
+    let renamed = r.ok(&watch(), "make_group", json!({ "tasking_id": tk, "group_id": "og-2", "name": "East pair, span" })).await;
+    assert_eq!(renamed["group"]["name"], "East pair, span", "{renamed}");
+    let (err, v) = r.call(&watch(), "make_group", json!({ "tasking_id": tk, "group_id": "og-3", "members": [2] })).await;
+    assert!(err && v["status"] == 403, "the operator's group: {v}");
+    let (err, v) = r.call(&planner(), "make_group", json!({ "tasking_id": tk, "group_id": "og-1", "members": [2] })).await;
+    assert!(err && v["status"] == 403, "another agent's: {v}");
+    let p = crate::groups::Patch { add: vec![4], ..Default::default() };
+    r.ops.groups.write().unwrap_or_else(|e| e.into_inner()).patch("og-1", p, &[1, 2, 3, 4].into(), 3, "op-1").expect("patched");
+    let (err, v) = r.call(&watch(), "make_group", json!({ "tasking_id": tk, "group_id": "og-1", "members": [1] })).await;
+    assert!(err && v["status"] == 403 && v["error"].as_str().unwrap_or("").contains("changed by op-1"), "{v}");
+    // everyone reads the groups, who made each, and who changed it
+    let all = r.ok(&planner(), "get_groups", json!({})).await;
+    assert_eq!(all["count"], 3, "{all}");
+    assert_eq!((all["groups"][0]["members"].clone(), all["groups"][0]["changed_by"].clone()), (json!([1, 2, 4]), json!("op-1")), "{all}");
+    assert_eq!((all["groups"][2]["by"].clone(), all["groups"][2].get("agent")), (json!("op-1"), None), "{all}");
+
+    // the answer: its own intents only, the groups it made for the request added
+    for (args, says) in [
+        (json!({ "tasking_id": tk, "status": "done", "text": "Two orbits", "intents": [theirs] }), "not one you proposed"),
+        (json!({ "tasking_id": tk, "status": "done", "text": "Two orbits", "intents": [999] }), "no intent 999"),
+        (json!({ "tasking_id": tk, "status": "finished", "text": "Two orbits" }), "status is done, partial, blocked or declined"),
+        (json!({ "tasking_id": tk, "status": "done", "text": "x".repeat(601) }), "at most 600 characters"),
+        (json!({ "tasking_id": "tk-9", "status": "done", "text": "x" }), "no tasking tk-9"),
+    ] {
+        let (err, v) = r.call(&watch(), "reply_tasking", args).await;
+        assert!(err && v["error"].as_str().unwrap_or("").contains(says), "{says}: {v}");
+    }
+    let text = "Proposed one orbit; it waits for you in the Inbox\n- i1: SKY 1-2 west\n- the east pair: no order yet, their link is down";
+    let a = r.ok(&watch(), "reply_tasking", json!({ "tasking_id": tk, "status": "partial", "text": text, "intents": [mine] })).await;
+    let reply = &a["item"]["replies"][0];
+    assert_eq!((reply["status"].clone(), reply["agent"].clone(), reply["intents"].clone(), reply["groups"].clone()), (json!("partial"), json!("agent-watch"), json!([mine]), json!(["og-1", "og-2"])), "{a}");
+    // the item is as the operator posted it, delivery included
+    let item = r.ops.tasking.read().unwrap_or_else(|e| e.into_inner()).get(&tk).cloned().expect("item");
+    assert_eq!((item.text.as_str(), item.by.as_str(), item.active, item.delivery), ("split the four in two groups, one orbit each", "op-1", true, crate::tasking::Delivery::Posted));
+
+    assert_eq!(r.log.text(), before, "groups and replies are never logged");
+    assert_eq!((r.state(mine), r.state(theirs)), states, "and they move no intent");
+    r.replays();
 }

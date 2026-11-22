@@ -53,7 +53,10 @@
 //! exception is the watch officer's acknowledgement, `POST /api/tasking/{id}/ack` (an agent only:
 //! an operator's request is refused 403), which moves an item's delivery state forward (seen,
 //! processed) and nothing else; and a read of `GET /api/tasking` by an agent is remembered, so the
-//! console can say whether an officer is connected. Neither is logged or read by a decision.
+//! console can say whether an officer is connected. Neither is logged or read by a decision. The
+//! officer's other writes to these stores, a group made for a tasking item and a reply to one, go
+//! through its own MCP tools only (`crate::mcp::tools`: `make_group`, `reply_tasking`), never
+//! these routes; each group says who made it (`by`) and each reply which agent wrote it.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -1025,9 +1028,10 @@ struct GroupCreate {
 
 /// `POST /api/groups`: 201 with the group and any `dropped` uids (not in the fleet).
 async fn groups_create(State(app): State<App>, headers: HeaderMap, body: Result<Json<GroupCreate>, JsonRejection>) -> Response {
-    if let Err(r) = store_writer(&app, &headers) {
-        return *r;
-    }
+    let op = match store_writer(&app, &headers) {
+        Ok(op) => op,
+        Err(r) => return *r,
+    };
     let req = match body {
         Ok(Json(r)) => r,
         Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
@@ -1037,7 +1041,7 @@ async fn groups_create(State(app): State<App>, headers: HeaderMap, body: Result<
         .groups
         .write()
         .unwrap_or_else(|e| e.into_inner())
-        .create(&req.name, &req.members, req.color, &known, now_ms());
+        .create(&req.name, &req.members, req.color, &known, now_ms(), op.operator().as_str());
     match made {
         Ok((g, dropped)) => {
             let mut v = serde_json::to_value(g).unwrap_or(Value::Null);
@@ -1060,11 +1064,14 @@ fn uid_list(v: Option<&Value>) -> Result<Option<Vec<crate::vehicle::Uid>>, &'sta
     }
 }
 
-/// `PATCH /api/groups/{id}`: `name`, `color` (null clears), `add`, `remove`, `members`.
+/// `PATCH /api/groups/{id}`: `name`, `color` (null clears), `add`, `remove`, `members`. Any group,
+/// one the watch officer made included: the operator's change takes it from the officer
+/// (`changed_by`), which may change it no more.
 async fn groups_patch(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap, body: Result<Json<Map<String, Value>>, JsonRejection>) -> Response {
-    if let Err(r) = store_writer(&app, &headers) {
-        return *r;
-    }
+    let op = match store_writer(&app, &headers) {
+        Ok(op) => op,
+        Err(r) => return *r,
+    };
     let b = match body {
         Ok(Json(b)) => b,
         Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
@@ -1086,7 +1093,7 @@ async fn groups_patch(State(app): State<App>, Path(id): Path<String>, headers: H
     };
     let known = known_uids(&app);
     let patch = crate::groups::Patch { name, color, add, remove, members };
-    let done = app.groups.write().unwrap_or_else(|e| e.into_inner()).patch(&id, patch, &known, now_ms());
+    let done = app.groups.write().unwrap_or_else(|e| e.into_inner()).patch(&id, patch, &known, now_ms(), op.operator().as_str());
     match done {
         Ok(Some((g, dropped))) => {
             let mut v = serde_json::to_value(g).unwrap_or(Value::Null);
@@ -1113,10 +1120,11 @@ async fn groups_delete(State(app): State<App>, Path(id): Path<String>, headers: 
 // ---- operator tasking for the watch officer: guidance, not a decision ----
 
 /// `GET /api/tasking`: every item, newest first (the officer sends only the active ones), with
-/// how far the officer has each, and `officer`: the agent that last read it and when (null: none
-/// has). No identity needed; a read that names an agent (its id header or key, as `/mcp` takes
-/// them) is remembered as the officer's last read, one that names none or a wrong one is served
-/// all the same.
+/// how far the officer has each and its replies, `officer`: the agent that last read it and when
+/// (null: none has), and `officer_replies` (this bridge offers the officer `reply_tasking`, so an
+/// item it had and has not answered can be shown as such; false where it does not). No identity needed; a read that names an agent
+/// (its id header or key, as `/mcp` takes them) is remembered as the officer's last read, one that
+/// names none or a wrong one is served all the same.
 async fn tasking_list(State(app): State<App>, headers: HeaderMap) -> Response {
     let now = now_ms();
     let mut store = app.tasking.write().unwrap_or_else(|e| e.into_inner());
@@ -1124,7 +1132,7 @@ async fn tasking_list(State(app): State<App>, headers: HeaderMap) -> Response {
         store.read_by(agent.as_str(), now);
     }
     let officer = store.reader().map(|(agent, t)| json!({ "agent": agent, "read_t": t }));
-    Json(json!({ "t": now, "items": store.list(), "officer": officer })).into_response()
+    Json(json!({ "t": now, "items": store.list(), "officer": officer, "officer_replies": store.replies_kept() })).into_response()
 }
 
 #[derive(Deserialize)]

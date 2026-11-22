@@ -337,6 +337,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             settings.operators.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
         ),
     }
+    // the operator's own stores (groups, the watch officer's tasking): the API's, and the
+    // agents' tasking tools on the same ones where the runner asks for them
+    let operator = mcp::OperatorStores::default();
+    let tasking_tools = mcp::tasking_tools_on(std::env::var(mcp::TASKING_TOOLS_ENV).ok().as_deref());
+    if tasking_tools {
+        // so the console can tell a request the officer had and left unanswered
+        operator.tasking.write().unwrap_or_else(|e| e.into_inner()).keep_replies();
+    }
     let api = api::router(api::App {
         world: world.clone(),
         frames,
@@ -344,8 +352,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracks,
         lod,
         auth: auth.clone(),
-        groups: Default::default(),
-        tasking: Default::default(),
+        groups: operator.groups.clone(),
+        tasking: operator.tasking.clone(),
     })
     .merge(emu::router(emu))
     // a situation runner's status for the console: display only, never a decision input
@@ -353,6 +361,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .merge(situation::router(situation::Situation::from_env()));
     // the MCP server for agents: in-process AgentPorts, read-only reuse of the API above
     let mut agents = mcp::Settings::from_env();
+    if tasking_tools {
+        println!("mcp: the tasking tools (get_groups, make_group, reply_tasking) offered ({}=1)", mcp::TASKING_TOOLS_ENV);
+        agents.operator = Some(operator);
+    } else {
+        println!("mcp: no tasking tools ({} unset, as on an evaluation stack)", mcp::TASKING_TOOLS_ENV);
+    }
     match auth.mode() {
         murmur_decide::AuthMode::Credentials => {
             agents.keys = Some(auth.clone());

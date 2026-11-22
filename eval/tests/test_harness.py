@@ -1016,3 +1016,21 @@ def test_run_passphrases_meet_the_password_policy():
     ps = {passphrase() for _ in range(50)}
     assert len(ps) == 50
     assert all(len(p) >= 15 and p.count("-") == 4 for p in ps)
+
+
+def test_an_eval_stack_never_offers_the_tasking_tools(tmp_path: Path, monkeypatch):
+    """The bridge offers agents the tasking tools (get_groups, make_group, reply_tasking) only where
+    its runner sets MURMUR_TASKING_TOOLS: scripts/up.sh does, for the open world and the situations;
+    an evaluation stack starts its bridge itself, never sets it, and passes on no MURMUR_* variable
+    of the caller's, so the tool list a model gets there (eval/model_agent.py) is as before."""
+    import inspect
+
+    from eval import stack as K
+
+    monkeypatch.setenv("MURMUR_TASKING_TOOLS", "1")  # exported in the caller's shell, as after a make goldengate
+    spec = load_spec(REPO / "eval" / "scenarios" / "plausible-wrong.toml")
+    s = K.Stack(spec, 1, P.PortBlock(index=0), tmp_path, "test-run")
+    env = s._env(MURMUR_HTTP_PORT="10600")
+    assert "MURMUR_TASKING_TOOLS" not in env, "the caller's is not passed on"
+    assert "MURMUR_TASKING_TOOLS" not in inspect.getsource(K), "nor does the stack set it"
+    assert 'export MURMUR_TASKING_TOOLS="${MURMUR_TASKING_TOOLS:-1}"' in (REPO / "scripts" / "up.sh").read_text()

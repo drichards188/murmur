@@ -504,7 +504,7 @@ impl IntentParams {
 /// `uids` or `compact`.
 pub const RESULT_MAX_CHARS: u64 = 150_000;
 
-fn tool<T: JsonSchema + 'static>(name: &'static str, description: String, read_only: bool) -> Tool {
+pub(crate) fn tool<T: JsonSchema + 'static>(name: &'static str, description: String, read_only: bool) -> Tool {
     let mut t = Tool::new(name, description, schema_for_type::<T>());
     let mut a = ToolAnnotations::new();
     a.read_only_hint = Some(read_only);
@@ -853,6 +853,12 @@ pub fn tools() -> Vec<Tool> {
     ]
 }
 
+/// The tasking tools (`get_groups`, `make_group`, `reply_tasking`: [`super::operator`]), offered
+/// with [`tools`] only by a bridge that keeps the operator's stores ([`Mcp::tool_list`]).
+pub fn operator_tools() -> Vec<Tool> {
+    super::operator::tools()
+}
+
 /// Arguments as the tool's parameter type; a mismatch is a result the model can read.
 fn parse<T: DeserializeOwned>(args: JsonObject) -> Result<T, Box<CallToolResult>> {
     serde_json::from_value(Value::Object(args)).map_err(|e| {
@@ -912,6 +918,12 @@ pub async fn call(
                 Err(r) => return Ok(*r),
             }
         };
+    }
+    // the tasking tools, where this bridge keeps the operator's stores (else unknown, as before)
+    if let Some(ops) = &mcp.operator
+        && let Some(out) = super::operator::call(mcp, ops, agent, name, &args)
+    {
+        return Ok(out);
     }
     let out: Result<Value, DecisionError> = match name {
         "get_fleet" => {
@@ -1151,7 +1163,7 @@ pub async fn call(
                 })
         }
         _ => {
-            let names: Vec<_> = tools().into_iter().map(|t| t.name).collect();
+            let names: Vec<_> = mcp.tool_list().into_iter().map(|t| t.name).collect();
             return Err(ErrorData::invalid_params(
                 format!("unknown tool {name:?}; the tools are {}", names.join(", ")),
                 None,

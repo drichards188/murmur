@@ -63,6 +63,10 @@ export MURMUR_BASE_PORT="${MURMUR_BASE_PORT:-14560}"
 export MURMUR_HTTP_PORT="${MURMUR_HTTP_PORT:-8765}"
 web_port="${MURMUR_WEB_PORT:-5173}"
 export MURMUR_BRIDGE_URL="http://127.0.0.1:$MURMUR_HTTP_PORT"  # vite proxies here
+# the tasking tools for agents (MCP get_groups, make_group, reply_tasking: the watch officer's
+# answers to the operator's requests): offered on the open world and the situations; an evaluation
+# stack (eval/stack.py) starts its bridge itself and never sets it, so its tool list is as before
+export MURMUR_TASKING_TOOLS="${MURMUR_TASKING_TOOLS:-1}"
 case "${MURMUR_LINKEMU:-1}" in 0|off|false|no) linkemu=0 ;; *) linkemu=1 ;; esac
 case "${MURMUR_WEB:-1}" in 0|off|false|no) web=0 ;; preview) web=preview ;; *) web=1 ;; esac
 # MURMUR_WEB_MODE=build serves the production build where the dev server would be (dev, the default, is as before)

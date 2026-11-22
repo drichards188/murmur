@@ -15,9 +15,13 @@ use crate::auth::{Auth, Settings as AuthSettings, default_origins};
 fn harness() -> H {
     let e = engage_rig_auth(None, PathBuf::from("memory"), AuthMode::Dev);
     let auth = Auth::new(AuthSettings::dev(), e.r.d.clone(), CredentialFile::default()).expect("auth");
+    // one set of stores for the API and the agents' tasking tools, as main.rs shares them with
+    // the tools on (MURMUR_TASKING_TOOLS=1)
+    let ops = crate::mcp::OperatorStores::default();
+    ops.tasking.write().unwrap_or_else(|e| e.into_inner()).keep_replies();
     let api = crate::api::router(crate::api::App {
-        groups: Default::default(),
-        tasking: Default::default(),
+        groups: ops.groups.clone(),
+        tasking: ops.tasking.clone(),
         world: e.r.world.clone(),
         frames: Arc::new(watch::channel(None).0),
         decision: e.r.d.clone(),
@@ -25,7 +29,7 @@ fn harness() -> H {
         lod: crate::push::LodSettings::default(),
         auth: auth.clone(),
     });
-    let agents = crate::mcp::Settings { agents: vec![AgentId::new("agent-planner")], keys: None, idle: crate::mcp::IDLE_LIMIT };
+    let agents = crate::mcp::Settings { agents: vec![AgentId::new("agent-planner")], keys: None, idle: crate::mcp::IDLE_LIMIT, operator: Some(ops) };
     let app = crate::app_router(api, agents, e.r.world.clone(), e.r.d.clone(), auth.clone(), Arc::new(default_origins(5173, 8765)));
     H { app, e, auth, file: PathBuf::new(), key: "no key".into() }
 }
@@ -173,4 +177,74 @@ async fn the_officer_acknowledges_tasking_forward_only_and_can_change_nothing_el
     assert_eq!((v["active"].clone(), v["delivery"].clone()), (json!(false), json!("processed")), "{v}");
 
     assert_eq!(h.log(), before, "acknowledgements and reads are not logged");
+}
+
+/// A tool call over the mounted `/mcp` as agent-planner (a session of its own).
+async fn tool(h: &H, name: &str, args: serde_json::Value) -> serde_json::Value {
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "agent-planner", "version": "0" } },
+    });
+    let (s, hd, v) = h.call("POST", "/mcp", Some(init), &AGENT).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let session = hd.get("mcp-session-id").and_then(|v| v.to_str().ok()).expect("session").to_string();
+    let with = [AGENT[0], ("mcp-session-id", session.as_str())];
+    h.call("POST", "/mcp", Some(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })), &with).await;
+    let body = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": name, "arguments": args } });
+    let (s, _, v) = h.call("POST", "/mcp", Some(body), &with).await;
+    assert_eq!(s, StatusCode::OK, "{name}: {v}");
+    v["result"]["structuredContent"].clone()
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_officers_groups_and_replies_reach_the_console_marked_as_its_own_and_are_logged_nowhere() {
+    let h = harness();
+    for uid in 1..=3 {
+        h.e.r.vehicle(uid, Firmware::Copter, "switchblade", (37.8120 + 0.0001 * uid as f64, -122.4950));
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    h.call("POST", "/api/tasking", Some(json!({ "text": "split the three: one alone, two together" })), &OP).await;
+    h.call("POST", "/api/groups", Some(json!({ "name": "Operator's own", "members": [1] })), &OP).await; // og-1
+    // an agent's first connection is logged once (agent.action session.connected), as ever
+    let read = tool(&h, "get_groups", json!({})).await;
+    assert_eq!(read["count"], 1, "{read}");
+    let before = h.log();
+
+    // the officer's group (MCP only), marked as its own for tk-1
+    let made = tool(&h, "make_group", json!({ "tasking_id": "tk-1", "name": "Pair", "members": [2, 3] })).await;
+    assert_eq!(made["group"]["id"], "og-2", "{made}");
+    let (_, _, v) = h.call("GET", "/api/groups", None, &[]).await;
+    let (op, ag) = (&v["groups"][0], &v["groups"][1]);
+    assert_eq!((op["by"].clone(), op.get("agent").cloned()), (json!("op-1"), None), "{v}");
+    assert_eq!((ag["by"].clone(), ag["agent"].clone(), ag["tasking"].clone()), (json!("agent-planner"), json!(true), json!("tk-1")), "{v}");
+    // the operator's routes stay closed to it, for its own group too
+    let (s, _, _) = h.call("PATCH", "/api/groups/og-2", Some(json!({ "add": [1] })), &AGENT).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = h.call("DELETE", "/api/groups/og-2", None, &AGENT).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // it cannot change the operator's group through its tool either
+    let refused = tool(&h, "make_group", json!({ "tasking_id": "tk-1", "group_id": "og-1", "members": [2] })).await;
+    assert_eq!(refused["status"], 403, "{refused}");
+
+    // its answer, under the item
+    let a = tool(&h, "reply_tasking", json!({ "tasking_id": "tk-1", "status": "done", "text": "Made two groups\n- og-2: the pair" })).await;
+    assert_eq!(a["item"]["replies"][0]["groups"], json!(["og-2"]), "{a}");
+    let (_, _, v) = h.call("GET", "/api/tasking", None, &[]).await;
+    let r = &v["items"][0]["replies"][0];
+    assert_eq!((r["status"].clone(), r["agent"].clone(), r["text"].clone()), (json!("done"), json!("agent-planner"), json!("Made two groups\n- og-2: the pair")), "{v}");
+    assert_eq!(v["items"][0]["delivery"], "posted", "a reply moves no delivery state");
+    assert_eq!(v["officer_replies"], true, "the console can tell an item not answered yet");
+
+    // the operator may change and delete the officer's group; once changed, it is theirs
+    let (s, _, v) = h.call("PATCH", "/api/groups/og-2", Some(json!({ "add": [1] })), &OP).await;
+    assert_eq!((s, v["changed_by"].clone(), v["by"].clone()), (StatusCode::OK, json!("op-1"), json!("agent-planner")), "{v}");
+    let refused = tool(&h, "make_group", json!({ "tasking_id": "tk-1", "group_id": "og-2", "name": "Mine again" })).await;
+    assert_eq!(refused["status"], 403, "{refused}");
+    let (s, _, _) = h.call("DELETE", "/api/groups/og-2", None, &OP).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    // an operator's write is never taken for an agent's: no tool call is an operator's request
+    let (s, _, _) = h.call("POST", "/api/tasking", Some(json!({ "text": "x" })), &AGENT).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(h.log(), before, "the officer's groups and replies are not logged");
 }
