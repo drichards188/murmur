@@ -1,6 +1,7 @@
-// The operator's tasking of the AI watch officer: the feed (GET /api/tasking) and the two calls
-// (POST /api/tasking, POST /api/tasking/{id}/deactivate). See tasking.ts. A write carries the
-// operator identity as any operator POST does and needs no step-up: it is guidance, not a decision.
+// The operator's tasking of the AI watch officer: the feed (GET /api/tasking, with the officer's
+// delivery states and replies) and the two calls (POST /api/tasking, POST
+// /api/tasking/{id}/deactivate). See tasking.ts. A write carries the operator identity as any
+// operator POST does and needs no step-up: a request is not an approval and not a decision.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator } from './decisions'
@@ -11,11 +12,11 @@ export type TaskingStatus = 'loading' | 'ok' | 'missing' | 'error'
 export interface TaskingApi {
   items: TaskingItem[]
   /** the bridge's last read by an agent and its clock then (officerOf); `officer` undefined: a
-   *  bridge that does not say */
-  reader: Pick<TaskingDoc, 't' | 'officer'>
+   *  bridge that does not say; `officer_replies`: it keeps the officer's replies (awaitsReply) */
+  reader: Pick<TaskingDoc, 't' | 'officer' | 'officer_replies'>
   status: TaskingStatus
   error: string | null
-  /** post guidance; the item as the bridge made it, or null (error says why) */
+  /** post a request; the item as the bridge made it, or null (error says why) */
   post: (text: string) => Promise<TaskingItem | null>
   deactivate: (id: string) => Promise<boolean>
 }
@@ -25,7 +26,7 @@ const POLL_MS = 4000
 const FAST_MS = 1500
 const MISSING_MS = 30_000
 const NONE: TaskingItem[] = []
-const UNSAID: Pick<TaskingDoc, 't' | 'officer'> = { t: 0, officer: undefined }
+const UNSAID: Pick<TaskingDoc, 't' | 'officer' | 'officer_replies'> = { t: 0, officer: undefined }
 
 const refusal = (res: Response, json: Record<string, unknown>) => String(json.detail ?? json.error ?? `the bridge returned ${res.status}`)
 
@@ -40,7 +41,7 @@ async function write(url: string, body?: unknown): Promise<{ res: Response; json
 
 export function useTasking(on = true): TaskingApi {
   const [items, setItems] = useState<TaskingItem[]>(NONE)
-  const [reader, setReader] = useState<Pick<TaskingDoc, 't' | 'officer'>>(UNSAID)
+  const [reader, setReader] = useState<Pick<TaskingDoc, 't' | 'officer' | 'officer_replies'>>(UNSAID)
   const [status, setStatus] = useState<TaskingStatus>('loading')
   const [error, setError] = useState<string | null>(null)
   // a poll asked before a write must not overwrite the write's answer
@@ -72,10 +73,11 @@ export function useTasking(on = true): TaskingApi {
         const got = Array.isArray(doc?.items) ? doc.items : NONE
         setItems(got)
         const officer = doc && 'officer' in doc ? ((doc.officer ?? null) as OfficerRead | null) : undefined
-        setReader({ t: typeof doc?.t === 'number' ? doc.t : 0, officer })
+        const t = typeof doc?.t === 'number' ? doc.t : 0
+        setReader({ t, officer, officer_replies: doc?.officer_replies === true })
         setStatus('ok')
         setError(null)
-        return inFlight(got) ? FAST_MS : POLL_MS
+        return inFlight(got, t) ? FAST_MS : POLL_MS
       } catch (e) {
         if (!stop) {
           setStatus((s) => (s === 'ok' ? s : 'error'))

@@ -70,8 +70,9 @@ export function headline(i: HeadlineInput): Headline {
 
 export interface GroupRow {
   key: string
-  /** a fleet swarm (fixed by the fleet file) or one of the operator's own groups */
-  kind: 'swarm' | 'yours'
+  /** a fleet swarm (fixed by the fleet file), one of the operator's own groups, or one the AI watch
+   *  officer made for a tasking request (groups.ts `byOfficer`) */
+  kind: 'swarm' | 'yours' | 'officer'
   name: string
   color: string | null
   total: number
@@ -126,7 +127,7 @@ export function groupRows(
   groups: readonly OperatorGroup[],
   by: ReadonlyMap<number, Vehicle>,
   ctx: SitrepContext,
-  looks: (kind: 'swarm' | 'yours', index: number) => string | null,
+  looks: (kind: 'swarm' | 'yours' | 'officer', index: number) => string | null,
   markOf: (id: string) => Pick<GroupMark, 'doing' | 'parts' | 'tone' | 'intent'> | undefined = () => undefined,
 ): GroupRow[] {
   const rank = { bad: 0, warn: 1, ok: 2 }
@@ -145,7 +146,8 @@ export function groupRows(
   })
   const mine: GroupRow[] = groups.map((g, i) => {
     const t = tally(g.members, by, ctx)
-    return { key: `g:${g.id}`, kind: 'yours', name: g.name, color: looks('yours', i) ?? g.color, total: g.members.length, counts: t.counts, lowBattery: t.lowBattery, task: '', tone: toneOf(t.here, t.counts, t.lowBattery), members: g.members }
+    const kind = g.agent === true ? 'officer' : 'yours'
+    return { key: `g:${g.id}`, kind, name: g.name, color: looks(kind, i) ?? g.color, total: g.members.length, counts: t.counts, lowBattery: t.lowBattery, task: '', tone: toneOf(t.here, t.counts, t.lowBattery), members: g.members }
   })
   const trouble = (a: GroupRow, b: GroupRow) => rank[a.tone] - rank[b.tone]
   return [...mine.sort(trouble), ...rows.sort(trouble)]
@@ -302,7 +304,7 @@ export function sitrepText(h: Headline, rows: readonly GroupRow[], c: ContactSum
   lines.push(`**${h.up} of ${h.total} vehicles heard** (${h.lost} lost link); **${h.contacts} contacts** (${h.hostile} hostile, ${h.suspect} suspect); **${h.waiting} waiting for a person**.`)
   if (h.urgent) lines.push('', `Most urgent: ${h.urgent}`)
   lines.push('', '## Groups and swarms')
-  for (const r of rows) lines.push(`- ${r.kind === 'yours' ? '(yours) ' : ''}**${r.name}**: ${strengthWords(r)}${r.task ? `; ${r.task}` : ''}${r.lowBattery ? `; ${r.lowBattery} low on battery` : ''}`)
+  for (const r of rows) lines.push(`- ${r.kind === 'yours' ? '(yours) ' : r.kind === 'officer' ? "(the officer's) " : ''}**${r.name}**: ${strengthWords(r)}${r.task ? `; ${r.task}` : ''}${r.lowBattery ? `; ${r.lowBattery} low on battery` : ''}`)
   lines.push('', '## Contacts', Object.entries(c.byAffiliation).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(', ') || 'none')
   return lines.join('\n')
 }

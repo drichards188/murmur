@@ -61,7 +61,7 @@ interface Props {
   /** the map's banners (App.tsx), shown under this drawer's header while it is open over the
    *  map's right edge, where they would otherwise sit over its top (bd murmur-76gv) */
   banners?: ReactNode
-  /** an order's line saying what guidance its turn read (Awaiting.tsx's TurnCause), or nothing */
+  /** an order's line saying what request it was proposed for (Awaiting.tsx's TurnCause), or nothing */
   cause?: (i: Intent) => ReactNode
 }
 

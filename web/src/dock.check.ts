@@ -37,7 +37,7 @@ const done = item('tk-1', 1000, { delivery: 'processed', officer: 'agent-watch',
 const going = item('tk-2', 1500, { delivery: 'seen', officer: 'agent-watch', seen_t: 2000, seen_wake: 4 })
 const sent = item('tk-3', 1800, { delivery: 'posted' })
 assert.equal(turnOf(intent(1, 5000, watch), [sent]), null, 'guidance the officer has not been given: no turn')
-assert.deepEqual(turnOf(intent(1, 5000, watch), [done]), { item: done, also: 0, wake: 4 }, 'proposed during the turn that read it')
+assert.deepEqual(turnOf(intent(1, 5000, watch), [done]), { item: done, also: 0, wake: 4, explicit: false }, 'proposed during the turn that read it')
 assert.equal(turnOf(intent(1, 1900, watch), [done]), null, 'proposed before the officer was given it')
 assert.equal(turnOf(intent(1, 9500, watch), [done]), null, 'proposed after that turn finished: a later turn')
 assert.equal(turnOf(intent(1, 99_000, watch), [going])?.item.id, 'tk-2', 'a turn still going: open-ended')
@@ -50,6 +50,19 @@ assert.deepEqual([both.item.id, both.also], ['tk-2', 1], 'one turn read two: the
 assert.deepEqual(turnItems(intent(1, 5000, watch), [done, going]).map((i) => i.id), ['tk-2', 'tk-1'])
 const ins = [intent(3, 6000, watch), intent(2, 4000, watch), intent(4, 9500, watch), intent(5, 5000, { kind: 'human', id: 'op-1' })]
 assert.deepEqual(proposedIn(done, ins).map((i) => i.id), [2, 3], "the other way round: that turn's orders, oldest first")
+// the officer's own answer naming its orders replaces the guess by time, both ways round
+const answer = (intents: number[], agent = 'agent-watch') => ({ t: 9000, agent, status: 'done' as const, text: 'Proposed two patrols', intents })
+const answered = { ...done, replies: [answer([4])] }
+const named = turnOf(intent(4, 9500, watch), [answered])!
+assert.deepEqual([named.item.id, named.explicit], ['tk-1', true], 'named by its answer, though proposed after the turn ended')
+assert.equal(turnOf(intent(2, 4000, watch), [answered]), null, 'an order of the turn the answer does not name: no longer linked by time')
+assert.deepEqual(proposedIn(answered, ins).map((i) => i.id), [4], 'the request answered: exactly the orders its answer names')
+const otherTurn = { ...going, replies: [answer([3])] }
+assert.deepEqual(turnItems(intent(3, 6000, watch), [done, otherTurn]).map((i) => i.id), ['tk-2'], 'named by one request: not also guessed for another')
+assert.deepEqual(turnItems(intent(2, 4000, watch), [done, otherTurn]).map((i) => i.id), ['tk-1'], 'a request whose answer names nothing keeps the guess')
+assert.equal(turnOf(intent(4, 9500, watch), [{ ...done, replies: [answer([4], 'agent-planner')] }]), null, "another agent's answer names nothing of this one's")
+const noNames = { ...done, replies: [answer([])] }
+assert.equal(turnOf(intent(3, 6000, watch), [noNames])?.explicit, false, 'an answer naming no intent: the guess by time stands')
 
 assert.equal(excerpt('  Hold   the\nferry lane  '), 'Hold the ferry lane')
 assert.equal(excerpt('x'.repeat(100), 10), `${'x'.repeat(9)}…`)

@@ -202,6 +202,11 @@ export function Sitrep(p: Props) {
                 <span className="srp-gname">
                   {r.name}
                   {r.kind === 'yours' && <span className="og-badge">yours</span>}
+                  {r.kind === 'officer' && (
+                    <span className="og-badge og-officer" title="Made by the AI watch officer for one of your tasking requests">
+                      officer
+                    </span>
+                  )}
                 </span>
                 <span className="srp-gstr">{strengthWords(r)}</span>
                 <Counts r={r} />

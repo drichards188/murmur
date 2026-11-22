@@ -5,7 +5,7 @@ import './dock.css'
 
 /** What waits for a person's approval, at the head of whatever drawer the dock shows but the Inbox
  *  (dock.ts): one line each, soonest expiry first, its proposer as the Inbox labels it (the AI's as
- *  the AI's) and, for the officer's, the guidance its turn read. A line only opens its card in the
+ *  the AI's) and, for the officer's, the request it was proposed for. A line only opens its card in the
  *  Inbox: the person decides there, on the card's checks, never here. */
 export function Awaiting({ rows, onOpen, max = 3 }: { rows: AwaitRow[]; onOpen: (id: number) => void; max?: number }) {
   if (!rows.length) return null
@@ -64,18 +64,20 @@ function Left({ s }: { s: number | null }) {
   )
 }
 
-/** What the link means, in its title: when, never why. */
+/** What the link means, in its title: the officer's own answer naming the order, or only when it
+ *  was proposed, never why. */
 function turnTitle(l: TurnLink): string {
+  if (l.explicit) return `The watch officer's answer to this request names this order as one it proposed for it${l.also ? ` (as do its answers to ${l.also} more)` : ''}.`
   const update = l.wake != null ? `update ${l.wake}` : 'the update'
-  return `The watch officer proposed this in ${update}, the turn that first read this guidance${l.also ? ` (and ${l.also} more)` : ''}. That turn may have read other things too: this says when it was proposed, not why.`
+  return `The watch officer proposed this in ${update}, the turn that first read this request${l.also ? ` (and ${l.also} more)` : ''}. That turn may have read other things too: this says when it was proposed, not why.`
 }
 
-/** On an order's card in the Inbox: the guidance the turn it was proposed in read, and the way to
- *  that message in the officer's drawer. */
+/** On an order's card in the Inbox: the request it was proposed for (the officer's answer names it,
+ *  or its turn read it), and the way to that message in the officer's drawer. */
 export function TurnCause({ link, onShow }: { link: TurnLink; onShow: () => void }) {
   return (
     <p className="ix-turn" title={turnTitle(link)}>
-      <span className="ix-label">Your guidance in this turn{link.wake != null ? ` (update ${link.wake})` : ''}</span>
+      <span className="ix-label">{link.explicit ? 'Proposed for your request' : `Your request in this turn${link.wake != null ? ` (update ${link.wake})` : ''}`}</span>
       <span className="ix-turn-text">
         “{excerpt(link.item.text, 140)}”{link.also ? ` and ${link.also} more` : ''}
       </span>

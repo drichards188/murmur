@@ -3,8 +3,11 @@
 // (swarmsModel.ts: fixed by the fleet file, read-only at /api/swarms): a vehicle can be in a swarm
 // and in any number of these. A group is an organising convenience and a named selection: it
 // decides nothing, it is not logged, and commanding one is the order form's ordinary group order to
-// the members' uids (the group's name as the order's label). This module is the pure part, checked
-// by groups.check.ts; useGroups.ts has the feed and the calls.
+// the members' uids (the group's name as the order's label). The AI watch officer may make groups
+// too, for one of the operator's tasking items (its own MCP tool, never these routes): such a group
+// says so (`agent`, `tasking`), is listed apart from the operator's own, and is the operator's to
+// change or delete like any other. This module is the pure part, checked by groups.check.ts;
+// useGroups.ts has the feed and the calls.
 import { GROUP_PALETTE, sameMembers } from './swarmsModel.ts'
 
 /** One group as the bridge serves it. */
@@ -16,6 +19,35 @@ export interface OperatorGroup {
   members: number[]
   created_t: number
   updated_t: number
+  /** who made it: an operator's id, or an agent's (then `agent`); absent from an older bridge */
+  by?: string
+  /** made by an agent (the AI watch officer) for the operator's tasking item `tasking` */
+  agent?: boolean
+  tasking?: string
+  /** who changed it last: once an operator changes the officer's group, the officer may not */
+  changed_by?: string
+}
+
+/** Whether the AI watch officer made the group (an agent), not the operator. */
+export function byOfficer(g: Pick<OperatorGroup, 'agent'>): boolean {
+  return g.agent === true
+}
+
+/** The operator's own groups and the officer's, each in the bridge's order. */
+export function splitByMaker<G extends Pick<OperatorGroup, 'agent'>>(groups: readonly G[]): { yours: G[]; officer: G[] } {
+  return { yours: groups.filter((g) => !byOfficer(g)), officer: groups.filter(byOfficer) }
+}
+
+/** An officer's group in words, for its badge's title. */
+export function officerNote(g: Pick<OperatorGroup, 'by' | 'tasking' | 'changed_by'>): string {
+  const made = `Made by the AI watch officer (${g.by ?? 'an agent'}) for tasking ${g.tasking ?? '?'}: organisation only, it orders nothing.`
+  if (g.changed_by && g.changed_by !== g.by) return `${made} Changed by ${g.changed_by} since, so the officer can no longer change it.`
+  return `${made} You may change or delete it; once you change it, the officer may not.`
+}
+
+/** The groups the officer made for one tasking item, in the bridge's order. */
+export function groupsFor<G extends Pick<OperatorGroup, 'agent' | 'tasking'>>(groups: readonly G[], taskingId: string): G[] {
+  return groups.filter((g) => byOfficer(g) && g.tasking === taskingId)
 }
 
 export interface GroupsDoc {

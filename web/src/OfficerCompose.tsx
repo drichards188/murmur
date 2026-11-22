@@ -16,8 +16,9 @@ export interface ComposeInsert {
 /** The message box to the watch officer, pinned at the top of its drawer (TaskingPanel's `compose`):
  *  Enter sends, Shift+Enter is a new line, the count runs to the bridge's cap, and Send waits, saying
  *  why, while no officer reads the tasking. The draft is the caller's (App), so it outlives the
- *  drawer: switching to the Inbox to decide and back keeps what was half written. Guidance only:
- *  sending is never an order or a decision (officer.ts, tasking.ts). */
+ *  drawer: switching to the Inbox to decide and back keeps what was half written. A request the
+ *  officer carries out with the orders it may propose: sending it is never an approval or a
+ *  decision, and those orders wait where they always wait (officer.ts, tasking.ts). */
 export function OfficerCompose({ api, draft, setDraft, inserts = [] }: { api: TaskingApi; draft: string; setDraft: Dispatch<SetStateAction<string>>; inserts?: ComposeInsert[] }) {
   const [busy, setBusy] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
@@ -57,7 +58,7 @@ export function OfficerCompose({ api, draft, setDraft, inserts = [] }: { api: Ta
         className="oc-text"
         rows={3}
         value={draft}
-        placeholder="What should the officer watch, or put first?"
+        placeholder="What should the officer do? e.g. Split the picket in two groups, one patrolling each side of the bridge."
         aria-label="Message to the watch officer"
         aria-describedby="oc-count oc-keys oc-why"
         aria-invalid={n > TEXT_MAX}
@@ -95,7 +96,7 @@ export function OfficerCompose({ api, draft, setDraft, inserts = [] }: { api: Ta
         </button>
       </div>
       <p id="oc-keys" className="oc-keys">
-        Enter sends · Shift+Enter new line · guidance, not an order
+        Enter sends · Shift+Enter new line · a request, not an approval
       </p>
       <p id="oc-why" className="oc-why" role="status">
         {state.why ?? api.error ?? ''}

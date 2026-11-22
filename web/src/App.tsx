@@ -115,6 +115,7 @@ function readInvite(): { operator: string; code: string } | null {
 const NO_TASKINGS: Tasking[] = []
 const NO_SWARMS: Swarm[] = []
 const NO_TRACKS: Track[] = []
+const NO_INTENTS: Intent[] = []
 
 /** The top bar's domain counts in a narrow window (dock.css). */
 const STAT_SHORT = { air: 'air', ground: 'gnd', surface: 'sea', subsurface: 'sub' } as const
@@ -185,8 +186,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showWeather, setShowWeather] = useState(false)
   const [showSpace, setShowSpace] = useState(false)
   // the right dock (dock.ts): one drawer at a time over the map's right edge, the top bar's buttons
-  // its tabs: the Inbox; the AI watch officer (TaskingPanel.tsx: guidance, never an order or a
-  // decision); rules 5's Queue of orders held for vehicles the link can't reach now; the situation
+  // its tabs: the Inbox; the AI watch officer (TaskingPanel.tsx: requests it carries out, never an
+  // approval or a decision); rules 5's Queue of orders held for vehicles the link can't reach now; the situation
   // report (Sitrep.tsx: read-only, the wide one); Swarms (docs/DECISIONS.md, "Swarm units")
   const [dock, setDock] = useState<DockId | null>(null)
   const showInbox = dock === 'inbox'
@@ -1319,6 +1320,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               banners={dockHead}
               onClose={() => setDock((d) => closeDock(d, 'officer'))}
               compose={<OfficerCompose api={taskingApi} draft={officerDraft} setDraft={setOfficerDraft} inserts={composeInserts} />}
+              groups={groupsApi.groups}
+              intents={allIntents ?? NO_INTENTS}
+              // an order the officer proposed for a request: its card, in the Inbox while it waits
+              onIntent={openIntent}
+              onGroup={(uids) => {
+                // a group the officer made for it: its members selected, nothing sent
+                setSelected(new Set(uids))
+                revealVehicles(uids)
+              }}
             />
           </ErrorBoundary>
         )}

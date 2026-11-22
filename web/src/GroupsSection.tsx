@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import type { GroupsApi } from './useGroups'
-import { defaultName, groupOfSelection, lookOf, nameProblem, nextColor, strength, toAdd, toSeparate, NAME_MAX, type OperatorGroup } from './groups'
+import { defaultName, groupOfSelection, lookOf, nameProblem, nextColor, officerNote, splitByMaker, strength, toAdd, toSeparate, NAME_MAX, type OperatorGroup } from './groups'
 import { GROUP_PALETTE } from './swarmsModel'
 import './groups.css'
 
 /** The operator's own groups: made, renamed, recoloured and deleted at run
  *  time, shared through the bridge. A click selects the members, so the order form commands the
- *  group in one click; nothing here sends an order or decides anything. */
+ *  group in one click; nothing here sends an order or decides anything. The groups the AI watch
+ *  officer made for a tasking request are listed apart, marked as the officer's and for which
+ *  request: the operator may change or delete them like any other (a change makes one theirs). */
 
 interface Props {
   api: GroupsApi
@@ -170,10 +172,46 @@ export function GroupsSection(props: Props) {
   const [making, setMaking] = useState(false)
   const [open, setOpen] = useState<string | null>(null)
   const exact = groupOfSelection(api.groups, selected)
+  const { yours, officer } = splitByMaker(api.groups)
+  // one row: its colour by its place in the whole list, so it keeps it when the lists change
+  const row = (g: OperatorGroup, byOfficer: boolean) => {
+    const i = api.groups.indexOf(g)
+    const look = lookOf(g, i)
+    const st = strength(g, present)
+    const isOpen = open === g.id
+    return (
+      <div key={g.id} className={`og-item ${exact?.id === g.id ? 'sel' : ''} ${byOfficer ? 'officer' : ''}`}>
+        <div className="og-row">
+          <button className="og-pick" aria-pressed={exact?.id === g.id} onClick={() => onSelect(g.members.filter((u) => present.has(u)))} title={`Select the ${st.here} of ${g.name} in the fleet, for one order`}>
+            <span className="og-chip" style={{ background: look.color }} aria-hidden />
+            <b className="og-name">{g.name}</b>
+            <span className="og-n">
+              {st.here}
+              {st.away > 0 ? <span className="dim">/{g.members.length}</span> : null}
+            </span>
+            {byOfficer ? (
+              <span className="og-badge og-officer" title={officerNote(g)}>
+                officer · {g.tasking ?? '?'}
+              </span>
+            ) : (
+              <span className="og-badge" title="Your own group: the fleet's swarms are fixed by its file">
+                yours
+              </span>
+            )}
+          </button>
+          <button className="ghost og-edit" aria-expanded={isOpen} aria-label={`${isOpen ? 'Close' : 'Edit'} ${g.name}`} onClick={() => setOpen(isOpen ? null : g.id)}>
+            {isOpen ? '▾' : '▸'}
+          </button>
+        </div>
+        {isOpen && byOfficer && <p className="og-made muted">{officerNote(g)}</p>}
+        {isOpen && <GroupBody g={g} index={i} props={props} />}
+      </div>
+    )
+  }
   return (
     <section className="sw-group og" aria-label="Your groups">
       <h3 className="ix-h">
-        Your groups <span>{api.groups.length}</span>
+        Your groups <span>{yours.length}</span>
         <small>made by you, shared, never an order</small>
       </h3>
       {api.status === 'missing' && (
@@ -198,30 +236,16 @@ export function GroupsSection(props: Props) {
         />
       )}
       {api.status === 'ok' && api.groups.length === 0 && !making && <p className="empty muted">No groups yet. Select vehicles, then New group.</p>}
-      {api.groups.map((g, i) => {
-        const look = lookOf(g, i)
-        const st = strength(g, present)
-        const isOpen = open === g.id
-        return (
-          <div key={g.id} className={`og-item ${exact?.id === g.id ? 'sel' : ''}`}>
-            <div className="og-row">
-              <button className="og-pick" aria-pressed={exact?.id === g.id} onClick={() => onSelect(g.members.filter((u) => present.has(u)))} title={`Select the ${st.here} of ${g.name} in the fleet, for one order`}>
-                <span className="og-chip" style={{ background: look.color }} aria-hidden />
-                <b className="og-name">{g.name}</b>
-                <span className="og-n">
-                  {st.here}
-                  {st.away > 0 ? <span className="dim">/{g.members.length}</span> : null}
-                </span>
-                <span className="og-badge" title="Your own group: the fleet's swarms are fixed by its file">yours</span>
-              </button>
-              <button className="ghost og-edit" aria-expanded={isOpen} aria-label={`${isOpen ? 'Close' : 'Edit'} ${g.name}`} onClick={() => setOpen(isOpen ? null : g.id)}>
-                {isOpen ? '▾' : '▸'}
-              </button>
-            </div>
-            {isOpen && <GroupBody g={g} index={i} props={props} />}
-          </div>
-        )
-      })}
+      {yours.map((g) => row(g, false))}
+      {officer.length > 0 && (
+        <>
+          <h4 className="og-sub">
+            Made by the watch officer <span>{officer.length}</span>
+            <small>for your tasking requests; not yours until you change one</small>
+          </h4>
+          {officer.map((g) => row(g, true))}
+        </>
+      )}
     </section>
   )
 }

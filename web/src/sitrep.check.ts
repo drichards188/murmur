@@ -39,6 +39,8 @@ assert.equal(rows[1].tone, 'bad', 'a quarter lost: the bridge\'s own tone')
 assert.equal(rows[1].task, 'orbit i12')
 assert.equal(strengthWords(rows[1]), '3 of 4: 1 on station, 1 returning, 1 idle; 1 lost link')
 assert.equal(rows[1].name, 'PICKET-1 · Gate', 'a swarm named as the fleet list and the strip name it')
+const officers = groupRows([], [{ id: 'og-2', name: 'West', color: null, members: [5], created_t: 1, updated_t: 1, by: 'agent-watch', agent: true, tasking: 'tk-1' }], by, ctx, (k, i) => `${k}${i}`)
+assert.deepEqual([officers[0].kind, officers[0].color], ['officer', 'officer0'], "the officer's group is marked as its own, not the operator's")
 // under a group order in force, a swarm reads as its chip does: the order and its strength, its tone
 const calm = { ...swarm, lost_link: 0, low_battery: 0, members: [1, 3], count: 2 } as Swarm
 const mark = { doing: 'orbit i12', parts: [{ text: 'SUSPENDED · 1 of min 2', tone: 'bad' as const }], tone: 'bad' as const, intent: 12 }

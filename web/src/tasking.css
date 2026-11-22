@@ -15,3 +15,24 @@
 .tko-dl.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .tko-officer { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
 .tko-officer.off { color: var(--warn); }
+/* the officer's answer under a request (ReplyView): its outcome, its text, links to what it made */
+.tko-reply { margin-top: 8px; padding: 6px 8px; border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 4px; background: #0f151c; }
+.tko-reply.ok { border-left-color: var(--ok); }
+.tko-reply.warn { border-left-color: var(--warn); }
+.tko-reply.bad { border-left-color: var(--bad); }
+.tko-reply.compact { opacity: 0.8; margin-top: 4px; }
+.tko-rhead { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.tko-out { padding: 0 6px; border: 1px solid currentColor; border-radius: 3px; font: 600 10.5px var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); cursor: default; }
+.tko-out.ok { color: var(--ok); }
+.tko-out.warn { color: var(--warn); }
+.tko-out.bad { color: var(--bad); }
+.tko-rwho { font: 11px var(--mono); color: var(--muted); }
+.tko-reply .bluf { font-size: 12.5px; }
+.tko-links { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.tko-link { font: 11px var(--mono); padding: 1px 6px; }
+.tko-link.gone { color: var(--muted); text-decoration: line-through; padding: 1px 6px; }
+.tko-glink { display: inline-flex; align-items: center; gap: 5px; }
+.tko-gchip { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.tko-noreply { margin: 6px 0 0; font: 11.5px var(--mono); color: var(--warn); }
+.tko-turn { align-items: center; }
+.tko-turn-label { font: 10.5px var(--mono); color: var(--muted); }

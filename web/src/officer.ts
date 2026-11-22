@@ -1,10 +1,12 @@
 // The operator-to-officer loop as the dock shows it (dock.ts): what the person asked the watch
 // officer (tasking.ts), what the officer proposed in the turn that read it, and what of that waits
 // for a person (Awaiting.tsx, and the line on the Inbox's card); and the rules of the message box
-// (OfficerCompose.tsx). Display only: nothing here decides or sends an order. The turn link is a
-// matter of time and of who: an order the officer that acknowledged the guidance proposed while
-// the turn that first read it was going on. It says when, never that the guidance caused the
-// order (that turn may have read other things too). Pure: dock.check.ts.
+// (OfficerCompose.tsx). Display only: nothing here decides or sends an order. The link is the
+// officer's own where it gave one: its answer to a request (reply_tasking) names the intents it
+// proposed for it, and the bridge refuses an intent that is not that agent's. Where no answer names
+// an order, the link is a matter of time and of who: an order the officer that acknowledged the
+// request proposed while the turn that first read it was going on. That says when, never that the
+// request caused the order (that turn may have read other things too). Pure: dock.check.ts.
 import type { Intent } from './decisions'
 import { ago, officerOf, textLength, TEXT_MAX, type TaskingDoc, type TaskingItem } from './tasking.ts'
 
@@ -16,30 +18,51 @@ function turnEnd(it: TaskingItem): number {
   return Infinity
 }
 
-/** The guidance an order was proposed in the turn of: an agent's order created between the time
- *  an item was given to that agent (`seen_t`) and the end of that turn. Newest guidance first;
- *  none for an order of a person, a script under a person's id, or a handover. */
-export function turnItems(i: Pick<Intent, 'source' | 'created_t'>, items: readonly TaskingItem[]): TaskingItem[] {
-  if (i.source.kind !== 'agent') return []
-  return items
-    .filter((it) => it.seen_t != null && it.seen_t <= i.created_t && i.created_t <= turnEnd(it) && (it.officer == null || it.officer === i.source.id))
-    .sort((a, b) => b.at_t - a.at_t)
+/** The intents the proposing agent's answers to an item name, or null where none names any (the
+ *  link to that item is then by time). */
+function namedBy(it: TaskingItem, agent: string): Set<number> | null {
+  const ids = (it.replies ?? []).filter((r) => r.agent === agent).flatMap((r) => r.intents)
+  return ids.length ? new Set(ids) : null
 }
 
-/** The guidance an order's card names: the newest of its turn's, how many more that turn read, and
- *  the officer's update number. */
+/** The requests an order was proposed for. Where the proposing agent's answer to a request names
+ *  the order, those requests and no others (`explicit`); else, by time, an agent's order created
+ *  between the time an item was given to that agent (`seen_t`) and the end of that turn, among the
+ *  requests whose answers name none of their orders. Newest first; none for an order of a person,
+ *  a script under a person's id, or a handover. */
+export function turnItems(i: Pick<Intent, 'id' | 'source' | 'created_t'>, items: readonly TaskingItem[]): TaskingItem[] {
+  return turnLinks(i, items).items
+}
+
+function turnLinks(i: Pick<Intent, 'id' | 'source' | 'created_t'>, items: readonly TaskingItem[]): { items: TaskingItem[]; explicit: boolean } {
+  if (i.source.kind !== 'agent') return { items: [], explicit: false }
+  const agent = i.source.id
+  const byNew = (a: TaskingItem, b: TaskingItem) => b.at_t - a.at_t
+  const named = items.filter((it) => namedBy(it, agent)?.has(i.id))
+  if (named.length) return { items: named.sort(byNew), explicit: true }
+  const timed = items.filter(
+    (it) => namedBy(it, agent) == null && it.seen_t != null && it.seen_t <= i.created_t && i.created_t <= turnEnd(it) && (it.officer == null || it.officer === agent),
+  )
+  return { items: timed.sort(byNew), explicit: false }
+}
+
+/** The request an order's card names: the newest of its requests, how many more, the officer's
+ *  update number, and whether the officer's own answer names the order (`explicit`) or only the
+ *  time of its turn does. */
 export interface TurnLink {
   item: TaskingItem
   also: number
   wake?: number
+  explicit?: boolean
 }
 
-export function turnOf(i: Pick<Intent, 'source' | 'created_t'>, items: readonly TaskingItem[]): TurnLink | null {
-  const l = turnItems(i, items)
-  return l.length ? { item: l[0], also: l.length - 1, wake: l[0].seen_wake } : null
+export function turnOf(i: Pick<Intent, 'id' | 'source' | 'created_t'>, items: readonly TaskingItem[]): TurnLink | null {
+  const l = turnLinks(i, items)
+  return l.items.length ? { item: l.items[0], also: l.items.length - 1, wake: l.items[0].seen_wake, explicit: l.explicit } : null
 }
 
-/** The orders proposed in the turn that first read `item` (the other way round), oldest first. */
+/** The orders proposed for `item` (the other way round): those its answers name, else those
+ *  proposed in the turn that first read it; oldest first. */
 export function proposedIn(item: TaskingItem, intents: readonly Intent[]): Intent[] {
   return intents.filter((i) => turnItems(i, [item]).length > 0).sort((a, b) => a.created_t - b.created_t)
 }
