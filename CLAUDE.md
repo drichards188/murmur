@@ -833,6 +833,41 @@ meaningful.
   simulator caps an API answer at 16 MB (`sim/mod.rs` `to_bytes`): its `/api/tracks` passes that
   by 450 s, and a driver that reads it fails there.
 
+- Operator groups, tasking and the officer's replies (no rules version; nothing of it is logged
+  or decided, `crates/murmur-bridge/src/{groups,tasking}.rs`, `mcp/operator.rs`, DECISIONS.md
+  entries on tasking and the dock): `/api/groups` (an operator's own sets of vehicles, bridge
+  memory only, lost on restart) and `/api/tasking` (written requests to the watch officer, same).
+  REST writes are operator-only (403 for an agent by header or key, 401 without an operator);
+  agents get narrow MCP tools instead: `reply_tasking` (outcome done, partial, blocked or
+  declined, at most 600 characters, intents named must be the agent's own), `make_group` (bound
+  to a request in force, members in the fleet, 12 per agent per run, marked with the agent and
+  the request, only until an operator edits it) and `get_groups`; no tool posts, retires,
+  edits or deletes. A request is never an approval: every order the officer proposes waits in the
+  Inbox as before. The three tools are offered only when `MURMUR_TASKING_TOOLS=1` (`scripts/up.sh`
+  sets it; `eval/stack.py` never does, so eval tool lists and the paid arm are unchanged;
+  `eval/tests/test_harness.py` guards it), and the headless simulator keeps no stores. The
+  officer driver (`agents/watch_officer.py`) polls `/api/tasking` each poll: a new active item
+  is a `tasking.posted` wake (routine model only, a quarter of the hour's and the run's wakes at
+  most, a retire is a note), a finished turn with no reply is woken once more
+  (`tasking.unanswered`), and it acks each item back (`POST /api/tasking/{id}/ack`, agent-only,
+  delivery status only: posted, seen, processed, with failed or waiting noted). The tasking
+  section of the prompt is `agents/watch/tasking.md`, appended only when the driver reads
+  tasking, so the headless prompt and the golden are unchanged. A tasking item's id is reused
+  by a restarted bridge (tk-1): a wake subject is the id plus its post time.
+- Console dock (`web/src/dock.ts`, `Awaiting.tsx`, `OfficerCompose.tsx`, `officer.ts`): the
+  right edge is one dock showing one drawer at a time (Inbox, Officer, Queue, Sitrep, Swarms);
+  every drawer but the Inbox opens with "Waiting for you" (a line per pending approval, opening
+  its card, never an approve button). A drawer switch unmounts the old one, so a half-typed
+  approval note is lost. Escape clears the selection only when no Escape-closing panel is open.
+  A new drawer goes through the dock, never a free-floating `.ix`; `dock.check.ts` is on the
+  Makefile's console line with the other `*.check.ts` (every one in `web/src` must be on it).
+  Group perf: reach rings are lifted once and redrawn at most once a second
+  (`reachCache.ts`); a selected group of 100 once cost 490 ms an update.
+- A branch built in a worktree off an older main can pass its own checks and still break the
+  headless crate: `murmur-headless` compiles the bridge's modules by path
+  (`crates/murmur-headless/src/lib.rs`, `sim/mod.rs`), so a new bridge module or `api::App`
+  field needs both, and `cargo clippy --workspace` (not `-p murmur-bridge`) is the check.
+
 ## Conventions
 
 - bd for all task tracking; the pre-commit hook exports issues to `.beads/issues.jsonl`. bd
