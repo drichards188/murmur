@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ago, BOUNDARY, deliveryOf, officerOf, split, textLength, textProblem, TEXT_MAX, type TaskingItem } from './tasking'
+import { useState, type ReactNode } from 'react'
+import { ago, BOUNDARY, deliveryOf, officerOf, split, type TaskingItem } from './tasking'
 import type { TaskingApi } from './useTasking'
 import './tasking.css'
 
@@ -11,9 +11,17 @@ import './tasking.css'
 export function TaskingButton({ api, open, onClick }: { api: TaskingApi; open: boolean; onClick: () => void }) {
   if (api.status === 'missing') return null
   const n = api.items.filter((i) => i.active).length
+  const officer = officerOf(api.reader)
   return (
-    <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title="Guidance for the AI watch officer (not an order, not a decision)">
-      Tasking
+    <button
+      className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`}
+      onClick={onClick}
+      aria-pressed={open}
+      aria-label={`Watch officer${officer ? (officer.connected ? ', connected' : ', not connected') : ''}: ${n} message${n === 1 ? '' : 's'} in force`}
+      title={`The watch officer: guidance to it (not an order, not a decision)${officer ? `. ${officer.text}` : ''}`}
+    >
+      {officer && <span className={`tko-dot ${officer.connected ? 'on' : 'off'}`} aria-hidden="true" />}
+      Officer
       {n > 0 && <span className="ix-badge tko-badge">{n}</span>}
     </button>
   )
@@ -34,31 +42,24 @@ function DeliveryChip({ item, nowMs }: { item: TaskingItem; nowMs: number }) {
   )
 }
 
-export function TaskingPanel({ api, now, onClose, banners }: { api: TaskingApi; now: () => number; onClose: () => void; banners?: React.ReactNode }) {
-  const [text, setText] = useState('')
-  const [busy, setBusy] = useState(false)
+/** The drawer's body. `compose`: the message box (OfficerCompose.tsx), pinned between the head and
+ *  the list so it stays in reach however long the list grows. */
+export function TaskingPanel({ api, now, onClose, banners, compose }: { api: TaskingApi; now: () => number; onClose: () => void; banners?: ReactNode; compose?: ReactNode }) {
   const [showRetired, setShowRetired] = useState(false)
   const { active, retired } = split(api.items)
-  const problem = text ? textProblem(text) : null
   const nowMs = now()
   const officer = officerOf(api.reader)
-  const send = async () => {
-    if (textProblem(text)) return
-    setBusy(true)
-    const item = await api.post(text)
-    setBusy(false)
-    if (item) setText('')
-  }
   return (
-    <aside className="ix tko" aria-label="Tasking the AI watch officer">
+    <aside className="ix tko" aria-label="The AI watch officer">
       <div className="ix-top">
-        <h2>Tasking the officer</h2>
+        <h2>Watch officer</h2>
         <span className="q-sub">guidance</span>
-        <button className="ghost close" onClick={onClose} aria-label="Close tasking">
+        <button className="ghost close" onClick={onClose} aria-label="Close the watch officer">
           ×
         </button>
       </div>
       {banners && <div className="ix-banners">{banners}</div>}
+      {compose}
       <div className="ix-scroll">
         <p className="tko-boundary" role="note">
           {BOUNDARY}
@@ -67,37 +68,6 @@ export function TaskingPanel({ api, now, onClose, banners }: { api: TaskingApi; 
           <p className="empty sw-missing" role="status">
             This bridge has no tasking channel (<code>/api/tasking</code>).
           </p>
-        )}
-        {api.status !== 'missing' && (
-          <form
-            className="tko-form"
-            onSubmit={(e) => {
-              e.preventDefault()
-              void send()
-            }}
-          >
-            <label>
-              <span>Guidance to the officer</span>
-              <textarea
-                rows={4}
-                value={text}
-                placeholder="e.g. Prioritise the ferry lane. Hold your attention on the north pickets. Ignore the sailboats north of the span."
-                onChange={(e) => setText(e.target.value)}
-                aria-invalid={problem != null}
-                aria-describedby="tko-count"
-              />
-            </label>
-            <div className="tko-foot">
-              <span id="tko-count" className={`tko-count ${textLength(text) > TEXT_MAX ? 'bad' : ''}`}>
-                {textLength(text)}/{TEXT_MAX}
-              </span>
-              <button type="submit" className="primary" disabled={busy || !text.trim() || problem != null}>
-                {busy ? 'Sending...' : 'Send guidance'}
-              </button>
-            </div>
-            {problem && <p className="error">{problem}</p>}
-            {api.error && <p className="error">{api.error}</p>}
-          </form>
         )}
         <h3 className="ix-h">
           In force <span>{active.length}</span>

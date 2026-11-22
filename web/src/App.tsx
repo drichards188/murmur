@@ -77,6 +77,10 @@ import { groupOfSelection } from './groups'
 import { Sitrep } from './Sitrep'
 import { TaskingButton, TaskingPanel } from './TaskingPanel'
 import { useTasking } from './useTasking'
+import { closeDock, fitPad, headsWithWaiting, toggleDock, type DockId } from './dock'
+import { awaitingRows, selectionInsert, turnOf } from './officer'
+import { Awaiting, TurnCause } from './Awaiting'
+import { OfficerCompose, type ComposeInsert } from './OfficerCompose'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -111,6 +115,9 @@ function readInvite(): { operator: string; code: string } | null {
 const NO_TASKINGS: Tasking[] = []
 const NO_SWARMS: Swarm[] = []
 const NO_TRACKS: Track[] = []
+
+/** The top bar's domain counts in a narrow window (dock.css). */
+const STAT_SHORT = { air: 'air', ground: 'gnd', surface: 'sea', subsurface: 'sub' } as const
 
 /** No vehicles (the groups panel while closed). */
 const NO_UIDS: ReadonlySet<number> = new Set()
@@ -177,17 +184,22 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
   const [showWeather, setShowWeather] = useState(false)
   const [showSpace, setShowSpace] = useState(false)
-  const [showInbox, setShowInbox] = useState(false)
-  // rules 5: orders held for vehicles the link can't reach now
-  const [showQueue, setShowQueue] = useState(false)
-  // swarms (docs/DECISIONS.md, "Swarm units"): the Swarms drawer, the card to bring into view in
-  // it (a chip clicked on the map), and the group whose chip or card is under the pointer
-  const [showSwarms, setShowSwarms] = useState(false)
-  // the situation report (Sitrep.tsx): read-only, a wide drawer
-  const [showSitrep, setShowSitrep] = useState(false)
-  // guidance to the AI watch officer (TaskingPanel.tsx): never an order, never a decision
-  const [showTasking, setShowTasking] = useState(false)
+  // the right dock (dock.ts): one drawer at a time over the map's right edge, the top bar's buttons
+  // its tabs: the Inbox; the AI watch officer (TaskingPanel.tsx: guidance, never an order or a
+  // decision); rules 5's Queue of orders held for vehicles the link can't reach now; the situation
+  // report (Sitrep.tsx: read-only, the wide one); Swarms (docs/DECISIONS.md, "Swarm units")
+  const [dock, setDock] = useState<DockId | null>(null)
+  const showInbox = dock === 'inbox'
+  const showQueue = dock === 'queue'
+  const showSwarms = dock === 'swarms'
+  const showSitrep = dock === 'sitrep'
+  const showTasking = dock === 'officer'
   const taskingApi = useTasking()
+  // the message to the officer being written: kept here so it outlives its drawer (switching to the
+  // Inbox to decide and back keeps it)
+  const [officerDraft, setOfficerDraft] = useState('')
+  // the Swarms drawer's card to bring into view (a chip clicked on the map), and the group whose
+  // chip or card is under the pointer
   const [swarmFocus, setSwarmFocus] = useState<{ id: string; n: number } | null>(null)
   const [hoverGroup, setHoverGroup] = useState<string | null>(null)
   // Space held: every group's orders drawn (bd murmur-4nik; else a group's only while it is
@@ -387,7 +399,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         if (!m) return
         setSelected(new Set(m.members))
         setRevealVeh({ ids: m.members.map(String) })
-        setShowSwarms(true)
+        setDock('swarms')
         setSwarmFocus((f) => ({ id, n: (f?.n ?? 0) + 1 }))
       },
       detail: (id) => {
@@ -525,16 +537,16 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   /** frame the strike: its effect circle, with room around it */
   const focusImpact = useCallback((impact: ImpactEvent) => {
     const ring = circle(impact.point, Math.max(impact.radius_m * 4, 450)).filter((_, k) => k % 8 === 0)
-    setFit((f) => ({ points: [impact.point, ...ring], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
-  }, [showInbox])
+    setFit((f) => ({ points: [impact.point, ...ring], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
+  }, [dock])
   /** frame a munition's flight: its launch point (up where it was released), the impact point
    *  and the effect circle, so the operator watches it fly and strike */
   const focusFlight = useCallback((impact: ImpactEvent) => {
     const m = impact.munition
     if (!m) return focusImpact(impact)
     const ring = circle(impact.point, Math.max(impact.radius_m * 4, 450)).filter((_, k) => k % 8 === 0)
-    setFit((f) => ({ points: [m.launch_point, impact.point, ...ring], aloft: [[...m.launch_point, m.launch_alt_m]], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
-  }, [showInbox, focusImpact])
+    setFit((f) => ({ points: [m.launch_point, impact.point, ...ring], aloft: [[...m.launch_point, m.launch_alt_m]], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
+  }, [dock, focusImpact])
   // the view goes to a munition at its launch (its flight and strike), to any other strike as
   // it lands; one seen too late for either (a console that reconnects) is left alone
   useEffect(() => {
@@ -606,8 +618,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     const ring = circle(d.author, Math.max(d.sigma_m * 3, 300)).filter((_, k) => k % 8 === 0)
     const points = d.victim ? [d.author, d.victim.at, ...ring] : [d.author, ...ring]
     const aloft: [number, number, number][] | undefined = d.victim && d.victim.alt > 50 ? [[d.victim.at[0], d.victim.at[1], d.victim.alt]] : undefined
-    setFit((f) => ({ points, aloft, n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
-  }, [showInbox])
+    setFit((f) => ({ points, aloft, n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
+  }, [dock])
   // platforms that are their own munition (catalog expended_by_effect) on their way: tagged on
   // the map, so the operator sees what is on the way (bd murmur-64z)
   const platformCatalog = usePlatformLimits()
@@ -664,8 +676,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   useEffect(() => {
     if (!engageDraft) return
     const ring = circle(engageDraft.effect_point, engageDraft.keep_out_m).filter((_, k) => k % 8 === 0)
-    // the form sits in the right rail, beside the map: only an open inbox covers its right edge
-    setFit((f) => ({ points: [...engageDraft.path, ...ring], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
+    // the form sits in the right rail, beside the map: only the dock covers its right edge
+    setFit((f) => ({ points: [...engageDraft.path, ...ring], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey])
   // silent vehicles' estimates (murmur-4y9): the bridge's motion models evaluated every clock
@@ -820,10 +832,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       if (!m) return
       const members = new Set(m.members)
       const pts = allVehicles.flatMap((v) => (members.has(v.uid) && v.position ? [v.position] : []))
-      if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: showSwarms || showQueue || showInbox ? 430 : 70 }))
+      if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
       setFlashGroup(id)
     },
-    [marks, allVehicles, showSwarms, showQueue, showInbox],
+    [marks, allVehicles, dock],
   )
   const alertedUids = useMemo(() => new Set(unfolded(listAlerts ?? []).map((a) => a.uid)), [listAlerts])
   // the full block of a track, lost contact or estimate under the pointer, while its label is not
@@ -891,14 +903,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   /** the strip's and the Situation panel's link: the item's card in the Inbox, in view (the person
    *  decides there; nothing here decides) */
   const openWaiting = useCallback((id: string) => {
-    setShowInbox(true)
+    setDock('inbox')
     setInboxTab('inbox')
     setReviewFocus((f) => ({ id, n: (f?.n ?? 0) + 1 }))
   }, [])
-  /** the task panel's link: the pending intent in the inbox, or a finished one in Decisions */
+  /** the task panel's link (and a line at the head of another drawer, Awaiting.tsx): the pending
+   *  intent in the inbox, or a finished one in Decisions */
   const openIntent = useCallback(
     (id: number) => {
-      setShowInbox(true)
+      setDock('inbox')
       const i = (pending ?? []).find((x) => x.id === id)
       if (i) {
         setInboxTab('inbox')
@@ -970,11 +983,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   if (auth.auth === 'credentials' && !auth.signed_in) return <LoginScreen />
 
   // the banners over the map's top: our munition in flight or its strike, an opponent weapon, a
-  // hostile act. A right drawer (Inbox, Queue, Swarms: 430 px over the map's right edge) takes
+  // hostile act. The drawer the dock shows (430 px over the map's right edge, the Sitrep 760) takes
   // them at its head instead, under its own header: centred on the map they sat over that
-  // header and the Review's, its urgent item included (bd murmur-76gv). The topmost drawer, as
-  // they open over each other in this order.
-  const drawer = showTasking ? 'tasking' : showSitrep ? 'sitrep' : showSwarms ? 'swarms' : showQueue ? 'queue' : showInbox ? 'inbox' : null
+  // header and the Review's, its urgent item included (bd murmur-76gv).
+  const drawer = dock
   const groupBan = groupAlarms[0]
   const bannersAbove = [flyingImpact?.munition || visibleImpact, weaponBan, actBanner].filter(Boolean).length
   const banners = flyingImpact?.munition || visibleImpact || weaponBan || actBanner || groupBan ? (
@@ -1004,7 +1016,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           <button onClick={() => {
             const at = weaponVictim(weaponBan.w)
             const from = weaponBan.w.launch?.point ?? weaponBan.w.fixes[0]?.point ?? at
-            if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: drawer ? 430 : 70 }))
+            if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
           }}>View</button>
         </div>
       )}
@@ -1039,6 +1051,22 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       )}
     </>
   ) : null
+  // the head of the drawer the dock shows: the map's banners, then (in any drawer but the Inbox,
+  // which holds the cards themselves) every order waiting for a person, so no drawer hides one
+  const awaitRows = dock && headsWithWaiting(dock) ? awaitingRows(pending ?? [], taskingApi.items, now(), nameOf) : []
+  const dockHead = banners || awaitRows.length ? (
+    <>
+      {banners}
+      <Awaiting rows={awaitRows} onOpen={openIntent} />
+    </>
+  ) : null
+  // what the message box can put in at its cursor: the selection (one group by name and size, or a
+  // few vehicles by callsign) and the selected track
+  const sel = showTasking ? selectionInsert(groupLabel, [...selected], (u) => nameOf(String(u))) : null
+  const composeInserts: ComposeInsert[] = [
+    ...(sel ? [sel.text != null ? { key: 'sel', label: sel.text.length > 24 ? `${selected.size} selected` : sel.text, text: sel.text } : { key: 'sel', label: `${selected.size} selected`, text: null, why: sel.why }] : []),
+    ...(showTasking && selectedTrack ? [{ key: 'track', label: selectedTrack, text: selectedTrack }] : []),
+  ]
 
   return (
     <div className={`app${waiting.length || pendingReview.length ? ' waiting' : ''}`}>
@@ -1053,23 +1081,30 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <span className="sub">multi-domain swarm C2</span>
         <span className="spacer" />
         {(['air', 'ground', 'surface', 'subsurface'] as const).map((d) => (
-          <span className="stat" key={d}>
-            <b>{vehicles.filter((v) => domainOf(v) === d).length}</b> {DOMAIN_LABEL[d].toLowerCase()}
+          <span className="stat" key={d} title={`${DOMAIN_LABEL[d]} vehicles`}>
+            <b>{vehicles.filter((v) => domainOf(v) === d).length}</b> <span className="stat-l">{DOMAIN_LABEL[d].toLowerCase()}</span>
+            <span className="stat-s">{STAT_SHORT[d]}</span>
           </span>
         ))}
-        <span className={`stat ${lost ? 'alert' : ''}`}>
-          <b>{lost}</b> lost link
+        <span className={`stat ${lost ? 'alert' : ''}`} title="vehicles with a lost link">
+          <b>{lost}</b> <span className="stat-l">lost link</span>
+          <span className="stat-s">lost</span>
         </span>
-        <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
-        <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
-        <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
-        <TaskingButton api={taskingApi} open={showTasking} onClick={() => setShowTasking((v) => !v)} />
-        <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} onClick={() => setShowSitrep((v) => !v)} title="The situation report: the whole picture, top-down, read-only">
-          Sitrep
-        </button>
-        {(hasSwarms || swarmFeed.status === 'ok' || groupsApi.status === 'ok') && (
-          <SwarmsButton feed={swarmFeed} mine={hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0 ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setShowSwarms((v) => !v)} />
-        )}
+        <span className={`pill ${status}`} title={status === 'connecting' ? 'Connecting to the bridge' : `The bridge is ${status}`}>
+          {status === 'connecting' ? 'CONNECTING' : <><span className="pill-w">BRIDGE </span>{status === 'live' ? 'LIVE' : 'DOWN'}</>}
+        </span>
+        {/* the dock's tabs (dock.ts): one drawer at a time over the map's right edge */}
+        <nav className="dock-tabs" aria-label="Drawers over the map's right edge, one at a time">
+          <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setDock((d) => toggleDock(d, 'inbox'))} />
+          <TaskingButton api={taskingApi} open={showTasking} onClick={() => setDock((d) => toggleDock(d, 'officer'))} />
+          <QueueButton decisions={decisions} open={showQueue} onClick={() => setDock((d) => toggleDock(d, 'queue'))} />
+          <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} aria-pressed={showSitrep} onClick={() => setDock((d) => toggleDock(d, 'sitrep'))} title="The situation report: the whole picture, top-down, read-only">
+            Sitrep
+          </button>
+          {(hasSwarms || swarmFeed.status === 'ok' || groupsApi.status === 'ok') && (
+            <SwarmsButton feed={swarmFeed} mine={hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0 ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setDock((d) => toggleDock(d, 'swarms'))} />
+          )}
+        </nav>
         <button className={`ghost platforms-btn ${showWeather ? 'on' : ''}`} onClick={() => setShowWeather(v => !v)}>Weather</button>
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
@@ -1121,7 +1156,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         onFolded={setFleetFolds}
       />
       </ErrorBoundary>
-      <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
+      <main className={`mapwrap ${showSpace ? 'space-open' : ''}${dock ? ` docked${dock === 'sitrep' ? ' dock-wide' : ''}` : ''}`}>
         <ErrorBoundary name="Map" className="floating">
         <MapView
           vehicles={allVehicles}
@@ -1232,7 +1267,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         {showInbox && (
           <ErrorBoundary name="Inbox" className="floating">
           <InboxPanel
-            banners={drawer === 'inbox' ? banners : null}
+            banners={banners}
             decisions={decisions}
             vehicles={allVehicles}
             now={now}
@@ -1240,14 +1275,18 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             setTab={setInboxTab}
             selection={inboxSel}
             onFocus={focusInbox}
-            onClose={() => setShowInbox(false)}
+            onClose={() => setDock((d) => closeDock(d, 'inbox'))}
             mem={alertMem}
             hidden={hiddenAlerts}
             notice={inboxNotice}
             focus={reviewFocus}
             onReplace={(i) => setEngageForm({ replaces: i.id })}
+            cause={(i) => {
+              const link = turnOf(i, taskingApi.items)
+              return link ? <TurnCause link={link} onShow={() => setDock('officer')} /> : null
+            }}
             onTrack={(id) => {
-              setShowInbox(false)
+              setDock((d) => closeDock(d, 'inbox'))
               revealTrackId(id)
               const t = tracks?.tracks.find((x) => x.id === id)
               if (t) focusTrack(t)
@@ -1258,7 +1297,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         {showQueue && (
           <ErrorBoundary name="Queue" className="floating">
           <QueuePanel
-            banners={drawer === 'queue' ? banners : null}
+            banners={dockHead}
             decisions={decisions}
             vehicles={vehicles}
             now={now}
@@ -1268,19 +1307,25 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               const pts = uids.map((u) => vehicles.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
               if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
             }}
-            onClose={() => setShowQueue(false)}
+            onClose={() => setDock((d) => closeDock(d, 'queue'))}
           />
           </ErrorBoundary>
         )}
         {showTasking && (
-          <ErrorBoundary name="Tasking" className="floating">
-            <TaskingPanel api={taskingApi} now={now} banners={drawer === 'tasking' ? banners : null} onClose={() => setShowTasking(false)} />
+          <ErrorBoundary name="Watch officer" className="floating">
+            <TaskingPanel
+              api={taskingApi}
+              now={now}
+              banners={dockHead}
+              onClose={() => setDock((d) => closeDock(d, 'officer'))}
+              compose={<OfficerCompose api={taskingApi} draft={officerDraft} setDraft={setOfficerDraft} inserts={composeInserts} />}
+            />
           </ErrorBoundary>
         )}
         {showSitrep && (
           <ErrorBoundary name="Sitrep" className="floating">
             <Sitrep
-              banners={drawer === 'sitrep' ? banners : null}
+              banners={dockHead}
               vehicles={vehicles}
               taskings={state?.taskings ?? NO_TASKINGS}
               swarms={swarmFeed.doc?.swarms ?? NO_SWARMS}
@@ -1293,33 +1338,27 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               onVehicle={(uid) => {
                 // its details, as a click on its fleet row opens them (the map flies there); they
                 // open over the map's left edge, under this wide drawer, so the report gives way
-                setShowSitrep(false)
+                setDock((d) => closeDock(d, 'sitrep'))
                 setDetailsUid(uid)
                 setFollowing(true)
                 setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
               }}
-              onWaiting={(id) => {
-                // the card is in the Inbox: this report gives way to it
-                setShowSitrep(false)
-                openWaiting(id)
-              }}
-              onIntent={(id) => {
-                setShowSitrep(false)
-                openIntent(id)
-              }}
+              // the card is in the Inbox, which takes the dock's place from this report
+              onWaiting={openWaiting}
+              onIntent={openIntent}
               onTrack={revealTrackId}
               onSelect={(uids) => {
                 setSelected(new Set(uids))
                 revealVehicles(uids)
               }}
-              onClose={() => setShowSitrep(false)}
+              onClose={() => setDock((d) => closeDock(d, 'sitrep'))}
             />
           </ErrorBoundary>
         )}
         {showSwarms && (
           <ErrorBoundary name="Swarms" className="floating">
           <SwarmsPanel
-            banners={drawer === 'swarms' ? banners : null}
+            banners={dockHead}
             feed={swarmFeed}
             selected={swarmSel}
             focus={swarmFocus}
@@ -1346,7 +1385,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               const pts = sw.hull && sw.hull.length ? sw.hull : sw.centroid ? [sw.centroid] : []
               if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
             }}
-            onClose={() => setShowSwarms(false)}
+            onClose={() => setDock((d) => closeDock(d, 'swarms'))}
             heard={(uid) => {
               const v = allVehicles.find((x) => String(x.uid) === uid)
               return v != null && !isStale(v)
@@ -1441,7 +1480,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               setEngageForm(null)
               setEngageDraft(null)
               setEngageKeepOuts(null)
-              setShowInbox(true)
+              setDock('inbox')
               setInboxTab('inbox')
               setInboxSel({ kind: 'intent', id })
             }}

@@ -54,7 +54,7 @@ export function SwarmsButton({ feed, open, onClick, mine = null }: { feed: Swarm
         ? 'Swarms: no swarm data from the bridge'
         : `${swarms.length} swarms, ${trouble} with members unheard or low on battery`
   return (
-    <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={title} aria-label={title}>
+    <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={title} aria-label={title}>
       {mine != null ? 'Groups' : 'Swarms'}
       {trouble > 0 && <span className="ix-badge sw-badge">{trouble}</span>}
     </button>

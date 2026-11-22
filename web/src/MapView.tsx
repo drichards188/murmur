@@ -43,6 +43,7 @@ import { REACH_REDRAW_MS, ringSet } from './reachCache'
 import { cellAt, cellDetail, type CoverageImage, type LinkRouteDrawing } from './coverage'
 import { buildLinkRouteLayers } from './linkLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
+import { fitRight } from './dock'
 
 export interface Draft {
   /** `identify` (rules 21): one vehicle sent to identify the track `track`, picked on the map;
@@ -1693,7 +1694,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     if (!fit || !m || fit.points.length === 0 || lostRef.current) return
     const bounds = new maplibregl.LngLatBounds(fit.points[0], fit.points[0])
     for (const p of fit.points) bounds.extend(p)
-    const padding = { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }
+    // clear of the drawer docked over the right edge, but leaving some of a narrow map to fit in
+    const padding = { top: 70, bottom: 70, left: 70, right: fitRight(fit.padRight + 20, m.getCanvas().clientWidth, 70) }
     const options = { padding, maxZoom: 13, duration: 1000, bearing: m.getBearing() }
     const cam = fit.aloft?.length ? m.cameraForBounds(bounds, options) : undefined
     if (!cam?.center || cam.zoom == null) {

@@ -61,6 +61,8 @@ interface Props {
   /** the map's banners (App.tsx), shown under this drawer's header while it is open over the
    *  map's right edge, where they would otherwise sit over its top (bd murmur-76gv) */
   banners?: ReactNode
+  /** an order's line saying what guidance its turn read (Awaiting.tsx's TurnCause), or nothing */
+  cause?: (i: Intent) => ReactNode
 }
 
 // ---- top bar button -------------------------------------------------------------------------
@@ -83,7 +85,7 @@ export function InboxButton({ decisions, open, onClick, hiddenAlerts }: { decisi
   if (waiting > 0) parts.unshift(`${waiting} waiting on you (holding up a nomination)`)
   if (info > 0) parts.push(`${info} for information`)
   return (
-    <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
+    <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
       Inbox
       {waiting > 0 && <span className="ix-badge wait">{waiting}</span>}
       {pending > 0 && <span className="ix-badge pend">{pending}</span>}
@@ -295,9 +297,11 @@ interface CardProps {
   /** engagements in play (pending, approved, under way) on this intent's vehicles: its
    *  dispatch stops them, and the approval must say so */
   engaged?: Intent[]
+  /** what the watch officer was asked in the turn that proposed it (App.tsx), under the head */
+  cause?: ReactNode
 }
 
-function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, engaged = [] }: CardProps) {
+function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, engaged = [], cause }: CardProps) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -350,6 +354,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
   return (
     <article
       className={`ix-card ${selected ? 'sel' : ''}`}
+      data-intent-id={i.id}
       tabIndex={0}
       onClick={onFocus}
       onKeyDown={(e) => {
@@ -379,6 +384,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
         )}
         <Countdown intent={i} now={now} />
       </header>
+      {cause}
 
       {i.rationale && (
         <blockquote className="ix-rationale">
@@ -825,7 +831,13 @@ interface Notice {
   tone: 'ok' | 'bad'
 }
 
-export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
+export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden, cause }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
+  // a card chosen from outside this drawer (a line at the head of another, the task panel's link)
+  // is brought into view; one clicked here already is (`nearest` leaves it be)
+  const selId = selection?.kind === 'intent' ? selection.id : null
+  useEffect(() => {
+    if (selId != null) document.querySelector(`.ix [data-intent-id="${selId}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [selId, tab])
   const [notices, setNotices] = useState<Notice[]>(notice ? [notice] : [])
   const [noticeSeen, setNoticeSeen] = useState(notice?.n ?? null)
   if (notice && notice.n !== noticeSeen) {
@@ -944,6 +956,7 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
                 selected={selection?.kind === 'intent' && selection.id === i.id}
                 onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
                 onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+                cause={cause?.(i)}
               />
               ),
             )}

@@ -30,7 +30,7 @@ export function QueueButton({ decisions, open, onClick }: { decisions: Decisions
   const n = decisions?.inbox.queued?.length ?? 0
   const title = `${n} order${n === 1 ? '' : 's'} held for vehicles the link can't reach now`
   return (
-    <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={title} aria-label={`Queue: ${title}`}>
+    <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={title} aria-label={`Queue: ${title}`}>
       Queue
       {n > 0 && <span className="ix-badge q-badge">{n}</span>}
     </button>

@@ -1,0 +1,143 @@
+/* The right dock (dock.ts): one drawer at a time over the map's right edge (`.ix`: the Inbox, the
+   watch officer, the Queue, the Sitrep, Swarms), above everything else drawn on the map. What is
+   anchored to the map's right edge sits beside it, `--dock-w` from that edge; what keeps to the
+   map's left gives way to it rather than lie under it, down to a width it can still be read at.
+   Nothing on the map spills over the lists beside it. */
+.mapwrap { overflow: hidden; container: map / inline-size; }
+.mapwrap.docked { --dock-w: min(430px, 100%); --dock-px: 430px; }
+.mapwrap.docked.dock-wide { --dock-w: min(760px, 100%); --dock-px: 760px; }
+.mapwrap.docked .ix { z-index: 14; }
+
+/* beside the dock: the legend of what is hidden, the group strip, the weather details, the globe,
+   the map's zoom and compass, the perf overlay */
+.mapwrap.docked .hidden-legend.beside-drawer { right: calc(var(--dock-w) + 12px); }
+/* (56 px: clear of the zoom buttons beside the dock, as the strip keeps clear of them undocked) */
+.mapwrap.docked .gstrip.drawer { right: calc(var(--dock-w) + 56px); max-width: calc(100% - var(--dock-w) - 450px); }
+.mapwrap.docked .weather-panel,
+.mapwrap.docked .banner.gl-banner { right: calc(var(--dock-w) + 16px); }
+.mapwrap.docked .globe { right: calc(var(--dock-w) + 12px); }
+/* (in px: a percentage in a transform is the control's own width) */
+.mapwrap.docked .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group { transform: translateX(calc(-1 * var(--dock-px))); }
+.mapwrap.docked .perf { right: calc(var(--dock-w) + 52px); }
+/* the map beside the dock too narrow for two columns (the Situation panel or the weather legend on
+   the left, the hidden legend or the group strip on the right: 740 px): the hidden legend steps
+   away while a drawer is open (it counts what the map hides, most of it under the dock then), and
+   the group strip lifts above the weather legend and takes the free width, so it stays in use */
+@container map (max-width: 1169px) {
+  .mapwrap.docked .hidden-legend { display: none; }
+  .mapwrap.docked .gstrip.drawer { bottom: 124px; max-width: calc(100% - var(--dock-w) - 68px); }
+}
+@container map (max-width: 1499px) {
+  .mapwrap.docked.dock-wide .hidden-legend { display: none; }
+  .mapwrap.docked.dock-wide .gstrip.drawer { bottom: 124px; max-width: calc(100% - var(--dock-w) - 68px); }
+}
+/* the map's left: the Situation panel, the vehicle details, the tutorial's card, the weather
+   legend and the link coverage control narrow to what the dock leaves */
+.mapwrap.docked .sit,
+.mapwrap.docked .sit-chip,
+.mapwrap.docked .vdetails,
+.mapwrap.docked .cov { max-width: max(220px, calc(100% - var(--dock-w) - 24px)); }
+.mapwrap.docked .tut { max-width: max(260px, calc(100% - var(--dock-w) - 24px)); }
+.mapwrap.docked .weather-legend { width: min(360px, max(220px, calc(100% - var(--dock-w) - 28px))); }
+.mapwrap.docked .weather-legend > div:first-child { flex-wrap: wrap; }
+
+/* the top bar: the dock's tabs as one group; it fits the window rather than scroll the page, the
+   words that matter least giving way first */
+.topbar { gap: 14px; min-width: 0; }
+.topbar > * { flex-shrink: 0; }
+.topbar .spacer { flex-shrink: 1; min-width: 0; }
+.topbar .stat, .topbar .pill, .topbar .sub { white-space: nowrap; }
+.dock-tabs { display: flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: #0b1016; }
+.dock-tabs .platforms-btn { margin-right: 0; }
+/* the last to give way when nothing else can: who this console acts as, its choice cut short */
+.topbar .op-badge { flex-shrink: 1; min-width: 0; }
+.topbar .op-badge label { min-width: 0; }
+.topbar .op-badge select { flex-shrink: 1; min-width: 80px; max-width: 220px; text-overflow: ellipsis; }
+.topbar .stat-s { display: none; }
+@media (max-width: 2099px) {
+  .topbar .sub { display: none; }
+}
+@media (max-width: 1919px) {
+  .topbar .stat-l { display: none; }
+  .topbar .stat-s { display: inline; }
+  /* "DEV" alone: the badge's title says the rest */
+  .topbar .op-badge.dev .pill { font-size: 0; letter-spacing: 0; }
+  .topbar .op-badge.dev .pill::before { content: 'DEV'; font-size: 11px; letter-spacing: 0.1em; }
+}
+@media (max-width: 1599px) {
+  .topbar { gap: 10px; padding: 0 10px; }
+  .topbar .op-badge.dev label { font-size: 0; gap: 0; }
+  .topbar .op-badge select { max-width: 120px; font-size: 12px; }
+  .topbar .platforms-btn { padding: 4px 8px; }
+  .topbar .brand { letter-spacing: 0.18em; }
+}
+@media (max-width: 1399px) {
+  .topbar { gap: 6px; }
+  .dock-tabs { gap: 2px; padding: 2px; }
+  .topbar .pill-w { display: none; }
+  .topbar .platforms-btn { padding: 4px 6px; }
+  .topbar .brand { letter-spacing: 0.1em; }
+  /* the last resort: a second row rather than a page that scrolls sideways or items on each other */
+  .app { grid-template-rows: auto 1fr; }
+  .app.waiting { grid-template-rows: auto auto 1fr; }
+  .topbar { flex-wrap: wrap; row-gap: 6px; min-height: 44px; padding-top: 5px; padding-bottom: 5px; }
+}
+
+/* the officer's tab: whether one reads the tasking now */
+.tko-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.tko-dot.on { background: var(--ok); }
+.tko-dot.off { border: 1.5px solid var(--muted); }
+.platforms-btn.on .tko-dot.on { background: #0f3d22; }
+.platforms-btn.on .tko-dot.off { border-color: #3a2a10; }
+
+/* Waiting for you (Awaiting.tsx): at the head of every drawer but the Inbox, in the approvals'
+   violet. One line an order; a line opens its card in the Inbox. */
+.aw { display: flex; flex-direction: column; gap: 4px; padding: 7px 8px 8px; border: 1px solid #4b3a66; border-left: 3px solid var(--violet); border-radius: 4px; background: rgba(196, 155, 255, 0.06); }
+.aw-h { margin: 0 2px; display: flex; align-items: baseline; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--violet); }
+.aw-h span { font-family: var(--mono); color: var(--text); }
+.aw-h small { margin-left: auto; font: 10.5px var(--mono); letter-spacing: 0; text-transform: none; color: #a998c4; }
+.aw-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.aw-row { width: 100%; display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 5px 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
+.aw-row:hover { border-color: #4b3a66; background: #1a2230; }
+.aw-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.aw-row.engage { border-color: #5a2a2a; }
+.aw-main { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: 12.5px; }
+.aw-kind { font: 600 12px var(--mono); letter-spacing: 0.04em; }
+.aw-id { font: 11.5px var(--mono); color: var(--muted); }
+.aw-what { flex: 1; min-width: 0; font: 12px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aw-main .ix-src { flex: none; }
+.aw-left { flex: none; font: 600 12px var(--mono); color: var(--text); }
+.aw-left.urgent { color: var(--warn); }
+.aw-left.out { color: var(--bad); }
+.aw-re { font-size: 11.5px; color: #c9bde0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aw-more { align-self: flex-start; background: none; border: 0; padding: 1px 2px; font-size: 12px; color: var(--violet); text-decoration: underline; cursor: pointer; }
+
+/* on an order's card in the Inbox: the guidance read in the turn that proposed it */
+.ix-turn { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 6px 10px; border: 1px dashed #4b3a66; border-radius: 3px; background: rgba(196, 155, 255, 0.04); }
+.ix-turn .ix-label { flex-basis: 100%; margin: 0; }
+.ix-turn-text { flex: 1; min-width: 0; font-size: 13px; color: #d8cdea; overflow-wrap: anywhere; }
+
+/* the message box (OfficerCompose.tsx), pinned under the officer's drawer head */
+.oc { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px; border-bottom: 1px solid var(--line); background: #0e141b; }
+.oc-text {
+  width: 100%; resize: vertical; min-height: 62px; max-height: 40vh; field-sizing: content;
+  font: 13px/1.4 var(--sans); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px;
+}
+.oc-text::placeholder { color: var(--muted); }
+.oc-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.oc-text[aria-invalid='true'] { border-color: var(--bad); }
+.oc-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.oc-insert { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+.oc-chip { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; font: 11px var(--mono); color: var(--accent); background: none; border: 1px solid #4a3a1f; border-radius: 10px; }
+.oc-chip:hover:not(:disabled) { background: #221c12; }
+.oc-chip:disabled { color: var(--muted); border-color: var(--line); }
+.oc-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oc-keys { margin: 0; font: 10.5px var(--mono); color: var(--muted); }
+.oc-count { flex: none; margin-left: auto; font: 11.5px var(--mono); color: var(--muted); min-width: 52px; text-align: right; }
+.oc-count.warn { color: var(--warn); }
+.oc-count.bad { color: var(--bad); }
+.oc-send { flex: none; padding: 5px 16px; font: 700 12px var(--sans); letter-spacing: 0.05em; color: #1a1205; background: var(--accent); border: 0; border-radius: 4px; }
+.oc-send:disabled { color: var(--muted); background: var(--panel-2); }
+.oc-send:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.oc-why { margin: 0; font-size: 12px; line-height: 1.35; color: var(--warn); }
+.oc-why:empty { display: none; }

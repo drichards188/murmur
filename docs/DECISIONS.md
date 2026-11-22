@@ -4080,3 +4080,40 @@ Checked live, rules 34 the default: harbor-watch on autoplay with the playbook (
 9365): the three opening orders dispatched and done, the playbook's four proposals routed by the
 watch policy's agent tier and three approved by op-auto, no group order; `run.started` names 34
 and schema 9; the log replays and matches its anchors.
+
+## 2026-11-21: One right dock: a drawer at a time, what waits for a person always in sight
+
+The owner: "we will need a good ui ux way to send messages and approve. right now those menus
+overlap." Reproduced on Group command at 1440, 1920 and 1280 px: the Inbox, the Tasking drawer,
+Swarms, the Queue and the Sitrep all opened at the same place over the map's right edge, each on
+the last; the Inbox lay lowest, so opening any other drawer hid every approval under it, and the
+Sitrep (760 px) hid all of them and the map at 1440. The weather legend drew over the drawers, the
+legend of what the map hides spilled over the Fleet list at 1280, and the top bar pushed the
+operator switcher and the clock off screen below about 1820 px.
+
+Decided (`web/src/dock.ts`, `dock.css`):
+
+- **One drawer at a time.** The map's right edge is one dock; the top bar's Inbox, Officer, Queue,
+  Sitrep and Swarms buttons are its tabs. A button shows its drawer in place of the one shown, or
+  closes it when it is the one shown; a drawer's own close closes only itself. Nothing on the map
+  draws over the dock; what is anchored to the map's right edge (the hidden legend, the group
+  strip, the weather details, the globe, the zoom buttons) sits beside it, and what keeps to the
+  left (the Situation panel, the vehicle details, the tutorial's card, the weather legend) narrows
+  to what it leaves. Where the map beside the dock is too narrow for two columns, the hidden legend
+  steps away while a drawer is open and the group strip lifts above the weather legend. Docked
+  columns that shrink the map were set aside: the map would jump under the person at every
+  drawer, and fits already pad for a drawer over the edge.
+- **What waits for a person stays in sight.** Every drawer but the Inbox opens with "Waiting for
+  you": each pending approval in a line (soonest expiry first, the proposer as the Inbox labels
+  it), a line only opening its card in the Inbox; the card is where the person decides, on its
+  checks, so the line has no approve button. With the dock closed the Inbox button's badges and
+  the waiting strip under the top bar carry it, as before.
+- **One place for the officer.** Tasking became the Officer drawer: a message box pinned under
+  its head (Enter sends, Shift+Enter a new line, the 500-character count, the selection or track
+  inserted at the cursor, Send held with the reason while no officer reads the tasking, the draft
+  kept while the person looks at the Inbox), then the guidance as before. An order the officer
+  proposed in the turn that first read a message names that message, on its card in the Inbox and
+  on its waiting line (`officer.ts`, by time and agent: when it was proposed, never a claim of
+  why), with a way back to the message.
+- **The top bar fits.** The tagline, then the long labels, then spacing give way as the window
+  narrows; below 1400 px a second row is the last resort, never a page that scrolls sideways.

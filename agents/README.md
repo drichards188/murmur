@@ -651,7 +651,7 @@ held by the hourly cap, and tasking spends none). A failed turn gives tasking's 
 it does an escalation. A bridge without the channel (404) is read no more; were the bridge's own
 feed to carry `tasking.*` changes, the driver would stop its own read and leave them to it.
 
-**Tasking delivery** (the console's Tasking drawer). The driver says back how far it has each
+**Tasking delivery** (the console's Officer drawer). The driver says back how far it has each
 item, display only: `POST /api/tasking/{id}/ack` as the agent (the one route an agent may write
 in the tasking store, and only an item's delivery fields: never its text, author or whether it
 is active, never a new item or a retirement; an operator's request is refused 403; never logged,
@@ -665,8 +665,8 @@ seen, processed; the bridge refuses a step back with 409), once (a failure once 
 once a reason), queued and sent in order beside the watch so a slow bridge never holds a wake
 up, and flushed for a few seconds when the officer stops. A retired item keeps its last state.
 The driver's reads carry its identity too, and the bridge answers `officer` (the agent that last
-read the list, and when), so the drawer can say no officer is connected. A bridge whose items
-carry no `delivery` is not told.
+read the list, and when), so the drawer can say no officer is connected (and hold its Send until
+one is). A bridge whose items carry no `delivery` is not told.
 
 **Stakes** (bd murmur-5xaf, `agents/watch/stakes.py`; DECISIONS.md 2026-11-14). An identity
 conflict, and a conflict coming and going, goes to the stronger model only when its contact
