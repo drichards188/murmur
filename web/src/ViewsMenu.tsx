@@ -8,11 +8,15 @@ export interface ViewEntry {
   title: string
   on: boolean
   onToggle: () => void
+  /** why this run cannot show it ("no space segment in this run"): listed, greyed, not hidden */
+  off?: string | null
 }
 
 /** The top bar's reference views (the cutdown's ledger 1 section 1: Weather, Space with its globe,
- *  Links, Platforms) behind one quiet button: each one click away, none at the glance. A view that
- *  is on is ticked, and the button says how many are on. Escape or a click outside closes it. */
+ *  Links, Platforms) behind one quiet button: each one click away, none at the glance. Every view is
+ *  listed: one this run cannot show is greyed with the reason beside it, never left out (the owner,
+ *  2026-11-24: a view that vanished read as a lost feature). A view that is on is ticked, and the
+ *  button says how many are on. Escape or a click outside closes it. */
 export function ViewsMenu({ entries }: { entries: ViewEntry[] }) {
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLSpanElement>(null)
@@ -43,7 +47,8 @@ export function ViewsMenu({ entries }: { entries: ViewEntry[] }) {
               role="menuitemcheckbox"
               aria-checked={e.on}
               className={e.on ? 'on' : ''}
-              title={e.title}
+              title={e.off ? `${e.title}. Not available: ${e.off}` : e.title}
+              disabled={!!e.off && !e.on}
               onClick={() => {
                 e.onToggle()
                 setOpen(false)
@@ -51,6 +56,7 @@ export function ViewsMenu({ entries }: { entries: ViewEntry[] }) {
             >
               <span className="views-tick" aria-hidden="true">{e.on ? '✓' : ''}</span>
               {e.label}
+              {e.off && <span className="views-off">{e.off}</span>}
             </button>
           ))}
         </span>

@@ -867,9 +867,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const spaceSegment = !!decisions?.space?.loaded
   const views: ViewEntry[] = [
     { key: 'weather', label: 'Weather', title: 'The weather here and at the selected vehicle, and a colour field on the map', on: showWeather, onToggle: () => setShowWeather((v) => !v) },
-    ...(spaceSegment || showSpace
-      ? [{ key: 'space', label: 'Space', title: 'Space timeline (imaging access, SATCOM, GNSS) and the globe of satellites by class', on: showSpace, onToggle: () => (showSpace ? closeSpace() : setShowSpace(true)) }]
-      : []),
+    { key: 'space', label: 'Space', title: 'Space timeline (imaging access, SATCOM, GNSS) and the globe of satellites by class', on: showSpace, onToggle: () => (showSpace ? closeSpace() : setShowSpace(true)), off: spaceSegment ? null : 'no space segment in this run' },
     { key: 'links', label: 'Links', title: 'Predicted link coverage on the map: up, degraded and down for a link class at an altitude', on: showCoverage, onToggle: () => setShowCoverage((v) => !v) },
     { key: 'platforms', label: 'Platforms', title: 'The platform catalog: each type, its speeds, endurance, sensors and weapons', on: showPlatforms, onToggle: () => setShowPlatforms((v) => !v) },
   ]
