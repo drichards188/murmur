@@ -310,8 +310,12 @@ pub enum UnknownEndurance {
 /// of our vehicles is one group order, which the engine lays out member by member, checks share by
 /// share and decides once, dispatching each member as a one-vehicle member order under that one
 /// approval and re-forming the group inside what was approved when members drop; and a transit, a
-/// route flown once and held at its end by the vehicle's type.
-pub const RULES_VERSION: u32 = GROUP_ORDER_SINCE;
+/// route flown once and held at its end by the vehicle's type. Version 35 ([`SALVO_SINCE`]): one
+/// plan that two people sign may release several rounds of a weapon that flies, up to the policy's
+/// ceiling (standing one), each round judged as a release of its own at its own time, a failing
+/// round held, a Cease stopping further rounds; and a flight's preload re-read earlier by its time
+/// of flight.
+pub const RULES_VERSION: u32 = SALVO_SINCE;
 
 /// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
 /// except on a branch that builds the next version in stages before making it the default
@@ -320,14 +324,14 @@ pub const RULES_VERSION: u32 = GROUP_ORDER_SINCE;
 /// version only when asked: a scenario's `min_rules`, the scenario runner's `--rules N`, a test's
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
-/// and this to [`RULES_VERSION`] again. Rules 34, group orders (docs/SWARMS.md), were built so.
-/// Being built: rules 35 ([`SALVO_SINCE`], docs/SALVO.md).
-pub const RULES_NEWEST: u32 = SALVO_SINCE;
+/// and this to [`RULES_VERSION`] again. Rules 34, group orders (docs/SWARMS.md), and rules 35, the
+/// salvo (docs/SALVO.md), were built so.
+pub const RULES_NEWEST: u32 = RULES_VERSION;
 
 /// The rules version from which one plan that two people sign may release several rounds of a
 /// weapon that flies (a missile, a bomb, a torpedo), a salvo (docs/SALVO.md, bd murmur-4nik, the
-/// owner's decisions of 2026-11-20, DECISIONS.md "One decision, many releases"; built behind
-/// [`RULES_NEWEST`], not yet the default). A nomination asks for `rounds`, at most the policy's
+/// owner's decisions of 2026-11-20, DECISIONS.md "One decision, many releases"; built in stages
+/// behind [`RULES_NEWEST`], the default since the owner's go-ahead of 2026-11-24). A nomination asks for `rounds`, at most the policy's
 /// `[rules.engage] max_rounds_per_plan` (standing 1: today's chain; above 1 a loosening named in
 /// `loosened`) and the platform's rounds of the weapon left; the preview gives each round's release
 /// and strike, frozen with the plan and shown on the picture token with the spacing
@@ -798,14 +802,14 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 /// and re-serializes byte for byte; `run.started` records it (absent: 1), and replay checks
 /// that the logged policy uses no key of a later schema ([`crate::EngageRules::schema_keys`]).
 /// This is the one a run of the default rules logs; a run under older rules logs the schema they
-/// logged ([`RulesConfig::policy_schema`]: 8 under rules 33, 7 below them, whose keys it does not
-/// log).
-pub const POLICY_SCHEMA: u32 = GROUP_ORDER_SCHEMA_SINCE;
+/// logged ([`RulesConfig::policy_schema`]: 9 under rules 34, 8 under rules 33, 7 below them, whose
+/// keys it does not log).
+pub const POLICY_SCHEMA: u32 = SALVO_SCHEMA_SINCE;
 
 /// The newest policy schema this build reads and replay accepts: [`POLICY_SCHEMA`], or the one
-/// rules being built behind [`RULES_NEWEST`] add (rules 35's, [`SALVO_SCHEMA_SINCE`]; rules 34's
-/// [`GROUP_ORDER_SCHEMA_SINCE`] is the default).
-pub const POLICY_SCHEMA_NEWEST: u32 = SALVO_SCHEMA_SINCE;
+/// rules being built behind [`RULES_NEWEST`] add (none now: rules 35's [`SALVO_SCHEMA_SINCE`] is the
+/// default).
+pub const POLICY_SCHEMA_NEWEST: u32 = POLICY_SCHEMA;
 
 /// The policy schema that adds `[rules.engage] max_rounds_per_plan` and `salvo_spacing_s` (with
 /// [`SALVO_SINCE`]): named so that a branch merging beside another schema bump renumbers it in one

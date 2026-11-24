@@ -4,8 +4,8 @@
 > first version planned a replica of the US Army's HIV3 demo with new platforms and a new munition;
 > two build attempts on it were stopped by safety safeguards, and the owner narrowed the scope to
 > the command and control on weapons Murmur already has ("do what you can, put placeholders where you
-> have to"). The salvo (stage 1) is built (section 10), behind `RULES_NEWEST` with `RULES_VERSION`
-> unchanged until the flip; the group control of ordinary tasks (stages 2 and 3, docs/SWARMS.md) is
+> have to"). The salvo (stage 1) is built and, since 2026-11-24, the default decision rules (section 10);
+> the group control of ordinary tasks (stages 2 and 3, docs/SWARMS.md) is
 > rules 34, the default since 2026-11-20. The owner's choices of 2026-11-20 (bd murmur-4nik.2 and .5) replaced
 > the Salvo range situation of the first revision by the HIV3 salvo situation (section 7). Every
 > invented number is marked [E].
@@ -172,8 +172,8 @@ of the first revision:
   `spacing_s` and `cease_after_rounds` (eval/engage.py `EngageAdapter.cease_after`: a scripted
   op-planner, never a person, aborts the engagement once that many rounds are out).
 - **The placeholder:** the brief and the file say that the platform and weapon are the scenario's
-  choice, and that any catalog weapon with rounds and a flight salvoes the same way. Until the flip
-  of `RULES_VERSION` it needs `MURMUR_RULES=35` (the policy is refused under older rules, saying so).
+  choice, and that any catalog weapon with rounds and a flight salvoes the same way. Older rules
+  refuse its policy, saying so (a raised ceiling or a shorter spacing is read from rules 35 only).
 
 ## 8. What it lets us measure
 
@@ -201,7 +201,7 @@ Murmur adds.
 | stage | what | moves decisions | state |
 |---|---|---|---|
 | 0 | spent one-way strikers leave the world live | no | done (58ee062) |
-| 1 | the salvo (sections 1 to 6) and the HIV3 salvo situation (section 7) | rules 35 (policy schema 10), behind `RULES_NEWEST`; the flip of `RULES_VERSION` and the MCP digests are the owner's | built on branch `salvo-volley` (brought up to main on 2026-11-24): the engine, replay, scenarios 174-180, REST, MCP, the console card and map, the situation, and the situation headless (`eval/headless/tests/test_salvo.py`); a live run of the situation and the browser are not yet checked |
+| 1 | the salvo (sections 1 to 6) and the HIV3 salvo situation (section 7) | rules 35 (policy schema 10), the default since 2026-11-24 (the owner's go-ahead) | built on branch `salvo-volley` (brought up to main on 2026-11-24): the engine, replay, scenarios 174-180, REST, MCP, the console card and map, the situation, the situation headless (`eval/headless/tests/test_salvo.py`), the flip with its fixtures and re-taken digests; a live run of the situation and the browser are not yet checked |
 | 2 | `transit` (docs/SWARMS.md 3.2): go to a point and hold, for any vehicle | rules 34 | building with stage 3 |
 | 3 | group control of ordinary tasks (docs/SWARMS.md: group orders, member classes, re-forming; bd murmur-3kqi) | rules 34 | building |
 
@@ -210,9 +210,8 @@ Murmur adds.
 - A live run of the HIV3 salvo situation (stack, launcher, the scripted Cease through the runner) and
   the console in a browser: the engine, replay and scenarios are checked, the situation loads and
   its policy is read under rules 35, but the stack was not started where it was built.
-- The headless goldens and the paused digests, which move at the flip (the MCP tool list changes
-  then). The situation itself runs headless (`MURMUR_RULES=35`, world `golden-gate-v3` so that it
-  runs on the physical sensing model under its own policy, as live): the timeline's `rounds`,
+- Headless, the situation is checked on seed 1 only (world `golden-gate-v3`, so that it runs on
+  the physical sensing model under its own policy, as live): the timeline's `rounds`,
   `spacing_s`, `after_step` and `cease_after_rounds` as the live runner takes them, and on seed 1
   the director's notes as written (plan 1's six rounds, plan 2 ceased after its third, 9 left), the
   log replaying with its anchors.

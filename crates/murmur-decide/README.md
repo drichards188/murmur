@@ -2583,8 +2583,10 @@ Rules versions:
   (relabelled rules 32, its logged settings, its own looks' sensors and its `named` step are
   caught; with the settings taken out as rules 32 logged a policy, the last two still are).
 - **35** (`SALVO_SINCE`, bd murmur-4nik.2, docs/SALVO.md, the owner's decisions of 2026-11-20, DECISIONS.md
-  "One decision, many releases"; policy schema 10, `SALVO_SCHEMA_SINCE`; built behind
-  `RULES_NEWEST = 35`, `RULES_VERSION` still 33, the rules between them being another branch's): *one
+  "One decision, many releases"; policy schema 10, `SALVO_SCHEMA_SINCE`; built in stages
+  behind `RULES_NEWEST` and made the default last, on the owner's go-ahead of 2026-11-24:
+  `RULES_VERSION = RULES_NEWEST = 35`, `POLICY_SCHEMA` 10, and a run asked for rules 34 logs schema 9
+  and drops the salvo's keys, `Policy::as_logged`): *one
   plan, signed once by two people, releases up to N rounds of a weapon that flies*. `Task::Engage`
   gains `rounds` (absent: one) and `spacing_s` (absent: the policy's; a nomination may ask for more,
   never less). The policy gains `[rules.engage] max_rounds_per_plan` (standing 1, the floor) and
@@ -2695,8 +2697,9 @@ adds `[group]` (`min_share`, above 0 and at most 1, written out with its default
 `GROUP_ORDER_SCHEMA_SINCE`, rules 34: a run under rules 34 logs schema 9, one asked for rules 33
 logs 8 and drops `[group]`, and a run of older rules refuses a `[group]` other than the standing
 one, `Policy::fits_rules`); **10** adds `[rules.engage] max_rounds_per_plan` and `salvo_spacing_s`,
-optional and written out with their standing values (`SALVO_SCHEMA_SINCE`, rules 35, built behind
-`RULES_NEWEST`).
+optional and written out with their standing values (`SALVO_SCHEMA_SINCE`, rules 35: a run under
+rules 35 logs schema 10, one asked for rules 34 logs 9 and drops them, and older rules refuse a
+ceiling or spacing other than the standing one, `Policy::fits_salvo`).
 
 ## Integration contract for the bridge
 

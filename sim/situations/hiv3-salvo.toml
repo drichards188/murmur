@@ -1,5 +1,5 @@
 # HIV3 salvo: one decision, a series of rounds (docs/SALVO.md, bd murmur-4nik.2; decision rules 35).
-#   MURMUR_RULES=35 make situation NAME=hiv3-salvo      (autoplay, no AI: watch it; rules 35 until the flip)
+#   make situation NAME=hiv3-salvo      (autoplay, no AI: watch it)
 #
 # On 12 November 2026 the US Army launched about 18 drones from an unmanned ground vehicle in what it
 # called an "autonomous strike", and nobody has said whether that was one human decision or eighteen

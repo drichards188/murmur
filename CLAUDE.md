@@ -668,8 +668,8 @@ meaningful.
   is `TrackerMemory::under(cfg)` (no `Default`); the link predictor gives an identify order its own
   `identify_on_station_s`. The Rust guard's `FOUND_COPIES` is empty: fix a new copy, never list it.
 - Rules 35 (`SALVO_SINCE`, bd murmur-4nik.2, docs/SALVO.md, DECISIONS.md "One decision, many
-  releases"; policy schema 10; staged behind `RULES_NEWEST` = 35 while `RULES_VERSION` is 33, rules 34
-  and schema 9 being the group orders' on another branch): one nomination, two signatures, up to
+  releases"; policy schema 10; the default since 2026-11-24, built in stages behind `RULES_NEWEST` before
+  that; rules 34 and schema 9 are the group orders'): one nomination, two signatures, up to
   `rounds` of a weapon that flies (`Task::Engage` `rounds`, `spacing_s`; REST, MCP `propose_intent` and
   `get_nomination_options`, the form's Rounds field). `[rules.engage] max_rounds_per_plan` (standing 1)
   and `salvo_spacing_s` (standing 5) loosen only under `loosened` (`LOOSENABLE`, four keys). The release
@@ -682,7 +682,7 @@ meaningful.
   assessment runs from the last impact. `EngagePreview::flight_s` moves the preload's re-reading
   earlier by a flight (a drone's 90 s). Scenarios 174-180, tampers `round_after_stop`, `extra_round`,
   `edit_ceiling`; a scenario `[[vehicle]]` may name its `autopilot` (a stand-in rover's heartbeat).
-  The HIV3 salvo situation needs `MURMUR_RULES=35` until the flip; its steps take `rounds`,
+  The HIV3 salvo situation's steps take `rounds`,
   `spacing_s`, `after_step`, `cease_after_rounds` (`EngageAdapter.cease_after`: op-planner, a script,
   ceases it), live and headless (`eval/headless/script.py` `_after_fire`, `_cease`; world
   `golden-gate-v3`, so headless runs it physical under its own policy; `tests/test_salvo.py`).

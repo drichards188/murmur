@@ -4205,6 +4205,30 @@ has the design; rules 26's guns are the model: one signed plan, many releases):
   asks 6 on target A (12 left), plan 2 asks 6 on target B and a scripted operator ceases it after
   the third (9 left). Both targets are declared by the range's procedure (a script in autoplay,
   said in its note): a range has no hostile act.
-- **Built in stages behind `RULES_NEWEST = 35`**, `RULES_VERSION` unchanged until the flip (rules 34
-  and policy schema 9 went to the group orders, the default since 2026-11-20). The MCP tool list changes at
-  the flip, so no headless digest is re-taken before it.
+- **Built in stages behind `RULES_NEWEST = 35`** and made the default on the owner's go-ahead of
+  2026-11-24 (rules 34 and policy schema 9 went to the group orders, the default since 2026-11-20).
+  The MCP tool list changes at the flip, so the headless digests were re-taken with it.
+
+## 2026-11-24: The salvo, decision rules 35, made the default (murmur-4nik.2)
+
+The owner's go-ahead, once the branch was brought up to main and its situation ran headless:
+`RULES_VERSION = RULES_NEWEST = 35`, `POLICY_SCHEMA = POLICY_SCHEMA_NEWEST = 10`. A run under the
+standing policy still releases one round a plan (`max_rounds_per_plan = 1`): the salvo is there
+for a scenario whose policy raises the ceiling and names why (`loosened`).
+
+- **No scenario changes design.** All 180 run as designed; the 173 that are not the salvo's run
+  as designed under `--rules 34` too, and their logs under the two differ by `run.started` (the
+  rules version, the policy schema, the logged policy's ceiling and spacing) and, for a weapon
+  that flies, the preview's `flight_s`. Three missile scenarios (107, 119, 133) read the preload
+  back from earlier by the flight, as decided; 133's missile goes at its planned 165 s where
+  rules 34 waited a second for the first read-back; every outcome is the same. None carries a
+  `[since.35]`.
+- **What a run logs moved, nothing it decides.** The headless digests moved by those
+  `run.started` fields, `sim/policy.toml`'s hash in `policy_layers` (it writes the two keys out at
+  their standing values) and, in the model records, the tool list (`preview_intent`,
+  `propose_intent` and `get_nomination_options` take `rounds` and `spacing_s`); with those put back
+  the digests before come back byte for byte, each cause moving them alone.
+- **Older rules are for replay and named scenarios only.** The bridge's `MURMUR_RULES` accepts the
+  default alone again; a log of rules 34 replays under its own rules and drops the salvo's keys
+  from its logged policy (`Policy::as_logged`), and older rules refuse a policy that raises the
+  ceiling or shortens the spacing.

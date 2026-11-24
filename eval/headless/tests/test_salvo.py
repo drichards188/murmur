@@ -4,17 +4,12 @@ rounds on target A, signed once by op-2 and op-3, and releases all six 2 s apart
 plan 1's last round (`after_step`), nominates 6 on target B 5 s later, and the timeline's scripted
 operator ceases it after its third (`cease_after_rounds`): rounds 4 to 6 never go, 9 are left.
 The log replays with its anchors, and one seed twice is the same episode.
-
-Rules 35 is built behind `RULES_NEWEST`, so the run asks for it (`MURMUR_RULES`, which
-eval/headless/sim.py passes to the simulator) until the flip.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
-import pytest
 
 from eval.headless.tests.test_engage_space import binary, episode, events, first, replays, same_episode  # noqa: F401
 
@@ -32,8 +27,7 @@ def _salvo(rec: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[int, list[di
     return noms, rounds
 
 
-def test_the_hiv3_salvo_plays_headless_as_its_notes_say(binary: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MURMUR_RULES", "35")
+def test_the_hiv3_salvo_plays_headless_as_its_notes_say(binary: Path, tmp_path: Path):
     rec = episode("hiv3-salvo", tmp_path / "a", duration_s=DURATION_S, **SIGNERS)
     evs = events(rec)
     noms, rounds = _salvo(rec)

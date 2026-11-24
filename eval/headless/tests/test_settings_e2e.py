@@ -61,7 +61,7 @@ FAMILY = "v3-f2-drone-gg"
 SEED = 5000
 WORLD = "golden-gate-v3"
 DRONE = "drone-1"
-RULES = 34  # the default since group orders (rules 34); the settings are rules 33's
+RULES = 35  # the default since the salvo (rules 35); the settings are rules 33's
 BAR = 0.75
 STANDING_BAR = 0.6
 #: the window a nomination and the extra identify orders are aimed in: identified by the standing
