@@ -12,7 +12,7 @@ __pycache__/
 *.tsbuildinfo
 target/
 .claude/worktrees/
-sim/space/cache/
+sim/space/cache
 
 # tidewater (tidewater/): each scenario's fetched data (`tidewater fetch`), and the egg-info
 # its editable install into .venv leaves
