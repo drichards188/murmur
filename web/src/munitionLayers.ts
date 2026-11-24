@@ -16,13 +16,16 @@
 //   munition-trail    the trail, fading out behind it
 //   munition-flash    the launch flash: a core that fades and a ring that spreads
 //   munition          the missile, turned along its flight as the camera sees it
-//   munition-labels   name and seconds to impact, right of it
+//   munition-labels   name and seconds to impact, right of it; rounds of one weapon from one
+//                     launcher at one target (a salvo's) share one label, at the round that
+//                     strikes first: "HIV3 ×6 · HIVE 1 > T-0001 · 20–39 s PRED" (munition.ts
+//                     flightGroupLabel); each round's own line is its hover tooltip (`full`)
 //   munition-aloft    "▲ HELLFIRE · 9 s" at the surface under it while it is above the view
-//                     (aloft.ts), as a vehicle there is labelled
+//                     (aloft.ts), as a vehicle there is labelled, grouped the same way
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { MapScreen } from './aloft'
 import { z } from './map3d'
-import { dashesAhead, flightFraction, flightLabel, flightPath, headingPoint, inFlight, launchFlash, munitionAt, screenAngle, trailPoints, tracerHeads, type BurstFire, type FlightPath, type GroundAt, type MunitionFlight, type Pt3 } from './munition'
+import { dashesAhead, flightFraction, flightGroupKey, flightGroupLabel, flightLabel, flightPath, headingPoint, inFlight, launchFlash, munitionAt, screenAngle, trailPoints, tracerHeads, type BurstFire, type FlightPath, type GroundAt, type MunitionFlight, type Pt3 } from './munition'
 import { weaponIcon, weaponSymbolKind, WEAPON_COLORS } from './weaponSymbols'
 
 type RGBA = [number, number, number, number]
@@ -41,13 +44,17 @@ const ICON_PX = 44
 /** metres above mean sea level to rendered metres (map3d.ts) */
 const drawn = ([lon, lat, alt]: Pt3): Pt3 => [lon, lat, z(alt)]
 
-interface Flying {
+export interface Flying {
   m: MunitionFlight['m']
+  f: MunitionFlight
   kind: ReturnType<typeof weaponSymbolKind>
   /** where it is drawn, rendered metres */
   at: Pt3
   angle: number
+  /** its group's label on the round that strikes first, else empty (drawn unlabelled) */
   label: string
+  /** its own line ("HIV3 · HIVE 1 > T-0001 · 23 s PRED"): the tooltip when it is hovered */
+  full: string
   /** above the view: labelled at the surface under it */
   aloft: boolean
 }
@@ -108,13 +115,26 @@ export function buildMunitionLayers(munitions: MunitionFlight[], nowMs: number, 
     const from = drawn([...m.launch_point, m.launch_alt_m])
     const c = screen.at(from[0], from[1], from[2])
     const angle = toward(drawn(ahead)) ?? (track && toward(drawn(track))) ?? (a && c ? screenAngle(a[0] - c[0], a[1] - c[1]) : 180)
-    flying.push({ m, kind: weaponSymbolKind(f.kind, f.profile), at, angle, label: flightLabel(f, nowMs), aloft: screen.aloft(at[0], at[1], at[2]) })
+    flying.push({ m, f, kind: weaponSymbolKind(f.kind, f.profile), at, angle, label: '', full: flightLabel(f, nowMs), aloft: screen.aloft(at[0], at[1], at[2]) })
     const trail = trailPoints(m, nowMs, path.shaped ? 16 : 8, path).map(drawn)
     if (trail.length > 1) trails.push(trail)
     for (const d of dashesAhead(m, nowMs, path)) dashes.push(d.map(drawn))
   }
   for (const [k, p] of paths) if (!used.has(p.path)) paths.delete(k)
   if (!flying.length && !flashes.length) return []
+  // one label a group (a salvo's rounds: one weapon, launcher and target), at the round that
+  // strikes first; those above the view are a group of their own, labelled at the surface
+  const groups = new Map<string, Flying[]>()
+  for (const x of flying) {
+    const k = `${flightGroupKey(x.f)}|${x.aloft}`
+    const g = groups.get(k)
+    if (g) g.push(x)
+    else groups.set(k, [x])
+  }
+  for (const g of groups.values()) {
+    const lead = g.reduce((a, b) => (b.m.impact_t < a.m.impact_t ? b : a))
+    lead.label = flightGroupLabel(g.map((x) => x.f), nowMs)
+  }
   // smoke at the tail, hot at the munition
   const fade = (k: number, n: number): RGBA => [60 + Math.round(136 * (k / n)), 170 + Math.round(72 * (k / n)), 255, Math.round(235 * (k / n))]
   return [
@@ -161,11 +181,13 @@ export function buildMunitionLayers(munitions: MunitionFlight[], nowMs: number, 
       getSize: ICON_PX,
       sizeUnits: 'pixels',
       getAngle: (f) => f.angle,
+      // hovered, a round shows its own line (MapView's tooltip)
+      pickable: true,
       parameters: onTop,
     }),
     new TextLayer<Flying>({
       id: 'munition-labels',
-      data: flying.filter((f) => !f.aloft),
+      data: flying.filter((f) => !f.aloft && f.label),
       getPosition: (f) => f.at,
       getText: (f) => f.label,
       getSize: 12,
@@ -183,7 +205,7 @@ export function buildMunitionLayers(munitions: MunitionFlight[], nowMs: number, 
     }),
     new TextLayer<Flying>({
       id: 'munition-aloft',
-      data: flying.filter((f) => f.aloft),
+      data: flying.filter((f) => f.aloft && f.label),
       getPosition: (f) => [f.at[0], f.at[1], 0],
       getText: (f) => `▲ ${f.label}`,
       getSize: 11,

@@ -14,7 +14,7 @@ import { bridgeDeckLayer, build3dGlide, build3dStatic, drawnHeight, DEM_TILES, H
 import { ALL_FULL, planLabels, type LabelCandidate, type LabelLevel, type LabelPlan, type LabelStats, type Priority } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { burstShown, LAUNCH_FLASH_MS, munitionShown, type BurstFire, type GroundAt, type MunitionFlight } from './munition'
-import { buildMunitionLayers, buildTracerLayers, type Tracer } from './munitionLayers'
+import { buildMunitionLayers, buildTracerLayers, type Flying, type Tracer } from './munitionLayers'
 import { buildActLayers } from './actLayers'
 import { buildWeaponLayers, weaponsAnimating } from './weaponLayers'
 import { shownWeapons, type WeaponTrack } from './weapon'
@@ -888,6 +888,11 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         const h = heightLabel(v)
         tipKey = `v:${v.uid}`
         tipText = `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}${h ? ` · ${h}` : ''}${isStale(v) ? ` · LOST ${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s` : ''}`
+      } else if (info.layer?.id === 'munition' && info.object != null) {
+        // a round in flight: its own line, which its group's one label leaves out
+        const f = info.object as Flying
+        tipKey = `munition:${f.m.launch_t}:${f.m.impact_t}`
+        tipText = f.full
       } else if (info.layer && info.object != null) {
         const t = tooltipRef.current?.(info.layer.id, info.object)
         if (t) {
@@ -898,7 +903,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       m.getCanvas().style.cursor = tipKey ? 'pointer' : cursor.current
       const tip = tooltip.current
       if (!tip) return
-      if (tipKey && planRef.current.level(tipKey) !== 'full') {
+      // a round's own line is never drawn in full (its group's label is), so it always tips
+      if (tipKey && (tipKey.startsWith('munition:') || planRef.current.level(tipKey) !== 'full')) {
         tip.textContent = tipText
         tip.style.transform = `translate(${info.x}px, ${info.y - 14}px) translate(-50%, -100%)`
         tip.hidden = false

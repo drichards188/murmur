@@ -1,7 +1,7 @@
 // Checks for weaponSymbols.ts and the label and tracer helpers of munition.ts (bd murmur-ma92):
 //   node web/src/weaponSymbols.check.ts
 // Throws on the first failure, prints "weaponSymbols: ok" otherwise. Not part of the bundle.
-import { burstShown, BURST_S, flightLabel, tracerHeads, type MunitionFlight } from './munition.ts'
+import { burstShown, BURST_S, flightGroupKey, flightGroupLabel, flightLabel, tracerHeads, type MunitionFlight } from './munition.ts'
 import { weaponIcon, weaponIconSvg, weaponSymbolKind, WEAPON_AFFILIATIONS, WEAPON_KINDS } from './weaponSymbols.ts'
 
 function check(cond: boolean, what: string) {
@@ -57,6 +57,24 @@ const f: MunitionFlight = {
 check(flightLabel(f, 0) === 'HELLFIRE · REAPER 1 > T-12 · 9 s PRED', flightLabel(f, 0))
 check(flightLabel({ ...f, launcher: undefined, target: undefined }, 8_500) === 'HELLFIRE · 1 s PRED', 'bare label')
 check(flightLabel({ ...f, target: undefined }, 0) === 'HELLFIRE · REAPER 1 · 9 s PRED', 'no target')
+
+// a salvo's rounds (rules 35): one weapon, launcher and target are one group, one label with the
+// rounds in flight and the seconds to the first and the last impact; one round is its own label
+const round = (k: number): MunitionFlight => ({
+  m: { name: 'HIV3-class launcher round', speed_mps: 20, launch_t: k * 2000, launch_point: [0, 0], launch_alt_m: 0, impact_t: 20_000 + k * 2000, impact_point: [0, 0], impact_alt_m: 0, tof_s: 20 },
+  kind: 'missile',
+  profile: 'dive',
+  launcher: 'HIVE 1',
+  target: 'T-0001',
+})
+const salvo = [0, 1, 2, 3, 4, 5].map(round)
+check(new Set(salvo.map(flightGroupKey)).size === 1, 'one salvo, one group')
+check(flightGroupKey({ ...round(0), target: 'T-0002' }) !== flightGroupKey(round(0)), 'another target, another group')
+check(flightGroupKey({ ...round(0), launcher: 'HIVE 2' }) !== flightGroupKey(round(0)), 'another launcher, another group')
+check(flightGroupKey(f) !== flightGroupKey({ ...f, m: { ...f.m, name: 'GBU-12 Paveway II' } }), 'another weapon, another group')
+check(flightGroupLabel(salvo, 10_000) === 'HIV3 ×6 · HIVE 1 > T-0001 · 10–20 s PRED', flightGroupLabel(salvo, 10_000))
+check(flightGroupLabel([round(0), round(0)], 0) === 'HIV3 ×2 · HIVE 1 > T-0001 · 20 s PRED', 'one window, one figure')
+check(flightGroupLabel([round(3)], 10_000) === flightLabel(round(3), 10_000), 'a group of one is the round\'s own label')
 
 // tracers: only for a reported burst, only while it lasts
 const fire = { bursts: 3, rounds: 18, last_t: 100_000 }

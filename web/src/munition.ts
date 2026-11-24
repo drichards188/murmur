@@ -359,8 +359,29 @@ export interface MunitionFlight {
 /** Its label on the map: "HELLFIRE · REAPER 1 > T-12 · 9 s PRED". No munition of ours reports
  *  its position in flight: where it is drawn is the model's, and the label says so (PRED). */
 export function flightLabel(f: MunitionFlight, t: number): string {
-  const who = f.launcher ? (f.target ? `${f.launcher} > ${f.target}` : f.launcher) : f.target
-  return [munitionShort(f.m.name), who, `${secondsToImpact(f.m, t)} s PRED`].filter(Boolean).join(' · ')
+  return [munitionShort(f.m.name), flightWho(f), `${secondsToImpact(f.m, t)} s PRED`].filter(Boolean).join(' · ')
+}
+
+/** "REAPER 1 > T-12", "REAPER 1", "T-12" or nothing */
+function flightWho(f: MunitionFlight): string | undefined {
+  return f.launcher ? (f.target ? `${f.launcher} > ${f.target}` : f.launcher) : f.target
+}
+
+/** Rounds in flight with the same weapon, launcher and target (a salvo's, rules 35, bd
+ *  murmur-4nik.2: one plan, its rounds a few seconds apart) are one group on the map, labelled once
+ *  (`flightGroupLabel`) rather than a label a round piled on its neighbours'. */
+export function flightGroupKey(f: MunitionFlight): string {
+  return `${f.m.name}|${f.launcher ?? ''}|${f.target ?? ''}`
+}
+
+/** A group's one label: "HIV3 ×6 · HIVE 1 > T-0001 · 20–39 s PRED", the rounds in flight and the
+ *  seconds to the first and the last impact; a group of one is `flightLabel`'s. */
+export function flightGroupLabel(fs: readonly MunitionFlight[], t: number): string {
+  if (fs.length === 1) return flightLabel(fs[0], t)
+  const secs = fs.map((f) => secondsToImpact(f.m, t))
+  const lo = Math.min(...secs)
+  const hi = Math.max(...secs)
+  return [`${munitionShort(fs[0].m.name)} ×${fs.length}`, flightWho(fs[0]), `${lo === hi ? lo : `${lo}–${hi}`} s PRED`].filter(Boolean).join(' · ')
 }
 
 // ---- gun bursts (rules 26) ----
