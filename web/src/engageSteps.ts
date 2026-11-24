@@ -110,7 +110,8 @@ export function span(ms: number): string {
 
 // ---- a rule declaration's evidence -------------------------------------------------------------
 
-const SENSOR: Record<string, string> = { radar: 'radar', eo_ir: 'EO/IR', ais: 'AIS', sonar: 'sonar', esm: 'ESM' }
+/** A sensor kind as a person names it ("eo_ir" -> "EO/IR"). */
+export const SENSOR: Record<string, string> = { radar: 'radar', eo_ir: 'EO/IR', ais: 'AIS', sonar: 'sonar', esm: 'ESM' }
 
 /** "1:sonar", "1:eo_ir" -> "HUNTER 1 sonar and EO/IR": the observing sensors by vehicle. */
 export function sensorsText(sensors: string[], nameOf: (uid: string) => string): string {

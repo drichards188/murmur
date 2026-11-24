@@ -20,7 +20,9 @@ import {
   trackSymbolSvg,
 } from './tracks'
 import type { Vehicle } from './types'
-import { callsign } from './types'
+import { callsign, vehicleNamer } from './types'
+import type { Intent } from './decisions'
+import { trackEngagement, type TrackEngagement } from './trackEngagement'
 import { FLAG_LABEL, resolveFlag } from './ident'
 import { IdentifyForm } from './IdentifyForm'
 import { DeclarationBlock, DeclareControls } from './Declaration'
@@ -53,6 +55,10 @@ interface Props {
   reveal?: Reveal | null
   /** open the engagement nomination form for a declared-hostile track (Phase E) */
   onEngage?: (trackId: string) => void
+  /** the run's latest intents (newest first): an engagement on a track in play, or its outcome,
+   *  said on the track's card (trackEngagement.ts); and a way to open its card in the Inbox */
+  intents?: readonly Intent[]
+  onOpenEngagement?: (id: number) => void
   /** the review items that alone hold up a nomination (blocking.ts): said on their track's card */
   blocking?: Blocking[]
   /** tracks the person pinned to be drawn in full on the map (focus.ts), and the toggle */
@@ -152,7 +158,7 @@ function Row({ t, nowMs, staleAfterS, sel, onClick, why }: { t: Track; nowMs: nu
 /** A track's card: what it is and why it is shown so (its declaration and the evidence first, then
  *  the estimate's), then the acts that fit (Declaration.tsx: confirm or revoke the engine's
  *  declaration, nominate on a declared hostile, declare by hand), then the track's numbers. */
-function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holding, pinned, onPin }: { t: Track; nowMs: number; now: () => number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void; holding?: Blocking; pinned?: boolean; onPin?: () => void }) {
+function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holding, pinned, onPin, engagement, onOpenEngagement }: { t: Track; nowMs: number; now: () => number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void; holding?: Blocking; pinned?: boolean; onPin?: () => void; engagement?: TrackEngagement | null; onOpenEngagement?: (id: number) => void }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // rules 21: the form that sends a vehicle to identify it (rules 22: while the track is live)
@@ -179,7 +185,7 @@ function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holdi
   return (
     <div className="tk-detail">
       {t.declared ? (
-        <DeclarationBlock t={t} vehicles={vehicles} now={now} onEngage={onEngage} where="track" holding={holding} />
+        <DeclarationBlock t={t} vehicles={vehicles} now={now} onEngage={onEngage} where="track" holding={holding} engagement={engagement} onOpenEngagement={onOpenEngagement} />
       ) : (
         <p className={`tk-status ${t.affiliation === 'suspect' ? 'bad' : ''}`}>
           Not declared: {aff} by estimate ({pct(t.affiliation_confidence)})
@@ -310,7 +316,7 @@ function levelLine(f: TrackFold<Track>) {
   return order.flatMap(([k, w]) => (f.levels[k] ? [`${w} ${f.levels[k]}`] : [])).join(' · ')
 }
 
-export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage, blocking, pinned, onPin, focus, crowded = false, expandAll = false, onFolded }: Props) {
+export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage, intents, onOpenEngagement, blocking, pinned, onPin, focus, crowded = false, expandAll = false, onFolded }: Props) {
   const nowMs = now()
   const staleAfterS = tracks?.stale_after_s ?? 10
   const list = sortTracks(tracks?.tracks ?? [])
@@ -368,7 +374,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
             return (
               <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
                 <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} why={crowded && why ? FOCUS_WORDS[why] : undefined} />
-                {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} pinned={pinned?.has(t.id)} onPin={onPin ? () => onPin(t.id) : undefined} />}
+                {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} engagement={trackEngagement(intents, t.id, vehicleNamer(vehicles))} onOpenEngagement={onOpenEngagement} holding={(blocking ?? []).find((b) => b.track === t.id)} pinned={pinned?.has(t.id)} onPin={onPin ? () => onPin(t.id) : undefined} />}
               </div>
             )
           })
@@ -407,9 +413,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
       {!collapsed && (
       <div className="tk-scroll" ref={box}>
         {list.length === 0 ? (
-          <p className="empty">
-            No tracks. Contacts appear here as our platforms' sensors detect them (radar, EO/IR, AIS, sonar, ESM per <code>sim/platforms.toml</code>); start a scenario with <code>MURMUR_CONTACTS=sim/scenarios/golden-gate.toml</code>.
-          </p>
+          <p className="empty">No contacts yet: each appears here once one of our sensors (radar, EO/IR, AIS, sonar, ESM) detects it.</p>
         ) : (
           showHelp && <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares. From our sensors only.{crowded ? ' Listed first: what is in focus, and why; the rest folded by affiliation and kind (a count, not a grouping by place), each fold one click from its tracks.' : ''}</p>
         )}

@@ -9,6 +9,7 @@ import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, type ReviewLostClaim, FLAG_LABEL, confirmDeclaration, confirmLostClaim, confirmNodeLost, dismissNodeFlag, resolveFlag, revokeDeclaration, revokeNodeLoss } from './ident'
 import { confirmEffects, evidenceLine, regionLines, type ReviewNodeLoss, type ReviewNodeLost } from './nodeLoss'
+import { agoWhen, plainText, sensorList } from './plainText'
 import './nodeLoss.css'
 
 /** The inbox's Review (rules 9): what the identification asks of a human, none of it stopping
@@ -18,7 +19,7 @@ import './nodeLoss.css'
  *  attribution below threshold, conflicting evidence, no track, a victim not ours, one
  *  observation where the policy wants two, a track keeping company with a declared hostile):
  *  it never declares anything; an operator confirms the concern or dismisses it, and declares
- *  a track, if they decide to, deliberately in the Tracks drawer (the flag's track buttons open
+ *  a track, if they decide to, deliberately in the Tracks list (the flag's track buttons open
  *  it there). Every action is logged under the operator's session. A declarer is told when
  *  someone else revoked their declaration. The observed acts list shows what the sensors saw
  *  and what the engine made of each (with rule declaration off, an operator declares from
@@ -41,8 +42,19 @@ interface Props {
   blocking?: Blocking[]
   /** bring this item into view and focus it (the strip's or the Situation panel's link) */
   focus?: { id: string; n: number } | null
-  /** one of ours by its uid as a person names it (its callsign): the node-loss evidence's sensors */
+  /** one of ours by its uid as a person names it (its callsign): the evidence's sensors and victims */
   nameOf?: (uid: string) => string
+  /** open flags a later declaration settled (needsYou.ts `settledFlags`): listed below the Inbox's
+   *  live items by SettledFlags, not here */
+  settled?: ReadonlyMap<string, string>
+}
+
+/** A uid as is, where no callsign lookup was given. */
+const byUid = (uid: string) => `vehicle ${uid}`
+
+/** The engine's evidence text with callsigns, sensor names and times in words (plainText.ts). */
+function plain(text: string, now: () => number, nameOf: (uid: string) => string = byUid) {
+  return plainText(text, { nameOf, when: agoWhen(now()) })
 }
 
 /** What an item holds up, how long, and what the person's act does: information beside the
@@ -83,8 +95,8 @@ function age(now: () => number, t: number) {
   return `${fmtDuration(Math.max(0, now() / 1000 - t))} ago`
 }
 
-function againstText(a: Against) {
-  if (a.kind === 'vehicle') return `our vehicle ${a.uid}`
+function againstText(a: Against, nameOf: (uid: string) => string = byUid) {
+  if (a.kind === 'vehicle') return nameOf(a.uid)
   if (a.kind === 'track') return `track ${a.track}`
   return 'something we hold no track of'
 }
@@ -101,6 +113,7 @@ function DeclarationItem({
   onTrack,
   holding,
   focusN,
+  nameOf,
 }: {
   d: ReviewDeclaration
   now: () => number
@@ -108,6 +121,7 @@ function DeclarationItem({
   onTrack?: Props['onTrack']
   holding?: Blocking
   focusN?: number
+  nameOf?: Props['nameOf']
 }) {
   const { ref, flash } = useFocused(focusN)
   const [busy, setBusy] = useState(false)
@@ -181,10 +195,10 @@ function DeclarationItem({
             <dl>
               <dt>Act</dt>
               <dd>
-                {ev.act} against {againstText(ev.against)}, {age(now, ev.observed_t / 1000)}
+                {ev.act} against {againstText(ev.against, nameOf)}, {age(now, ev.observed_t / 1000)}
               </dd>
               <dt>Seen by</dt>
-              <dd>{ev.sensors.join(', ') || 'none named'}</dd>
+              <dd>{ev.sensors.length ? sensorList(ev.sensors, nameOf ?? byUid) : 'none named'}</dd>
               <dt>Attribution</dt>
               <dd>
                 {ev.attribution.toFixed(2)} to {d.track} (threshold {ev.threshold.toFixed(2)})
@@ -192,7 +206,7 @@ function DeclarationItem({
               </dd>
             </dl>
           ) : null}
-          <BlufReason className="rv-basis" text={d.basis} />
+          <BlufReason className="rv-basis" text={plain(d.basis, now, nameOf)} />
           <div className="rv-actions">
             <button className="ghost mini" disabled={busy} onClick={confirm} title="Confirm the engine's declaration (logged under your session)">
               confirm {d.track} hostile
@@ -300,6 +314,7 @@ function FlagItem({
   onTrack,
   holding,
   focusN,
+  nameOf,
 }: {
   f: ReviewFlag
   now: () => number
@@ -307,6 +322,7 @@ function FlagItem({
   onTrack?: Props['onTrack']
   holding?: Blocking
   focusN?: number
+  nameOf?: Props['nameOf']
 }) {
   const { ref, flash } = useFocused(focusN)
   const [busy, setBusy] = useState(false)
@@ -336,11 +352,11 @@ function FlagItem({
         <span className="muted"> {age(now, f.t)}</span>
       </header>
       {holding && <Holding b={holding} now={now} />}
-      <Bluf className="rv-basis" parts={flagParts(f.flag_kind, f.evidence)} />
+      <Bluf className="rv-basis" parts={flagParts(f.flag_kind, plain(f.evidence, now, nameOf))} />
       <p className="muted rv-hint">
         {f.tracks.length ? (
           <>
-            Open to look, or to declare deliberately in the Tracks drawer:{' '}
+            Open to look, or to declare deliberately in the Tracks list:{' '}
             {f.tracks.map((t) => (
               <button key={t} className="ghost mini" onClick={() => onTrack?.(t)} disabled={!onTrack}>
                 {t}
@@ -587,18 +603,72 @@ function NodeLostItem({ n, now, onDone, focusN }: { n: ReviewNodeLost; now: () =
   )
 }
 
-function verdictText(a: ObservedAct) {
+function verdictText(a: ObservedAct, why: (text: string) => string) {
   const v = a.verdict
   if (v.verdict === 'declare') return `declared ${v.track} hostile by rule (${a.declaration ?? ''}, attribution ${v.attribution.toFixed(2)})`
-  if (v.verdict === 'flag') return `flagged ${a.flag ?? ''} (${FLAG_LABEL[v.kind] ?? v.kind}): ${v.why}`
-  return `recorded: ${v.why}`
+  if (v.verdict === 'flag') return `flagged ${a.flag ?? ''} (${FLAG_LABEL[v.kind] ?? v.kind}): ${why(v.why)}`
+  return `recorded: ${why(v.why)}`
 }
 
-export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, focus, nameOf }: Props) {
+/** The open flags a later declaration by a person settled (needsYou.ts `settledFlags`), below the
+ *  Inbox's live items: one quiet line each saying what settled it, and the flag's own card a click
+ *  away (or at once, when a link points to it), where the person may still confirm or dismiss it.
+ *  Nothing here resolves a flag: it stays open in the engine until a person does. */
+export function SettledFlags({
+  review,
+  settled,
+  now,
+  onDone,
+  onTrack,
+  focus,
+  nameOf,
+}: Pick<Props, 'review' | 'now' | 'onDone' | 'onTrack' | 'focus' | 'nameOf'> & { settled: ReadonlyMap<string, string> }) {
+  const [shown, setShown] = useState<ReadonlySet<string>>(() => new Set())
+  // a link pointing to one (the strip's, the Situation panel's) opens its card, once per request
+  const [seenFocus, setSeenFocus] = useState<number | null>(null)
+  if (focus && focus.n !== seenFocus) {
+    setSeenFocus(focus.n)
+    if (settled.has(focus.id) && !shown.has(focus.id)) setShown(new Set([...shown, focus.id]))
+  }
+  const flags = (review?.flags ?? []).filter((f) => settled.has(f.id))
+  if (!flags.length) return null
+  const toggle = (id: string) =>
+    setShown((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  return (
+    <>
+      <h3 className="ix-h">
+        Settled since <span>{flags.length}</span>
+        <small>a later declaration answered them; still open to confirm or dismiss</small>
+      </h3>
+      {flags.map((f) => {
+        const open = shown.has(f.id)
+        return (
+          <div key={f.id} className="rv-settled-item">
+            <p className="rv-settled">
+              <b>{f.id}</b> {FLAG_LABEL[f.flag_kind] ?? f.flag_kind} on {f.tracks.join(', ')}: settled since, {settled.get(f.id)}.{' '}
+              <button className="ghost mini" aria-expanded={open} onClick={() => toggle(f.id)} title="Its card: you may still confirm the concern or dismiss it">
+                {open ? 'fold' : 'open'}
+              </button>
+            </p>
+            {open && <FlagItem f={f} now={now} onDone={onDone} onTrack={onTrack} focusN={focus?.id === f.id ? focus.n : undefined} nameOf={nameOf} />}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, focus, nameOf, settled }: Props) {
   const [showActs, setShowActs] = useState(false)
   const [operator] = useOperator()
   const decls = review?.declarations ?? []
-  const flags = review?.flags ?? []
+  // a flag a later declaration settled is listed below the live items (SettledFlags), not here
+  const flags = (review?.flags ?? []).filter((f) => !settled?.has(f.id))
   // rules 16: claims on lost contacts
   const claims = review?.lost_claims ?? []
   // rules 30: our vehicles presumed lost or flagged by hand, and those confirmed lost
@@ -637,9 +707,9 @@ export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, fo
           what its card has open or typed */}
       {[...urgentDecls, ...urgentFlags, ...otherDecls, ...otherFlags].map((x) =>
         x.kind === 'declaration' ? (
-          <DeclarationItem key={x.id} d={x} now={now} onDone={onDone} onTrack={onTrack} holding={holdingFor(blocking, x.id)} focusN={focusN(x.id)} />
+          <DeclarationItem key={x.id} d={x} now={now} onDone={onDone} onTrack={onTrack} holding={holdingFor(blocking, x.id)} focusN={focusN(x.id)} nameOf={nameOf} />
         ) : (
-          <FlagItem key={x.id} f={x} now={now} onDone={onDone} onTrack={onTrack} holding={holdingFor(blocking, x.id)} focusN={focusN(x.id)} />
+          <FlagItem key={x.id} f={x} now={now} onDone={onDone} onTrack={onTrack} holding={holdingFor(blocking, x.id)} focusN={focusN(x.id)} nameOf={nameOf} />
         ),
       )}
       {claims.map((c) => (
@@ -665,8 +735,8 @@ export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, fo
             <ul className="rv-acts">
               {acts?.map((a) => (
                 <li key={a.act.act}>
-                  <b>{a.act.act}</b> seen by {a.act.sensors.join(', ')} (1-sigma {Math.round(a.act.sigma_m)} m{a.act.fixes?.length ? `; ${a.act.fixes.length} more observer${a.act.fixes.length === 1 ? '' : 's'}` : ''})
-                  {a.candidates.length ? `; candidates ${a.candidates.map((c) => `${c.track} ${c.confidence.toFixed(2)}`).join(', ')}` : '; no track near'}: {verdictText(a)}
+                  <b>{a.act.act}</b> seen by {sensorList(a.act.sensors, nameOf ?? byUid)} (1-sigma {Math.round(a.act.sigma_m)} m{a.act.fixes?.length ? `; ${a.act.fixes.length} more observer${a.act.fixes.length === 1 ? '' : 's'}` : ''})
+                  {a.candidates.length ? `; candidates ${a.candidates.map((c) => `${c.track} ${c.confidence.toFixed(2)}`).join(', ')}` : '; no track near'}: {verdictText(a, (t) => plain(t, now, nameOf))}
                 </li>
               ))}
             </ul>

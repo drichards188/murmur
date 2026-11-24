@@ -13,13 +13,16 @@
 //   weapon-struck     a ring on the victim once it reports the strike (one a vehicle, at the newest)
 //   weapon-labels     what each stage says: "LAUNCH · 270° from HUNTER 1", "WEAPON? · 243 m/s",
 //                     "ATGM-class: 250 m/s, from T-0004 · 2.1 s", the strikes on each vehicle once
-//                     ("GUN STRUCK HUNTER 1 ×3": a gun's every burst is a weapon), a launch once
+//                     ("GUN STRUCK HUNTER 1 ×3": a gun's every burst is a weapon), a launch once;
+//                     the launches' and the strikes' placed by the one label budget (declutter.ts)
+//                     against the other layers', a flying weapon's moving with it as drawn
 //
 // MapView builds these on every animation frame while a weapon is in flight or a flash is on, and
 // at the console's tick otherwise; under reduced motion nothing moves or flashes: the lines, the
 // fixes, the rings and the labels, static.
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { MapScreen } from './aloft'
+import { type LabelCandidate, type LabelLevel, textBox } from './declutter'
 import { z } from './map3d'
 import { dashesAhead, inFlight, LAUNCH_FLASH_MS, munitionAt, screenAngle, type Munition, type Pt3 } from './munition'
 import { classText, countdownS, estimate, FLY_ALT_M, heading, stageText, strikeFlash, struckGroups, weaponShort, type WeaponTrack } from './weapon'
@@ -63,6 +66,51 @@ interface Label {
   at: Pt3
   label: string
   a: number
+  /** a launch's or a strike's label: placed by the label budget (`w:launch:...`, `w:struck:...`);
+   *  a flying weapon's moves with it every frame and is drawn as it is */
+  key?: string
+  /** its short form, where the budget has room for no more */
+  short?: string
+}
+
+/** where a weapon's label is drawn from its point, px (below and right of the symbol) */
+const LABEL_AT: [number, number] = [ICON_PX / 3, ICON_PX / 2]
+const LABEL_PAD: [number, number] = [5, 3]
+
+const alphaAt = (w: WeaponTrack, nowMs: number) => (w.ended_t == null ? 1 : Math.max(0.15, 1 - (nowMs - w.ended_t) / 60_000))
+
+/** The labels that stay where they are: a launch's, once a report ("LAUNCH · 270° from HUNTER 1"),
+ *  while its weapon is at the launch stage and in flight; the strikes on each vehicle, once, where
+ *  the newest struck it ("GUN STRUCK HUNTER 1 ×3"). */
+function keyedLabels(ws: WeaponTrack[], nowMs: number, victimOf: (w: WeaponTrack) => [number, number] | null, nameOf: (uid: string) => string): Label[] {
+  const launches = new Map<string, Label>()
+  for (const w of ws) {
+    if (w.stage === 'plot' && !w.struck) continue
+    const l = w.launch
+    if (l && w.stage === 'launch' && w.status === 'in_flight' && !w.struck) {
+      const report = w.report ?? w.id
+      launches.set(report, { at: low(l.point), label: `LAUNCH · ${stageText(w, nameOf).replace(/^launch, /, '')}`, a: alphaAt(w, nowMs), key: `w:launch:${report}`, short: 'LAUNCH' })
+    }
+  }
+  const struck: Label[] = []
+  for (const g of struckGroups(ws, nameOf)) {
+    const victim = victimOf(g.newest)
+    if (victim) struck.push({ at: low(victim), label: g.label, a: alphaAt(g.newest, nowMs), key: `w:struck:${g.uid}`, short: 'STRUCK' })
+  }
+  return [...launches.values(), ...struck]
+}
+
+/** The launch and strike labels for the one label budget (declutter.ts, bd murmur-iobd.3): placed
+ *  or dropped against our vehicles' and the tracks' labels (a damage slot under the vehicle struck
+ *  first), never over them; with what waits on the person. */
+export function weaponLabelCandidates(ws: WeaponTrack[], nowMs: number, screen: MapScreen, victimOf: (w: WeaponTrack) => [number, number] | null, nameOf: (uid: string) => string): LabelCandidate[] {
+  return keyedLabels(ws, nowMs, victimOf, nameOf).map((l) => ({
+    key: l.key!,
+    at: screen.at(l.at[0], l.at[1], l.at[2]),
+    full: textBox([l.label], 12, 'start', 'top', LABEL_AT, LABEL_PAD, 4),
+    short: textBox([l.short ?? l.label], 12, 'start', 'top', LABEL_AT, LABEL_PAD, 4),
+    priority: 1 as const,
+  }))
 }
 
 /** The weapons `ws` (weapon.ts shownWeapons) at `nowMs`. `victimOf`: where the vehicle a weapon
@@ -75,6 +123,9 @@ export function buildWeaponLayers(
   reduced: boolean,
   victimOf: (w: WeaponTrack) => [number, number] | null,
   nameOf: (uid: string) => string,
+  // the label budget's level for a launch's or a strike's label; undefined for one the last plan
+  // did not weigh (drawn in full until the next)
+  level: (key: string) => LabelLevel | undefined = () => undefined,
 ) {
   if (!ws.length) return []
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
@@ -85,8 +136,6 @@ export function buildWeaponLayers(
   const fixLines: { path: Pt3[]; a: number }[] = []
   const fixes: FixAt[] = []
   const labels: Label[] = []
-  // a launch labelled once a report (a gun's bursts in flight together share their act's)
-  const launchLabels = new Map<string, Label>()
   const alphaOf = (w: WeaponTrack) => (w.ended_t == null ? 1 : Math.max(0.15, 1 - (nowMs - w.ended_t) / 60_000))
   const angleTo = (from: Pt3, to: Pt3): number => {
     const sa = screen.at(from[0], from[1], from[2])
@@ -113,7 +162,6 @@ export function buildWeaponLayers(
         const p = (nowMs - l.flash_t) / LAUNCH_FLASH_MS
         if (p >= 0 && p < 1) flashes.push({ at: low(l.point), p, ring: true }, { at: low(l.point), p, ring: false })
       }
-      if (w.stage === 'launch' && flyingNow) launchLabels.set(w.report ?? w.id, { at: low(l.point), label: `LAUNCH · ${stageText(w, nameOf).replace(/^launch, /, '')}`, a })
     }
     // the estimate, only on a basis
     const victim = victimOf(w)
@@ -161,15 +209,15 @@ export function buildWeaponLayers(
       if (p != null && !reduced) flashes.push({ at, p, ring: true }, { at, p, ring: false })
     }
   }
-  labels.push(...launchLabels.values())
-  // the strikes on each vehicle, once: its ring and label where the newest struck
+  // the launches' labels, and the strikes on each vehicle once (its ring and label where the newest
+  // struck): each label where the label budget placed it, in its short form or none; a strike's
+  // ring whatever its label
   const struckRings: Label[] = []
-  for (const g of struckGroups(ws, nameOf)) {
-    const victim = victimOf(g.newest)
-    if (!victim) continue
-    const s = { at: low(victim), label: g.label, a: alphaOf(g.newest) }
-    struckRings.push(s)
-    labels.push(s)
+  for (const k of keyedLabels(ws, nowMs, victimOf, nameOf)) {
+    if (k.key?.startsWith('w:struck:')) struckRings.push(k)
+    const lv = k.key ? level(k.key) : undefined
+    if (lv === 'none') continue
+    labels.push(lv === 'short' ? { ...k, label: k.short ?? k.label } : k)
   }
   return [
     new PathLayer<{ path: Pt3[]; a: number }>({

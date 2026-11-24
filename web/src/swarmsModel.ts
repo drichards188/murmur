@@ -424,6 +424,18 @@ export function heldAlarms(seen: ReadonlyMap<string, AlarmSeen>, marks: GroupMar
 
 // ---- the group strip (GroupStrip.tsx): each group's state in a word -----------------------------
 
+/** The parts of a chip's status the strip has room for: with nothing wrong the first two, as the
+ *  chip begins ("60/60 · min 45"); else the first (its strength, or how many run its task) and up
+ *  to two that are wrong (a warn or bad part: lost links, drops, under its minimum), in the chip's
+ *  order. The strip once took the first two whatever they said, so "orbit i1 · 60/60 · min 45"
+ *  stood beside "LOST LINK, 10 of 60" (bd murmur-iobd.19); the chip and the strip now say the
+ *  same thing at once. */
+export function stripParts(parts: readonly ChipPart[]): ChipPart[] {
+  const [first, ...rest] = parts
+  const wrong = rest.filter((p) => p.tone === 'warn' || p.tone === 'bad')
+  return wrong.length ? [first, ...wrong.slice(0, 2)] : parts.slice(0, 2)
+}
+
 export type GroupState = 'suspended' | 'under' | 'reforming' | 'station' | 'moving' | 'returning' | 'idle' | 'lost' | 'damaged'
 
 /** A state's icon and word, as the strip shows them (never colour alone). */

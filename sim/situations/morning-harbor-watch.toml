@@ -124,7 +124,7 @@ text = "Take the watch. The setup script assigns six observers; PUMA 1 and PUMA 
 at_s = 300
 headline = "Read what supports each track"
 bullets = ["AIS is a reported identity, not proof of intent", "Look at sources, classification and uncertainty", "The source contains moving traffic and many stationary craft"]
-text = "Review sources and uncertainty in the Tracks drawer. AIS supplies a reported identity. A ferry moving quickly or a contact with incomplete reports is not evidence of hostility."
+text = "Review sources and uncertainty in the Tracks list. AIS supplies a reported identity. A ferry moving quickly or a contact with incomplete reports is not evidence of hostility."
 
 [[watch]]
 at_s = 1200

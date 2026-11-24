@@ -83,6 +83,20 @@ fn parses_the_time_forms_people_type() {
     assert!(parse_time("June 14").is_err());
 }
 
+/// bd murmur-iobd.5: the console's top bar reads the scenario clock as a map from the bridge's
+/// clock, so it shows the world's time (MURMUR_AT plus elapsed times the rate), not its own
+/// wall clock's; without a start the map is the identity (the bridge's own clock).
+#[test]
+fn the_console_reads_the_scenario_clock_as_a_map() {
+    let at = parse_time("2026-06-14T17:00Z").expect("time");
+    let j = ScenarioClock::new(Some(at), 2.0).map_json();
+    assert_eq!(j["map"]["scenario_origin"].as_i64(), Some(at.timestamp_millis()));
+    assert_eq!((j["map"]["rate"].as_f64(), j["rate"].as_f64(), j["source"].as_str()), (Some(2.0), Some(2.0), Some("MURMUR_AT")));
+    assert!(j["map"]["engine_origin"].as_i64().is_some_and(|ms| ms > 0), "from the bridge's clock at the start: {j}");
+    let none = ScenarioClock::new(None, 1.0).map_json();
+    assert_eq!((none["map"]["engine_origin"].as_i64(), none["map"]["scenario_origin"].as_i64(), none["source"].as_str()), (Some(0), Some(0), Some("wall clock")));
+}
+
 #[test]
 fn scenario_clock_runs_at_its_rate() {
     let at = parse_time("2026-06-14T10:00Z").expect("time");

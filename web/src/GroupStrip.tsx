@@ -4,7 +4,7 @@
 // on the group and lights it up for a moment; it selects nothing and sends nothing (orders go
 // through the order form and the engine). Folds away to one button, remembered in this browser.
 import { type CSSProperties, useState } from 'react'
-import { GROUP_STATE, type GroupMark, type GroupState } from './swarmsModel'
+import { GROUP_STATE, type GroupMark, type GroupState, stripParts } from './swarmsModel'
 import './swarms.css'
 
 const KEY = 'murmur.groupStrip'
@@ -73,7 +73,7 @@ export function GroupStrip({ marks, states, selected, hovered, onHover, onShow, 
                   </span>
                   <span className="gstrip-line">
                     {m.doing}
-                    {m.parts.slice(0, 2).map((p, i) => (
+                    {stripParts(m.parts).map((p, i) => (
                       <span key={i} className={p.tone ?? ''}>
                         {' · '}
                         {p.text}

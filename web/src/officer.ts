@@ -106,6 +106,24 @@ export function awaitingRows(pending: readonly Intent[], items: readonly Tasking
   return rows.sort((a, b) => (a.left_s ?? Infinity) - (b.left_s ?? Infinity) || a.id - b.id)
 }
 
+// ---- whether the run has an officer to write to -----------------------------------------------
+
+/** The situation AIs that read requests: the model watch officers. The playbook never reads
+ *  /api/tasking, and `none` has no AI. */
+const READS_REQUESTS = new Set(['claude', 'codex'])
+
+/** Whether the Officer button and its drawer are shown: only where the run's AI takes requests.
+ *  `situationAi`: the situation's `modes.ai` (GET /api/situation), null where no situation runs
+ *  (the open world), undefined before the console has heard. In a situation, only a model officer;
+ *  in the open world, only once the bridge's tasking answer says an officer has read it (`officer`
+ *  with its agent, connected or since gone quiet: the drawer then says how long). A bridge without
+ *  the tasking channel shows none. */
+export function officerShown(situationAi: string | null | undefined, reader: Pick<TaskingDoc, 'officer'>, status: 'loading' | 'ok' | 'missing' | 'error'): boolean {
+  if (status === 'missing') return false
+  if (typeof situationAi === 'string') return READS_REQUESTS.has(situationAi)
+  return reader.officer != null && !!reader.officer.agent
+}
+
 // ---- the message box ---------------------------------------------------------------------------
 
 /** What a key in the message box does: Enter sends (Ctrl or Cmd with it too), Shift+Enter is a new

@@ -128,8 +128,8 @@ text = "The stack comes up: four of ours at the Gate. The setup script's opening
 [[watch]]
 at_s = 45
 headline = "Normal traffic, all on AIS"
-bullets = ["Ferries, the lane, a trawler, a coast guard cutter", "Tracks drawer shows them neutral (the cutter assumed friend) and why"]
-text = "Normal traffic: ferries, the shipping lane, a trawler, a coast guard cutter. Each broadcasts AIS, so the Tracks drawer shows them neutral (the cutter assumed friend) and says why."
+bullets = ["Ferries, the lane, a trawler, a coast guard cutter", "Tracks list shows them neutral (the cutter assumed friend) and why"]
+text = "Normal traffic: ferries, the shipping lane, a trawler, a coast guard cutter. Each broadcasts AIS, so the Tracks list shows them neutral (the cutter assumed friend) and says why."
 
 [[watch]]
 at_s = 120

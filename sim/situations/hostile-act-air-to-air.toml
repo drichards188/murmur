@@ -194,7 +194,7 @@ text = "The stack comes up: three of ours at the Gate. The setup script's openin
 at_s = 40
 headline = "Normal traffic"
 bullets = ["Ferries, the lane, fishing boats, a yacht", "No AIS or transponder means unknown until a sensor classifies it"]
-text = "Normal surface traffic: ferries, the shipping lane, fishing boats and a sailing yacht. A contact without AIS or a transponder is unknown until a sensor classifies it; the Tracks drawer says why each is shown as it is."
+text = "Normal surface traffic: ferries, the shipping lane, fishing boats and a sailing yacht. A contact without AIS or a transponder is unknown until a sensor classifies it; the Tracks list says why each is shown as it is."
 
 [[watch]]
 at_s = 100

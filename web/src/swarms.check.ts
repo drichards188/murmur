@@ -10,7 +10,7 @@
 // goes only round members heard; members crowding each other are a pile; chips that would overlap
 // stack; a cluster tile names its groups. Throws on the first failure, prints "swarms: ok" otherwise.
 import type { Alert } from './decisions'
-import { alarmKey, causeLines, chipStatus, convexHull, GROUP_STATE, groupState, heldAlarms, shownTaskings, stepAlarms, taskingGroup, type GroupMark, type GroupMarks, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
+import { alarmKey, causeLines, chipStatus, convexHull, GROUP_STATE, groupState, heldAlarms, shownTaskings, stepAlarms, stripParts, taskingGroup, type GroupMark, type GroupMarks, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
 import { cellChipText, cellGroups, chipSize, groupsOnScreen, stackChips, tileOf, type MemberOnScreen } from './groupScreen.ts'
 import { textWidth } from './declutter.ts'
 import type { GroupInForce } from './groupOrders.ts'
@@ -194,5 +194,17 @@ check(taskLine(doc.swarms[1]) === 'patrol i9 (1), hold (1)', 'tasks some run, wi
 check(taskLine(swarm('X', [1], { tasks: [] })) === 'no task', 'no task')
 check(swarmTone(doc.swarms[0]) === 'bad' && swarmTone(doc.swarms[1]) === 'ok', 'tone from lost links')
 check(swarmTone(swarm('Y', Array.from({ length: 100 }, (_, k) => k), { lost_link: 2 })) === 'warn', 'a few unheard: a warning')
+
+// the strip's room: the strength, then what is wrong, never cut off (bd murmur-iobd.19)
+{
+  const parts = [{ text: '60/60', tone: 'ok' as const }, { text: 'min 45' }, { text: '10 lost link', tone: 'warn' as const }]
+  check(stripParts(parts).map((p) => p.text).join(' · ') === '60/60 · 10 lost link', `a lost link is never cut off the strip (${stripParts(parts).map((p) => p.text)})`)
+  check(stripParts(parts.slice(0, 2)).map((p) => p.text).join() === '60/60,min 45', 'nothing wrong: as the chip begins')
+  // after the re-form: its strength down, the ten dropped and still unheard
+  const reformed = [{ text: '50/60', tone: 'warn' as const }, { text: 'min 45' }, { text: '10 dropped', tone: 'warn' as const }, { text: '10 lost link', tone: 'warn' as const }]
+  check(stripParts(reformed).map((p) => p.text).join() === '50/60,10 dropped,10 lost link', `both wrong parts beside the strength (${stripParts(reformed).map((p) => p.text)})`)
+  const under = [{ text: '41/60 · under min 45', tone: 'bad' as const }, { text: '2 back' }, { text: '3 dropped', tone: 'warn' as const }, { text: '10 lost link', tone: 'bad' as const }]
+  check(stripParts(under).map((p) => p.text).join() === '41/60 · under min 45,3 dropped,10 lost link', 'the wrong parts in the chip\'s order, the plain ones left to the chip')
+}
 
 console.log('swarms: ok')

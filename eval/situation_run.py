@@ -115,6 +115,9 @@ from .storyline import Storyline, World, select_vehicles
 
 PUBLISH_S = 2.0
 SIM_TOKEN_HEADER = "X-Murmur-Sim-Token"
+# how the person ends a situation's stack, as the panel says it: it may have been started from the
+# menu (`make start`, End there) or by hand (`make situation`, `make down`)
+ENDS_IT = "End in the menu, or make down"
 # the audit events that are a person's (or a script's) decision on an intent
 DECISION_EVENTS = ("approval.at_submission", "approval.granted", "approval.concurred", "approval.rejected")
 # live: the scripted signers a cosigner mode runs, as the status document names them
@@ -692,7 +695,9 @@ class Runner:
         # signatures, the effect, the assessment), for the panel, situation.jsonl and the summary
         planned, _ = plan_counts(sit.fleet) if sit.fleet else ([], 0)
         self.planned = planned
-        self.chain = EngagementChain({str(v["uid"]): v["callsign"] for v in planned})
+        # (the run's scripted operators marked as such where they confirm or sign: those acts are
+        # said once, from the audit log, not again from their own decision records)
+        self.chain = EngagementChain({str(v["uid"]): v["callsign"] for v in planned}, scripted=modes["scripted_operators"])
         # rules 29: the starting tasks the fleet hands over (no opening order for them)
         self.handover = HandoverWatch()
         self.handover_want = sum(1 for v in planned if "start" in v)
@@ -865,12 +870,12 @@ class Runner:
                     what = f"intent {d.get('intent_id')}"
                 self.problem(f"{d.get('by')} (scripted): {d.get('action')} on {what} failed ({code}); see situation.jsonl")
                 continue
-            verb = {"approve": "approved", "reject": "rejected", "sign": "signed", "confirm": "confirmed"}.get(str(d.get("action")))
-            if d.get("action") == "confirm_lost":
-                self.entry("autoplay", f"{d.get('by')} (scripted) confirmed {d.get('callsign') or 'vehicle'} (uid {d.get('uid')}) lost: {d.get('result')}")
-            elif verb == "confirmed":
-                self.entry("autoplay", f"{d.get('by')} (scripted) confirmed the rule declaration {d.get('declaration')} on {d.get('track')}: {d.get('result')}")
-            elif verb:
+            # a confirmation (a rule declaration's, a loss's) or a signature the bridge took is in
+            # the audit log, and the engagement chain says it once, marked scripted: not again here
+            if d.get("action") in ("confirm", "confirm_lost", "sign"):
+                continue
+            verb = {"approve": "approved", "reject": "rejected"}.get(str(d.get("action")))
+            if verb:
                 grant = f" (it grants every request of {self.grantees()})" if d.get("granted") else ""
                 self.entry("autoplay", f"{d.get('by')} (scripted) {verb} intent {d.get('intent_id')}{grant}: {d.get('result')}")
         if self.ai_proc is not None and self.ai_status.get("status") == "running":
@@ -1408,9 +1413,10 @@ class Runner:
                 await asyncio.sleep(1.0)
             if self.interrupted:
                 status = 130
-                self.set_phase("interrupted", "the runner was stopped; the stack is still running: make down stops it")
+                self.set_phase("interrupted", f"the runner was stopped; the stack keeps running until you end it ({ENDS_IT})")
             else:
-                self.set_phase("ended", "the situation's time is up; the stack is still running for inspection: make down stops it")
+                # the panel shows it: said for whichever way the person started it (the menu or make)
+                self.set_phase("ended", f"the situation's time is up; the stack stays up for inspection until you end it ({ENDS_IT})")
         except SituationError as e:
             status = 130 if self.interrupted else 1
             phase = "interrupted" if self.interrupted else "failed"

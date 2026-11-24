@@ -2025,6 +2025,9 @@ def test_the_engagement_chain_is_read_from_the_audit_log():
     lines = chain.feed(CHAIN[:6])
     assert [x["what"] for x in lines] == ["act", "flagged", "act", "declared", "confirmed"]
     assert "HUNTER 1 (uid 1)" in lines[0]["text"] and "by rule" in lines[3]["text"] and "attribution 0.99" in lines[3]["text"]
+    # our vehicles by callsign, sensors by name: never "1:eo_ir" or "vehicle 1"
+    assert lines[0]["text"].endswith("seen by HUNTER 1 EO/IR and REAPER 1 radar")
+    assert "against HUNTER 1 (uid 1), attribution 0.99" in lines[3]["text"]
     assert lines[4]["text"] == "op-auto confirmed the rule declaration D-1 on T-0008"
     rest = chain.feed(CHAIN[6:])  # fed in pieces, as the audit tail reads it
     assert [x["what"] for x in rest] == ["nominated", "signed", "signed", "dispatched", "effect", "assessed", "nominated", "ended"]
@@ -2033,7 +2036,12 @@ def test_the_engagement_chain_is_read_from_the_audit_log():
     assert "ceased" in rest[5]["text"] and "fallback_preload" in rest[7]["text"]
     assert rest[0]["t"] == 200.0
     summary = "\n".join(chain.summary_lines())
-    assert "declared T-0008 hostile by rule (act A-2 against vehicle 1, attribution 0.99), confirmed by op-auto" in summary
+    assert "declared T-0008 hostile by rule (act A-2 against HUNTER 1 (uid 1), attribution 0.99), confirmed by op-auto" in summary
+    # a scripted operator's confirmation and signature are marked so (the run says which ids are scripts)
+    marked = S.EngagementChain({"1": "HUNTER 1"}, scripted=["op-auto", "op-2", "op-3"])
+    texts = [x["text"] for x in marked.feed(CHAIN)]
+    assert "op-auto (scripted) confirmed the rule declaration D-1 on T-0008" in texts
+    assert "op-3 (scripted) signed intent 10 (2 of 2): approved" in texts
     assert "engagement intent 10: nominated by agent agent-watch (BLADE 1 (uid 3) on T-0008" in summary and ": effected" in summary
     assert "signed by: op-2, op-3" in summary and "effect released: yes" in summary and "assessed: ceased" in summary
     assert "engagement intent 11: nominated by agent agent-scripted" in summary and ": rejected" in summary
@@ -2289,7 +2297,8 @@ def test_the_runner_shows_the_chain_confirmations_and_grants(tmp_path: Path):
     runner.refresh()
     texts = [e["text"] for e in runner.entries]
     assert any(e["kind"] == "engagement" and e["text"].startswith("engagement nominated by agent agent-watch") for e in runner.entries)
-    assert "op-auto (scripted) confirmed the rule declaration D-1 on T-0008: confirmed" in texts
+    # said once, as the audit log has it and marked scripted; not again from op-auto's own record
+    assert [t for t in texts if "confirmed the rule declaration D-1" in t] == ["op-auto (scripted) confirmed the rule declaration D-1 on T-0008"]
     assert "op-auto (scripted) approved intent 9 (it grants every request of the AI): dispatched" in texts
     recs = [json.loads(line) for line in runner.log_path.read_text().splitlines()]
     assert [r["what"] for r in recs if r["event"] == "engagement"][:5] == ["act", "flagged", "act", "declared", "confirmed"]

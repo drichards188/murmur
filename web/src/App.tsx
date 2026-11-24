@@ -22,7 +22,7 @@ import { useBridge } from './useBridge'
 import { ErrorBoundary } from './ErrorBoundary'
 import { EngagePanel } from './EngagePanel'
 import { isEngage, previewOf, RUNNING, type EngagePreview, type KeepOutExplanation } from './engage'
-import { buildEngageLayers, buildKeepOutLayers, type EngageDrawing } from './engageLayers'
+import { buildEngageLayers, buildKeepOutLayers, engageLabelCandidates, type EngageDrawing } from './engageLayers'
 import { IMPACT_STATUS_MS, type ImpactEvent } from './impact'
 import { actDrawings, bannerAct, bannerLine, type ActDrawing, type Seen, type Victim } from './hostileAct'
 import type { Against } from './ident'
@@ -53,6 +53,7 @@ import { reachBadge, reachFeatures, reachQuery, type DomainChoice, type ReachAns
 import { minefieldFeatures, type MinefieldsAnswer } from './minefields'
 import { SituationPanel } from './SituationPanel'
 import { pendingItems, waitingItems } from './blocking'
+import { settledFlags } from './needsYou'
 import { PendingStrip, WaitingStrip } from './WaitingStrip'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
@@ -78,18 +79,40 @@ import { Sitrep } from './Sitrep'
 import { TaskingButton, TaskingPanel } from './TaskingPanel'
 import { useTasking } from './useTasking'
 import { closeDock, fitPad, headsWithWaiting, toggleDock, type DockId } from './dock'
-import { awaitingRows, selectionInsert, turnOf } from './officer'
+import { awaitingRows, officerShown, selectionInsert, turnOf } from './officer'
 import { Awaiting, TurnCause } from './Awaiting'
 import { OfficerCompose, type ComposeInsert } from './OfficerCompose'
+import { damageOf, type Damage, type ExceptionContext, type LoadoutWeapon, outOfRounds } from './vehicleException'
+import { clockText, type ScenarioClockAnswer, setWorldClock } from './scenarioClock'
 
-function useUtcClock() {
-  const [now, setNow] = useState(() => new Date())
+/** The bridge's scenario clock (scenarioClock.ts, `scenario` in GET /api/weather): asked once the
+ *  bridge answers, again on each reconnect (a restarted bridge has a new start) and each minute. A
+ *  bridge without it is read as its own clock. */
+function useScenarioClock(live: boolean): ScenarioClockAnswer | null {
+  const [answer, setAnswer] = useState<ScenarioClockAnswer | null>(null)
   useEffect(() => {
-    const id = window.setInterval(() => setNow(new Date()), 1000)
-    return () => window.clearInterval(id)
-  }, [])
-  return now.toISOString().slice(11, 19) + 'Z'
+    if (!live) return
+    let on = true
+    const load = async () => {
+      try {
+        const res = await fetch('/api/weather?lat=37.82&lon=-122.48')
+        if (!res.ok) return
+        const body = (await res.json()) as { scenario?: ScenarioClockAnswer }
+        if (on) setAnswer(body.scenario ?? OWN_CLOCK)
+      } catch {
+        // unreachable for now: keep the last answer, ask again in a minute
+      }
+    }
+    void load()
+    const id = window.setInterval(() => void load(), 60_000)
+    return () => {
+      on = false
+      window.clearInterval(id)
+    }
+  }, [live])
+  return answer
 }
+const OWN_CLOCK: ScenarioClockAnswer = { map: { engine_origin: 0, scenario_origin: 0, rate: 1 }, rate: 1, source: 'wall clock' }
 
 const byUidDetails = (vs: Vehicle[], uid: number) => vs.find((v) => v.uid === uid)
 
@@ -141,7 +164,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     if (status === 'live') void refreshAuth()
   }, [status])
   perfRenderBegin()
-  const clock = useUtcClock()
+  // the world's time (bd murmur-iobd.5), on the bridge's clock below
+  const scenarioClock = useScenarioClock(status === 'live')
+  // every card's time on the bridge's clock said in the same world time as the bar
+  useEffect(() => setWorldClock(scenarioClock?.map ?? null), [scenarioClock])
   // the tracks section in the right column: collapsed to its header, or open
   const [tracksCollapsed, setTracksCollapsed] = useState(false)
   // rows to scroll to and mark in the fleet list and the tracks list (selected outside them)
@@ -194,8 +220,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const showQueue = dock === 'queue'
   const showSwarms = dock === 'swarms'
   const showSitrep = dock === 'sitrep'
-  const showTasking = dock === 'officer'
   const taskingApi = useTasking()
+  // the Officer button and drawer only where the run's AI takes requests (officer.ts): a situation's
+  // model officer, or in the open world one the bridge says has read the tasking
+  const [situationAi, setSituationAi] = useState<string | null | undefined>(undefined)
+  const officerVisible = officerShown(situationAi, taskingApi.reader, taskingApi.status)
+  if (dock === 'officer' && !officerVisible) setDock(null)
+  const showTasking = dock === 'officer' && officerVisible
   // the message to the officer being written: kept here so it outlives its drawer (switching to the
   // Inbox to decide and back keeps it)
   const [officerDraft, setOfficerDraft] = useState('')
@@ -726,7 +757,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       ...estimateLayers(screen, plan),
       ...trackLayers(screen, plan),
       ...keepOutLayers,
-      ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now()) : []),
+      ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), plan) : []),
       ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }, plan),
       ...stationLayers,
       // the groups' outlines last, over the tracks' uncertainty (hundreds of contacts' rings would
@@ -744,9 +775,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       ...(silent.length ? estimateLabelCandidates({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus, showAll: estimateAll }, screen) : []),
       ...trackLabelCandidates({ tracks: tracks?.tracks ?? [], lost: tracks?.lost ?? [], nowMs: now(), staleAfterS: tracks?.stale_after_s ?? 10, screen, focus: trackFocus }),
       ...orderLabelCandidates({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }, screen),
+      // the engagements' labels too, placed or dropped against the rest (bd murmur-iobd.3)
+      ...engageLabelCandidates(engageDrawings, now(), screen),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [silent, estimateTick, detailsUid, vehicleFocus, estimateAll, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
+    [silent, estimateTick, detailsUid, vehicleFocus, estimateAll, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick, engageDrawings],
   )
   const onLabelStats = useCallback((s: LabelStats) => setLabelStats(s), [])
   const n = (x: number) => x.toLocaleString('en-US')
@@ -811,7 +844,17 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   }, [tracks, crowded, trackFocus, showAll, silent, estimateTick, vehicleFocus, labelStats, toggleAll, fleetFolds, trackFolds, orderFolds])
   // the fleet list's exceptions: a damaged vehicle (its inbox alert), one with an alert of its own
   const listAlerts = decisions?.inbox.alerts
-  const damagedUids = useMemo(() => new Set((listAlerts ?? []).filter((a) => (a.kind as string) === 'damaged').map((a) => a.uid)), [listAlerts])
+  // what each damage report took (the alert's words), kept while the reports are the same
+  const damageKey = JSON.stringify((listAlerts ?? []).filter((a) => (a.kind as string) === 'damaged').map((a) => [a.uid, damageOf(a.detail)] as const).sort((a, b) => a[0] - b[0]))
+  const damage = useMemo(() => new Map<number, Damage>(JSON.parse(damageKey) as [number, Damage][]), [damageKey])
+  const damagedUids = useMemo(() => new Set(damage.keys()), [damage])
+  // armed platforms with every round spent (GET /api/loadouts, polled while the fleet has any)
+  const anyArmed = useMemo(() => allVehicles.some((v) => v.identity?.armed), [allVehicles])
+  const loadouts = usePoll<{ vehicles?: { uid: number; weapons: LoadoutWeapon[] }[] }>(anyArmed ? '/api/loadouts' : null, 5000)
+  const noRoundsKey = (loadouts.data?.vehicles ?? []).filter((x) => outOfRounds(x.weapons)).map((x) => x.uid).sort((a, b) => a - b).join()
+  const noRounds = useMemo(() => new Set(noRoundsKey ? noRoundsKey.split(',').map(Number) : []), [noRoundsKey])
+  // each of ours' one exception slot, on its fleet row and its map symbol (vehicleException.ts)
+  const exceptions = useMemo<ExceptionContext>(() => ({ nodes: nodeLoss, damage, noRounds }), [nodeLoss, damage, noRounds])
   // the group strip (bd murmur-4nik): each group's state, its order's or what most of its members do
   const groupStates = useMemo(() => {
     const out = new Map<string, GroupState>()
@@ -832,11 +875,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   }, [marks, allVehicles, state?.taskings, damagedUids, swarmFeed.doc])
   // group alarms (bd murmur-4nik): under strength, suspended, a re-form refused, raised on the map's
   // banner once held ALARM_HOLD_MS (a link's blip never flashes one), the worst first
-  const [alarmSeen, setAlarmSeen] = useState<ReadonlyMap<string, AlarmSeen>>(new Map())
+  // stepped once per summary as it is rendered (a ref, not state set from an effect: that was one
+  // more update from a passive effect on every summary, bd murmur-iobd.12); stepAlarms keeps each
+  // continuing alarm's start, so stepping again with the same summary changes nothing
+  const alarmRef = useRef<ReadonlyMap<string, AlarmSeen>>(new Map())
+  const alarmSeen = useMemo(() => (alarmRef.current = stepAlarms(alarmRef.current, marks.list, swarmFeed.doc?.t ?? 0)), [marks, swarmFeed.doc])
   const [alarmDismissed, setAlarmDismissed] = useState<ReadonlySet<string>>(new Set())
-  useEffect(() => {
-    setAlarmSeen((prev) => stepAlarms(prev, marks.list, swarmFeed.doc?.t ?? 0))
-  }, [marks, swarmFeed.doc])
   const groupAlarms = useMemo(() => heldAlarms(alarmSeen, marks, swarmFeed.doc?.t ?? 0, alarmDismissed), [alarmSeen, marks, swarmFeed.doc, alarmDismissed])
   // the strip's click: the map centred on the group's members, the group lit up for a moment
   const showGroup = useCallback(
@@ -911,7 +955,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const waiting = useMemo(() => waitingItems(decisions?.inbox.blocking), [decisions?.inbox.blocking])
   // every rule declaration awaiting confirmation and open flag that holds nothing up: the calm
   // pointer under the top bar (R4), which only opens the card
-  const pendingReview = useMemo(() => pendingItems(decisions?.inbox.review, decisions?.inbox.blocking), [decisions?.inbox.review, decisions?.inbox.blocking])
+  // open flags a person has since settled by a later declaration on their tracks (needsYou.ts):
+  // out of the strip and below the Inbox's live items, still open there for the person to resolve
+  const settled = useMemo(() => settledFlags(decisions?.inbox.review?.flags, tracks?.tracks, decisions?.inbox.blocking), [decisions?.inbox.review, decisions?.inbox.blocking, tracks])
+  const pendingReview = useMemo(
+    () => pendingItems(decisions?.inbox.review, decisions?.inbox.blocking).filter((p) => !settled.has(p.id)),
+    [decisions?.inbox.review, decisions?.inbox.blocking, settled],
+  )
   const [reviewFocus, setReviewFocus] = useState<{ id: string; n: number } | null>(null)
   /** the strip's and the Situation panel's link: the item's card in the Inbox, in view (the person
    *  decides there; nothing here decides) */
@@ -932,6 +982,19 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       } else setInboxTab('decisions')
     },
     [pending, focusInbox],
+  )
+  /** a track card's line on an engagement on it: its card in the Inbox (waiting, under way, or one
+   *  of the last that ended, on the Pending tab), or a nomination that never went (rejected,
+   *  expired) in Decisions */
+  const openEngagement = useCallback(
+    (id: number) => {
+      setDock('inbox')
+      const i = (allIntents ?? []).find((x) => x.id === id)
+      const carded = i && (['pending_approval', 'approved', 'dispatched', 'effected'].includes(i.state) || (['aborted', 'done', 'voided'].includes(i.state) && i.engagement?.snapshot))
+      setInboxTab(carded ? 'inbox' : 'decisions')
+      if (i && carded) focusInbox({ kind: 'intent', id }, i.uids.map(Number).filter(Number.isFinite), i)
+    },
+    [allIntents, focusInbox],
   )
 
   const toggle = useCallback((uid: number) => {
@@ -1057,7 +1120,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             {groupAlarms.length > 1 ? ` · ${groupAlarms.length - 1} more group${groupAlarms.length > 2 ? 's' : ''}` : ''}
           </span>
           <button onClick={() => showGroup(groupBan.m.id)}>View</button>
-          <button className="act-dismiss" onClick={() => setAlarmDismissed((d) => new Set([...d, alarmKey(groupBan.m.id, groupBan.seen)]))} title="Take this alarm off the banner (the Swarms drawer and the Inbox keep it; a new one comes up again)">
+          <button className="act-dismiss" onClick={() => setAlarmDismissed((d) => new Set([...d, alarmKey(groupBan.m.id, groupBan.seen)]))} title="Take this alarm off the banner (the Groups drawer and the Inbox keep it; a new one comes up again)">
             Dismiss
           </button>
         </div>
@@ -1080,6 +1143,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     ...(sel ? [sel.text != null ? { key: 'sel', label: sel.text.length > 24 ? `${selected.size} selected` : sel.text, text: sel.text } : { key: 'sel', label: `${selected.size} selected`, text: null, why: sel.why }] : []),
     ...(showTasking && selectedTrack ? [{ key: 'track', label: selectedTrack, text: selectedTrack }] : []),
   ]
+  // the top bar's clock: scenario time on the bridge's clock (it re-renders twice a second)
+  const clock = clockText(scenarioClock, now())
 
   return (
     <div className={`app${waiting.length || pendingReview.length ? ' waiting' : ''}`}>
@@ -1108,8 +1173,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         </span>
         {/* the dock's tabs (dock.ts): one drawer at a time over the map's right edge */}
         <nav className="dock-tabs" aria-label="Drawers over the map's right edge, one at a time">
-          <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setDock((d) => toggleDock(d, 'inbox'))} />
-          <TaskingButton api={taskingApi} open={showTasking} onClick={() => setDock((d) => toggleDock(d, 'officer'))} />
+          <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} settled={settled} onClick={() => setDock((d) => toggleDock(d, 'inbox'))} />
+          {officerVisible && <TaskingButton api={taskingApi} open={showTasking} onClick={() => setDock((d) => toggleDock(d, 'officer'))} />}
           <QueueButton decisions={decisions} open={showQueue} onClick={() => setDock((d) => toggleDock(d, 'queue'))} />
           <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} aria-pressed={showSitrep} onClick={() => setDock((d) => toggleDock(d, 'sitrep'))} title="The situation report: the whole picture, top-down, read-only">
             Sitrep
@@ -1137,7 +1202,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           Platforms
         </button>
         <OperatorBadge />
-        <span className="clock">{clock}</span>
+        <span className="clock" title={clock.title}>{clock.text}</span>
       </header>
       {(waiting.length > 0 || pendingReview.length > 0) && (
         <div className="wait-rows">
@@ -1164,7 +1229,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         taskings={state?.taskings}
         damaged={damagedUids}
         alerted={alertedUids}
-        lost={nodeLoss.lost}
+        exceptions={exceptions}
         expandAll={showAll.lists}
         onFolded={setFleetFolds}
       />
@@ -1178,7 +1243,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           impactNowMs={impactNowMs}
           bridgeNow={now}
           oneWay={oneWay}
-          nodes={nodeLoss}
+          exceptions={exceptions}
           tracers={tracers}
           acts={actDraws}
           actsDismissedAt={actsDismissedAt}
@@ -1231,7 +1296,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         </ErrorBoundary>}
         {/* a situation runner's status (make situation): shown only while one has posted it */}
         <ErrorBoundary name="Situation" className="floating">
-          <SituationPanel decisions={decisions} now={now} onWaiting={openWaiting} />
+          <SituationPanel decisions={decisions} now={now} onWaiting={openWaiting} onAi={setSituationAi} nameOf={nameOf} />
         </ErrorBoundary>
         {/* the tutorial's coach card (sim/situations/tutorial.toml): only while the situation running is the tutorial */}
         <ErrorBoundary name="Tutorial" className="floating">
@@ -1291,6 +1356,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             onClose={() => setDock((d) => closeDock(d, 'inbox'))}
             mem={alertMem}
             hidden={hiddenAlerts}
+            settled={settled}
             notice={inboxNotice}
             focus={reviewFocus}
             onReplace={(i) => setEngageForm({ replaces: i.id })}
@@ -1470,6 +1536,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             onCollapse={() => setTracksCollapsed((v) => !v)}
             reveal={revealTrack}
             onEngage={(track) => setEngageForm({ track })}
+            intents={allIntents}
+            onOpenEngagement={openEngagement}
             blocking={decisions?.inbox.blocking}
             pinned={pinnedTracks}
             onPin={togglePin}

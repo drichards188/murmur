@@ -166,6 +166,9 @@
 .rv-warn { flex-basis: 100%; font-size: 11.5px; color: var(--bad); }
 .rv-notice { margin: 4px 0 8px; padding: 6px 8px; font-size: 12px; border-left: 3px solid var(--warn); background: rgba(255, 190, 70, 0.08); }
 .rv-actions input { flex: 1 1 120px; min-width: 0; }
+/* a flag a later declaration settled: a quiet line below the live items, its card a click away */
+.rv-settled { margin: 4px 2px; font-size: 11.5px; color: var(--muted); }
+.rv-settled b { font-family: var(--mono); color: var(--text); margin-right: 2px; }
 .rv-acts { margin: 4px 0 8px; padding-left: 16px; font-size: 11.5px; color: var(--muted); }
 .rv-acts li { margin: 2px 0; }
 

@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { type GroupContext, groupView, type GroupView, latestOps, STATE_ORDER, STATE_WORDS } from './exceptions'
 import { emuCause } from './linkEmu'
+import { exceptionOf, type ExceptionContext, NO_EXCEPTIONS } from './vehicleException'
 import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
 import { groupCodes, groupColor, type Swarm, swarmGroups } from './swarmsModel'
@@ -10,7 +11,7 @@ import { kindsOf, rangeBetween } from './commandModel'
 import type { GroupsApi } from './useGroups'
 import './swarms.css'
 import type { Tasking, Vehicle } from './types'
-import { callsign, domainOf, isStale, staleMs } from './types'
+import { callsign, domainOf, isStale } from './types'
 
 interface Props {
   vehicles: Vehicle[]
@@ -35,23 +36,15 @@ interface Props {
    *  their group's): exceptions, listed on their own */
   damaged?: ReadonlySet<number>
   alerted?: ReadonlySet<number>
-  /** rules 30: our vehicles an operator confirmed lost (nodeLoss.ts), by uid: tagged LOST, not EST */
-  lost?: ReadonlyMap<number, unknown>
+  /** what each row's exception slot is made from (vehicleException.ts): rules 30's standings,
+   *  damage reports, spent loadouts */
+  exceptions?: ExceptionContext
   /** the map legend's Show all for lists: every group open */
   expandAll?: boolean
   /** how many vehicles the folded groups do not list (the map legend counts them) */
   onFolded?: (n: { vehicles: number; groups: number }) => void
   /** the operator's own groups: the selection can be added to one from here */
   groups?: GroupsApi
-}
-
-function linkClass(v: Vehicle) {
-  // a lite snapshot says lost or not instead of when the last packet came
-  const since = v.link.since_last_ms ?? (v.link.stale == null || v.link.stale ? Infinity : 0)
-  const loss = v.link.loss_pct ?? 0
-  if (since > staleMs(v)) return 'bad'
-  if (since > (v.link.expected_interval_ms ?? 1000) || loss > 10) return 'warn'
-  return 'ok'
 }
 
 function fmt(n: number | null | undefined, digits = 0, unit = '') {
@@ -67,14 +60,20 @@ interface RowProps {
   onDeselect: Props['onDeselect']
   onDetails: Props['onDetails']
   reach?: { text: string; title: string }
-  /** rules 30: confirmed lost by an operator */
-  lost?: boolean
+  /** what its exception slot is made from (vehicleException.ts) */
+  exc: ExceptionContext
 }
 
-/** Two controls: the left strip selects the vehicle for tasking; the rest opens its details. */
-const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach, lost = false }: RowProps) {
+/** Two controls: the left strip selects the vehicle for tasking; the rest opens its details.
+ *  Three lines and the link's numbers, each kept to its own column (nothing overprints the height
+ *  and speed, bd murmur-iobd.7): the callsign and what it is; the stand-in tags and its model; its
+ *  one exception (vehicleException.ts, the only colour on the row: damaged, silent, link down, out
+ *  of rounds) before its mode. */
+const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach, exc }: RowProps) {
   const stale = isStale(v)
-  const lc = linkClass(v)
+  const x = exceptionOf(v, exc, emuCause)
+  const standin = v.identity?.sim === 'standin'
+  const dr = v.nav_source === 'dead_reckoning'
   return (
     <div
       className={`vrow ${selected ? 'sel' : ''} ${stale ? 'stale' : ''} ${open ? 'open' : ''} ${flash ? 'flash' : ''}`}
@@ -98,48 +97,47 @@ const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, 
       <span className="vrow-sym" dangerouslySetInnerHTML={{ __html: symbolSvg(v, { stale, size: 16, labels: false }).svg }} />
       <span className="vrow-main">
         <span className="vrow-name">
-          {callsign(v)}
+          <span className="vrow-call">{callsign(v)}</span>
           {v.identity && <span className="vrow-short">{v.identity.short}</span>}
           {v.identity?.armed ? (
             <span className="vrow-weapons" title="Weapons-carrying platform: any task on it needs a human decision">
               WEAPONS
             </span>
           ) : null}
-          {v.identity?.sim === 'standin' && (
-            <span className="vrow-standin" title="Kinematic stand-in: speaks MAVLink, but not ArduPilot SITL">
-              STAND-IN
-            </span>
-          )}
-          {v.nav_source === 'dead_reckoning' && (
-            <span className="vrow-standin" title="Dead reckoning: no GNSS fix, position from inertial navigation and DVL (sub) or airspeed (fixed-wing), error growing with distance">
-              DR
-            </span>
-          )}
-          {stale && lost ? (
-            <span className="vrow-standin vrow-lost" title="Confirmed lost by an operator: out of every engagement keep-out, it takes no order (Review)">
-              LOST
-            </span>
-          ) : (
-            stale &&
-            v.estimate && (
-              <span className="vrow-standin" title={`Silent: the map shows where it probably is (${v.estimate.detail})`}>
-                EST
-              </span>
-            )
-          )}
         </span>
-        {v.identity && (
-          <span className="vrow-model" title={`${v.identity.name} · ${v.identity.role}`}>
-            {v.identity.name} · {v.identity.role}
+        {(v.identity || dr) && (
+          <span className="vrow-model" title={v.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
+            {standin && (
+              <span className="vrow-standin" title="Kinematic stand-in: speaks MAVLink, but not ArduPilot SITL">
+                STAND-IN
+              </span>
+            )}
+            {dr && (
+              <span className="vrow-standin" title="Dead reckoning: no GNSS fix, position from inertial navigation and DVL (sub) or airspeed (fixed-wing), error growing with distance">
+                DR
+              </span>
+            )}
+            {v.identity && (
+              <span className="vrow-model-text">
+                {v.identity.name} · {v.identity.role}
+              </span>
+            )}
           </span>
         )}
         <span className="vrow-mode">
-          {v.mode ?? '–'}
-          {v.armed ? (
-            <em className="motors-on" title="MAVLink arm state: motors enabled. Says nothing about weapons.">
-              motors on
-            </em>
-          ) : null}
+          {x && (
+            <span className={`vrow-exc ${x.tone}`} title={x.title} data-exception={x.kind}>
+              {x.text}
+            </span>
+          )}
+          <span className="vrow-mode-text">
+            {v.mode ?? '–'}
+            {v.armed ? (
+              <em className="motors-on" title="MAVLink arm state: motors enabled. Says nothing about weapons.">
+                motors on
+              </em>
+            ) : null}
+          </span>
           {reach && (
             <span className="vrow-standin vrow-reach" title={reach.title}>
               {reach.text}
@@ -157,7 +155,7 @@ const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, 
         )}
         <span>{fmt(v.groundspeed, 1, ' m/s')}</span>
       </span>
-      <span className={`vrow-link ${lc}`}>
+      <span className="vrow-link">
         <span title="time since last message">
           {stale || (v.link.since_last_ms ?? 0) >= 1000
             ? `${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s`
@@ -167,11 +165,6 @@ const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, 
         </span>
         <span title="packet loss, last 10 s">{fmt(v.link.loss_pct, 0, '%')} loss</span>
         <span title="round trip time (TIMESYNC)">{fmt(v.link.rtt_ms, 0, 'ms')} rtt</span>
-        {v.link.emu && v.link.emu.state !== 'ok' && (
-          <span className={`vrow-emu ${v.link.emu.state}`} title={`Link emulator: ${v.link.emu.state}${v.link.emu.cause ? `, ${emuCause(v.link.emu.cause)}` : ''}`}>
-            {v.link.emu.state === 'down' ? 'link down' : 'degraded'}: {emuCause(v.link.emu.cause) || '?'}
-          </span>
-        )}
       </span>
       </button>
     </div>
@@ -311,7 +304,7 @@ function GroupRow({ it, selected, onSelect, onOpen }: { it: Extract<Item, { kind
   )
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, lost, expandAll = false, onFolded, groups }: Props) {
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, exceptions = NO_EXCEPTIONS, expandAll = false, onFolded, groups }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   // the kinds in the fleet, for "all of a kind" (recomputed only when the fleet's membership changes)
   const kinds = useMemo(() => kindsOf(vehicles), [vehicles])
@@ -455,10 +448,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
       </div>
       {groups && <AddToGroup api={groups} selected={selected} />}
       {vehicles.length === 0 ? (
-        <p className="empty">
-          No vehicles yet. Start the swarm with <code>make sim</code>; vehicles appear here as their first heartbeat
-          arrives.
-        </p>
+        <p className="empty">Waiting for the first vehicle reports: each vehicle appears here as its first heartbeat arrives.</p>
       ) : (
         <div className="vlist" ref={list}>
           <div className="vlist-inner" style={{ height }}>
@@ -487,7 +477,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                     onDeselect={act.onDeselect}
                     onDetails={act.onDetails}
                     reach={reachBadges?.get(it.v.uid)}
-                    lost={lost?.has(it.v.uid)}
+                    exc={exceptions}
                   />
                 </div>
               ),

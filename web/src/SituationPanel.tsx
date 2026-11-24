@@ -5,6 +5,8 @@ import { watchParts } from './bluf'
 import { namedBlocking, waited } from './blocking'
 import { RationaleText } from './Rationale'
 import { setScriptedBadges } from './situationIds'
+import { plainText, situationWhen } from './plainText'
+import { scriptedLine, situationZero } from './situationText'
 import { usePoll } from './space'
 import './situation.css'
 
@@ -143,8 +145,27 @@ function who(i: Intent) {
   return `${a.at_submission ? 'authorized' : 'approved'} by ${a.by}`
 }
 
-export function SituationPanel({ decisions, now, onWaiting }: { decisions: Decisions | null; now?: () => number; onWaiting?: (id: string) => void }) {
+export function SituationPanel({
+  decisions,
+  now,
+  onWaiting,
+  onAi,
+  nameOf,
+}: {
+  decisions: Decisions | null
+  now?: () => number
+  onWaiting?: (id: string) => void
+  /** one of ours by its uid (its callsign), for the engine's words the panel shows */
+  nameOf?: (uid: string) => string
+  /** the situation's AI (`modes.ai`), null when no situation runs, undefined before the first
+   *  answer: whether the run has a watch officer that takes requests (officer.ts `officerShown`) */
+  onAi?: (ai: SituationStatus['modes']['ai'] | null | undefined) => void
+}) {
   const { data } = usePoll<Envelope>('/api/situation', 2000)
+  const ai = data == null ? undefined : (data.situation?.modes.ai ?? null)
+  useEffect(() => {
+    onAi?.(ai)
+  }, [ai, onAi])
   // open unless the tutorial runs (its coach card walks the person; the panel is a click away)
   const [openSet, setOpen] = useState<boolean | null>(null)
   const [showAll, setShowAll] = useState(false)
@@ -183,6 +204,11 @@ export function SituationPanel({ decisions, now, onWaiting }: { decisions: Decis
   const watch = [...s.watch].reverse()
   const latestWatch = watch[0]
   const fresh = (at: number) => elapsed != null && elapsed - at < 60
+  // the runner's and the engine's words with epoch stamps on this situation's clock (T+m:ss) and
+  // our vehicles by callsign (situationText.ts); the AI's own notes are quoted as it wrote them
+  const zero = situationZero(s.clock)
+  const name = nameOf ?? ((uid: string) => `vehicle ${uid}`)
+  const plain = (text: string) => (zero == null ? text : plainText(text, { nameOf: name, when: situationWhen(zero) }))
 
   if (!open)
     return (
@@ -306,7 +332,7 @@ export function SituationPanel({ decisions, now, onWaiting }: { decisions: Decis
             {[...s.agent.activity].reverse().slice(0, 6).map((a, k) => (
               <li key={k}>
                 <time>{a.t_s != null ? clock(a.t_s) : ''}</time>
-                <b>{a.action}</b> {a.detail}
+                <b>{a.action}</b> {plain(a.detail)}
               </li>
             ))}
           </ul>
@@ -352,13 +378,18 @@ export function SituationPanel({ decisions, now, onWaiting }: { decisions: Decis
                 .filter((d) => d.action !== 'wait')
                 .reverse()
                 .slice(0, 5)
-                .map((d, k) => (
-                  <li key={k}>
-                    <b>{d.by ?? '?'}</b> {d.action} {d.declaration ? `${d.declaration} on ${d.track ?? '?'}` : `i${d.intent_id}`}
-                    {d.granted ? ' (granted)' : ''}: {d.result}
-                    {d.reason && <small> {d.reason}</small>}
-                  </li>
-                ))}
+                .map((d, k) => {
+                  // said once and as what it was: a scripted confirmation never also as unconfirmed
+                  // (what the script read before acting is in the title, said as read before)
+                  const l = scriptedLine(d, zero, name)
+                  return (
+                    <li key={k}>
+                      {zero != null && <time>{clock(d.t - zero)}</time>}
+                      <b>{l.text}</b>
+                      {l.why && <small title={l.read ?? undefined}> {l.why}</small>}
+                    </li>
+                  )
+                })}
             </ul>
           </>
         )}
@@ -375,7 +406,7 @@ export function SituationPanel({ decisions, now, onWaiting }: { decisions: Decis
           {(showAll ? done : done.slice(0, 6)).map((e, k) => (
             <li key={k} className={`sit-k-${e.kind}${e.director ? ' sit-director' : ''}`}>
               <time>{clock(e.t_s)}</time>
-              {e.text}
+              {plain(e.text)}
             </li>
           ))}
         </ul>

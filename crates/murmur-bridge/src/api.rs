@@ -898,7 +898,11 @@ async fn weather(State(app): State<App>, Query(q): Query<WeatherQuery>) -> Respo
         )
             .into_response();
     }
-    Json(app.tracks.weather_json(q.lat, q.lon, clock::wall())).into_response()
+    let mut body = app.tracks.weather_json(q.lat, q.lon, clock::wall());
+    // the scenario clock beside the conditions it is the time of (bd murmur-iobd.5): the
+    // console's top bar shows the world's time from it, never the browser's. Display only.
+    body["scenario"] = crate::space::console_clock().map_json();
+    Json(body).into_response()
 }
 
 #[derive(Deserialize)]

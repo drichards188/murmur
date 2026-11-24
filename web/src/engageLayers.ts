@@ -1,5 +1,7 @@
 import { PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { ellipseRing, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, type EngagePreview, type KeepOutExplanation, type KeepOutRegion } from './engage'
+import type { MapScreen } from './aloft'
+import { ALL_FULL, type LabelCandidate, type LabelPlan, type Priority, textBox } from './declutter'
 import { circle, distanceM } from './geo'
 import { paddedRing } from './nodeLoss'
 import type { LngLat } from './types'
@@ -45,7 +47,47 @@ interface Path {
   width: number
 }
 
-export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
+/** released, and landed: a munition still in flight has not struck yet */
+const struckAt = (d: EngageDrawing, nowMs: number) => d.effect != null && !(d.impactT != null && nowMs < d.impactT)
+
+/** An engagement's label in full ("ENGAGE i2 effect +44s", "ENGAGE i2 · ASSESSED PERSISTS") and
+ *  short (its name alone), where it is anchored (the effect point), and how the label budget
+ *  weighs it (declutter.ts): the form's draft and the selected one placed whatever they overlap,
+ *  one in play with what waits on the person, an ended one with the rest. */
+function engageLabel(d: EngageDrawing, nowMs: number) {
+  const full = d.effect
+    ? `${d.label} · ${d.assessment ? `ASSESSED ${d.assessment.toUpperCase()}` : struckAt(d, nowMs) ? 'IMPACT' : 'MUNITION IN FLIGHT'}`
+    : d.phase === 'ended'
+      ? d.label
+      : `${d.label} effect ${fmtRel(d.preview.effect_t - nowMs)}`
+  const priority: Priority = d.phase === 'ended' ? 4 : 1
+  return { key: `x:${d.key}`, at: d.effect?.point ?? d.preview.effect_point, full, short: d.label, priority, force: d.selected || d.phase === 'draft' }
+}
+
+/** where an engagement's label is drawn from its point, px (above right of it) */
+const LABEL_AT: [number, number] = [10, -10]
+/** px kept clear round an engagement's label: flush under a callsign it read as one sentence with it */
+const LABEL_ROOM = 4
+
+/** The engagements' labels for the one label budget (declutter.ts, bd murmur-iobd.3): placed or
+ *  dropped against our vehicles', the tracks' and the other layers' labels, never over them. */
+export function engageLabelCandidates(drawings: readonly EngageDrawing[], nowMs: number, screen: MapScreen): LabelCandidate[] {
+  return drawings.map((d) => {
+    const l = engageLabel(d, nowMs)
+    return {
+      key: l.key,
+      at: screen.at(l.at[0], l.at[1], 0),
+      full: textBox([l.full], 11, 'start', 'bottom', LABEL_AT, [0, 0], LABEL_ROOM),
+      short: textBox([l.short], 11, 'start', 'bottom', LABEL_AT, [0, 0], LABEL_ROOM),
+      priority: l.priority,
+      force: l.force,
+    }
+  })
+}
+
+/** The engagements on the map; `plan` (the label budget's) says which labels are drawn, in which
+ *  form: without one, every label in full. */
+export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number, plan: LabelPlan = ALL_FULL) {
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const dim = (d: EngageDrawing) => (d.selected || d.phase === 'draft' ? 1 : d.phase === 'ended' ? 0.35 : 0.65)
   const paths: Path[] = []
@@ -55,8 +97,13 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
     paths.push({ path: d.preview.track_path, color: a(THEIRS, k * 0.8), width: 1.5 })
   }
   const tick = Math.floor(nowMs / 1000)
-  // released, and landed: a munition still in flight has not struck yet
-  const struck = (d: EngageDrawing) => d.effect != null && !(d.impactT != null && nowMs < d.impactT)
+  const struck = (d: EngageDrawing) => struckAt(d, nowMs)
+  // the labels the budget placed, each in the form it placed
+  const labels = drawings.flatMap((d) => {
+    const l = engageLabel(d, nowMs)
+    const level = plan.level(l.key)
+    return level === 'none' ? [] : [{ d, text: level === 'full' ? l.full : l.short }]
+  })
   return [
     new ScatterplotLayer<EngageDrawing>({
       id: 'engage-keepout',
@@ -111,21 +158,16 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
       capRounded: true,
       parameters: onTop,
     }),
-    new TextLayer<EngageDrawing>({
+    new TextLayer<{ d: EngageDrawing; text: string }>({
       id: 'engage-labels',
-      data: drawings,
-      getPosition: (d) => d.effect?.point ?? d.preview.effect_point,
-      getText: (d) =>
-        d.effect
-          ? `${d.label} · ${d.assessment ? `ASSESSED ${d.assessment.toUpperCase()}` : struck(d) ? 'IMPACT' : 'MUNITION IN FLIGHT'}`
-          : d.phase === 'ended'
-          ? d.label
-          : `${d.label} effect ${fmtRel(d.preview.effect_t - nowMs)}`,
+      data: labels,
+      getPosition: ({ d }) => d.effect?.point ?? d.preview.effect_point,
+      getText: (l) => l.text,
       getSize: 11,
       getColor: TEXT,
       getTextAnchor: 'start',
       getAlignmentBaseline: 'bottom',
-      getPixelOffset: [10, -10],
+      getPixelOffset: LABEL_AT,
       fontFamily: FONT,
       fontWeight: 600,
       outlineWidth: 3,

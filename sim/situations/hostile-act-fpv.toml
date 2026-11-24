@@ -166,8 +166,8 @@ text = "The stack comes up: two of ours at the Gate. The setup script's opening 
 [[watch]]
 at_s = 40
 headline = "Normal traffic"
-bullets = ["Ferries, the lane, fishing boats, a yacht", "No AIS means unknown until a sensor classifies it; the Tracks drawer says why"]
-text = "Normal traffic: ferries, the shipping lane, fishing boats and a sailing yacht. A contact without AIS is unknown until a sensor classifies it; the Tracks drawer says why each is shown as it is."
+bullets = ["Ferries, the lane, fishing boats, a yacht", "No AIS means unknown until a sensor classifies it; the Tracks list says why"]
+text = "Normal traffic: ferries, the shipping lane, fishing boats and a sailing yacht. A contact without AIS is unknown until a sensor classifies it; the Tracks list says why each is shown as it is."
 
 [[watch]]
 at_s = 80

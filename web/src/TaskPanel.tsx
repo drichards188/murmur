@@ -22,7 +22,8 @@ import { defaultMin, excludedMarks, memberClasses, reforms, slotMarks, SPREAD_WO
 import { drawnHeight } from './map3d'
 import './command.css'
 import { sameFleet } from './stableFleet'
-import { cardLabel, routing, selectionLine, stage, STAGE_WORDS } from './commandModel'
+import { routing, selectionLine, stage, STAGE_WORDS } from './commandModel'
+import { orderCard } from './orderCard'
 
 interface Props {
   vehicles: Vehicle[]
@@ -99,6 +100,10 @@ interface CardProps {
   /** what the card's content rests on (see `sigs`): equal signatures, same card */
   sig: string
   label: string
+  /** the order's number (`i2`, orderCard.ts), what it is, and how the task layer flies it */
+  num: string
+  numTitle: string
+  flown: string | null
   moved: number
   ended: string | null
   authorized: string | null
@@ -167,7 +172,7 @@ function OrderSummary({ t, nameOf, minute, onOpen }: Pick<CardProps, 't' | 'name
  *  hundred ops, so it is built only while it is near the log's view (Lazy) and only re-rendered
  *  when its ops changed or its age text did. */
 const TaskingCard = memo(
-  function TaskingCard({ t, label, moved, ended, authorized, ago, nameOf, open, onOpen, minute }: CardProps) {
+  function TaskingCard({ t, label, num, numTitle, flown, moved, ended, authorized, ago, nameOf, open, onOpen, minute }: CardProps) {
     const summarised = t.ops.length > OPS_FOLD && !open
     return (
       <Lazy as="section" className="tcard" estimate={summarised ? 90 : 36 + t.ops.length * 26}>
@@ -175,7 +180,10 @@ const TaskingCard = memo(
         <>
         <div className="tcard-head">
           <strong>{label}</strong>
-          <span className="muted">#{t.id}</span>
+          <span className="muted" title={numTitle}>
+            {num}
+          </span>
+          {flown && <span className="muted">{flown}</span>}
           {t.ops.length > OPS_FOLD && <span className="muted">{t.ops.length} vehicles</span>}
           {t.ops.length > OPS_FOLD && open && (
             <button className="ghost mini tcard-fold" onClick={() => onOpen(t.id)}>
@@ -216,7 +224,7 @@ const TaskingCard = memo(
     )
   },
   (a, b) =>
-    a.sig === b.sig && a.label === b.label && a.moved === b.moved && a.ended === b.ended && a.authorized === b.authorized && a.ago === b.ago && a.nameOf === b.nameOf && a.t.id === b.t.id &&
+    a.sig === b.sig && a.label === b.label && a.num === b.num && a.numTitle === b.numTitle && a.flown === b.flown && a.moved === b.moved && a.ended === b.ended && a.authorized === b.authorized && a.ago === b.ago && a.nameOf === b.nameOf && a.t.id === b.t.id &&
     a.open === b.open && a.onOpen === b.onOpen && a.minute === b.minute,
 )
 
@@ -241,17 +249,21 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
     const last = i.history[i.history.length - 1]
     if (e && i.kind === 'identify' && last && (i.state === 'done' || i.state === 'failed' || /identified|not identified|lost contact|not in the picture/.test(last.reason))) e.ended = last.reason
   }
-  // a group order's card names the group it went to ("ORBIT · North picket"): the intent's own
-  // spec, or its group order's when this is a member's
+  // a card names the order it carries out, by what it is ("ENGAGE T-0008 with REAPER 1", not the
+  // orbit the task layer flies it as), and numbers it as the Inbox and the map do (`i2`, not the
+  // task layer's `#2`); a group order's names the group it went to ("ORBIT · North picket"), a
+  // member's its group order's (orderCard.ts)
   const intentById = useMemo(() => new Map((intents ?? []).map((i) => [i.id, i])), [intents])
-  const groupName = (t: Tasking): string | null => {
+  const cardOf = (t: Tasking) => {
     const i = t.intent_id != null ? intentById.get(t.intent_id) : undefined
-    return i?.group?.swarm ?? (i?.parent != null ? (intentById.get(i.parent)?.group?.swarm ?? null) : null)
-  }
-  const identifyLabel = (t: Tasking) => {
+    const parent = i?.parent != null ? intentById.get(i.parent) : undefined
+    const c = orderCard(t, i, parent, (uid) => {
+      const v = nameOf(Number(uid))
+      return v ? callsign(v) : `vehicle ${uid}`
+    })
     const e = t.intent_id != null ? identify.get(t.intent_id) : undefined
-    if (!e) return cardLabel(t.task, groupName(t))
-    return t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
+    if (e) c.label = t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
+    return c
   }
   const shownTaskings = taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id)
   // R6: an order to many vehicles is one card with its vehicles counted, exceptions listed; the
@@ -706,12 +718,16 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
           runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} map={space.clock} scen={scen} onOpen={onInbox} cancellable={space.cancellable ?? false} />)}
         {shownTaskings.map((t) => {
           const e = identify.get(t.intent_id ?? -1)
+          const c = cardOf(t)
           return (
             <TaskingCard
               key={t.id}
               t={t}
               sig={sigs.get(t) ?? ''}
-              label={identifyLabel(t)}
+              label={c.label}
+              num={c.id}
+              numTitle={c.idTitle}
+              flown={c.flown}
               moved={e?.moved ?? 0}
               ended={e?.ended ?? null}
               authorized={authorized.get(t.id) ?? null}

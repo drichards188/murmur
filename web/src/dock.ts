@@ -7,7 +7,9 @@
 // map's right edge (the hidden legend, the group strip, the weather details, the globe, the map's
 // zoom buttons) sits beside the dock, `--dock-w` from that edge. The vehicle details, the
 // Situation panel and the tutorial's card keep to the map's left and give way to the dock rather
-// than lie under it. Pure: dock.check.ts.
+// than lie under it. The Officer tab is there only where the run's AI takes requests (officer.ts
+// `officerShown`): a situation's model officer, or in the open world one that has read the tasking.
+// Pure: dock.check.ts.
 
 export type DockId = 'inbox' | 'officer' | 'queue' | 'sitrep' | 'swarms'
 

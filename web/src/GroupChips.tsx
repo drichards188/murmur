@@ -45,14 +45,17 @@ export interface ChipPlacer {
 }
 
 interface Props {
+  /** the chips to show (a new list only when which chips there are, or what one says, changes) */
   spots: ChipSpot[]
+  /** where each goes now: moved by the placer, without a render (MapView planNow) */
+  live?: RefObject<ChipSpot[]>
   groups: GroupsOnMap
   /** set to the function that moves the chips to this camera (MapView calls it on every frame) */
   placer: RefObject<ChipPlacer | null>
   screen: () => MapScreen
 }
 
-export function GroupChips({ spots, groups, placer, screen }: Props) {
+export function GroupChips({ spots, live, groups, placer, screen }: Props) {
   const els = useRef(new Map<string, HTMLElement>())
   const spotsRef = useRef(spots)
   // each chip's width, measured once a layout, and the overlay's: a chip is kept inside the map
@@ -64,7 +67,7 @@ export function GroupChips({ spots, groups, placer, screen }: Props) {
     () => ({
       place(s: MapScreen) {
         const W = box.current?.clientWidth ?? 0
-        for (const spot of spotsRef.current) {
+        for (const spot of live?.current ?? spotsRef.current) {
           const el = els.current.get(spot.key)
           if (!el) continue
           const p = s.at(spot.xAt[0], spot.xAt[1], spot.xAt[2])
@@ -80,7 +83,7 @@ export function GroupChips({ spots, groups, placer, screen }: Props) {
         }
       },
     }),
-    [],
+    [live],
   )
   // a new layout placed at once, not a frame later
   useLayoutEffect(() => {

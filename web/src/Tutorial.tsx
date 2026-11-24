@@ -3,7 +3,7 @@ import type { Check, Decisions } from './decisions'
 import type { SituationStatus } from './SituationPanel'
 import { usePoll } from './space'
 import { kindLabel, type TracksMessage } from './tracks'
-import { CONSOLE_OPERATOR, type Facts, type IdentityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial'
+import { coachPlace, CONSOLE_OPERATOR, type Facts, type IdentityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial'
 import { timeline } from './weapon'
 import './tutorial.css'
 
@@ -426,6 +426,49 @@ function Ring({ targets }: { targets: string[] }) {
 
 const someVehicle = (uid: string) => `vehicle ${uid}`
 
+/** The coach card's place (tutorial.ts coachPlace) above the weather bar (WeatherLayer.tsx's
+ *  `.weather-legend`, over the same corner of the map), measured while the card shows and again
+ *  whenever the bar or the map changes size (the bar folds and opens; the window resizes). */
+function useCoachPlace(on: boolean): { bottom: number; maxHeight: number } | null {
+  const [place, setPlace] = useState<{ bottom: number; maxHeight: number } | null>(null)
+  useEffect(() => {
+    if (!on) return
+    let raf = 0
+    const measure = () => {
+      raf = 0
+      const bar = document.querySelector<HTMLElement>('.weather-legend')
+      const map = document.querySelector<HTMLElement>('.mapwrap')
+      if (!map) return
+      const m = map.getBoundingClientRect()
+      const next = coachPlace(m.height, bar && bar.offsetParent ? bar.getBoundingClientRect().top - m.top : null)
+      setPlace((p) => (p && p.bottom === next.bottom && p.maxHeight === next.maxHeight ? p : next))
+    }
+    const later = () => {
+      if (!raf) raf = requestAnimationFrame(measure)
+    }
+    const ro = new ResizeObserver(later)
+    const watch = () => {
+      ro.disconnect()
+      for (const sel of ['.weather-legend', '.mapwrap']) {
+        const el = document.querySelector(sel)
+        if (el) ro.observe(el)
+      }
+      later()
+    }
+    watch()
+    // the bar is made again when the weather layer's state changes: watch the new one
+    const mo = new MutationObserver(watch)
+    const map = document.querySelector('.mapwrap')
+    if (map) mo.observe(map, { childList: true })
+    return () => {
+      ro.disconnect()
+      mo.disconnect()
+      cancelAnimationFrame(raf)
+    }
+  }, [on])
+  return place
+}
+
 export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, nameOf: nameOfVehicle = someVehicle }: Props) {
   const { data } = usePoll<Envelope>('/api/situation', 2000)
   const s = data?.situation
@@ -469,6 +512,8 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
     const id = window.setTimeout(() => setSaved((v) => (v && v.idx === idx ? { ...v, idx: idx + 1, doneAt: step.id === 'assess' ? (elapsed ?? undefined) : v.doneAt } : v)), wait)
     return () => window.clearTimeout(id)
   }, [saved, step, done, cameBack, idx, elapsed, shownAt])
+  // above the weather bar, never under it (bd murmur-iobd.11)
+  const place = useCoachPlace(on && !!saved && !saved.closed)
   if (!on || !saved || saved.closed) return null
   const go = (to: number, back: boolean) => {
     setCameBack(back)
@@ -476,7 +521,7 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
   }
   if (saved.hidden)
     return (
-      <button className="tut-chip" onClick={() => setSaved({ ...saved, hidden: false })} title="Show the tutorial's coach card">
+      <button className="tut-chip" style={place ? { bottom: place.bottom } : undefined} onClick={() => setSaved({ ...saved, hidden: false })} title="Show the tutorial's coach card">
         TUTORIAL <b>{idx + 1}</b>/{STEPS.length}
       </button>
     )
@@ -487,7 +532,7 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
   return (
     <>
       <Ring targets={v.targets} />
-      <aside className="tut" aria-label="Tutorial" aria-live="polite">
+      <aside className="tut" aria-label="Tutorial" aria-live="polite" style={place ? { bottom: place.bottom, maxHeight: place.maxHeight } : undefined}>
         <header className="tut-top">
           <span className="tut-k">Tutorial</span>
           <span className="tut-n">

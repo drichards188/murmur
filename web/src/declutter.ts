@@ -23,8 +23,10 @@ export type Priority = 1 | 2 | 3 | 4
 export type Box = [number, number, number, number]
 
 export interface LabelCandidate {
-  /** unique across layers: `v:<uid>` a vehicle, `t:<id>` a track, `l:<id>` a lost contact,
-   *  `e:...` an estimate, `s:<id>` a group, `o:...` an order label, `c:...` a cluster marker */
+  /** unique across layers: `v:<uid>` a vehicle (`vl:<uid>` its exception slot), `t:<id>` a track,
+   *  `l:<id>` a lost contact, `e:...` an estimate, `s:<id>` a group, `o:...` an order label,
+   *  `c:...` a cluster marker, `x:<key>` an engagement's label, `a:<key>` an observed act's label
+   *  (`at:<key>` its id once the label has faded) */
   key: string
   /** where the anchor is drawn, CSS pixels in the map; null behind the camera */
   at: [number, number] | null
@@ -89,7 +91,21 @@ export function centred(text: string, size: number, dy: number, pad = 0): Box {
   return dy < 0 ? [-w, dy - h, w, dy] : [-w, dy, w, dy + h]
 }
 
-const NONE: LabelPlan = { level: () => 'none', stats: { inView: 0, full: 0, short: 0, none: 0, budgeted: false, all: false } }
+/** The box of a block of `lines` at `size` px (line height 1.25 for more than one) drawn as deck.gl's
+ *  TextLayer draws it: from its anchor `[dx, dy]` px off the point, `anchor` the block's horizontal
+ *  side there (start: its left edge), `baseline` its vertical one, `pad` px of background round it,
+ *  and `room` px kept clear beyond that. An event's label (an engagement's, an act's) keeps some
+ *  room: one sitting flush under a callsign read as a sentence with it ("HUNTER 1 ASSESSED
+ *  PERSISTS", bd murmur-iobd.3). */
+export function textBox(lines: readonly string[], size: number, anchor: 'start' | 'middle', baseline: 'top' | 'bottom', [dx, dy]: [number, number], pad: [number, number] = [0, 0], room = 0): Box {
+  const w = Math.max(0, ...lines.map((l) => textWidth(l, size))) + 2 * pad[0]
+  const h = (lines.length > 1 ? lines.length * size * 1.25 : size + 2) + 2 * pad[1]
+  const left = anchor === 'start' ? dx - pad[0] : dx - w / 2
+  const top = baseline === 'top' ? dy - pad[1] : dy + pad[1] - h
+  return [left - room, top - room, left + w + room, top + h + room]
+}
+
+const NONE: LabelPlan ={ level: () => 'none', stats: { inView: 0, full: 0, short: 0, none: 0, budgeted: false, all: false } }
 
 export interface PlanOptions {
   zoom: number

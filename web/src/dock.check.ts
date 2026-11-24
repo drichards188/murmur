@@ -1,7 +1,7 @@
 // Checks for dock.ts and officer.ts: node web/src/dock.check.ts (prints "dock: ok").
 import assert from 'node:assert/strict'
 import { closeDock, DOCK_WIDTH, fitPad, fitRight, FIT_MIN, FIT_PAD, headsWithWaiting, toggleDock, type DockId } from './dock.ts'
-import { awaitingRows, composeKey, countTone, excerpt, insertAt, INSERT_MAX, proposedIn, selectionInsert, sendState, turnItems, turnOf } from './officer.ts'
+import { awaitingRows, composeKey, countTone, excerpt, insertAt, INSERT_MAX, officerShown, proposedIn, selectionInsert, sendState, turnItems, turnOf } from './officer.ts'
 import type { Intent } from './decisions'
 import type { TaskingItem } from './tasking.ts'
 
@@ -24,6 +24,19 @@ assert.equal(fitRight(780, 685, 70), 685 - 70 - FIT_MIN, 'a wide drawer on a nar
 assert.equal(fitRight(780, 100, 70), 0, 'never negative')
 assert.equal(headsWithWaiting('inbox'), false, 'the Inbox shows the cards themselves')
 for (const id of ['officer', 'queue', 'sitrep', 'swarms'] as const) assert.equal(headsWithWaiting(id), true, `${id}: what waits for a person heads it`)
+
+// ---- the Officer button and drawer: only where the run's AI takes requests ------------------------
+const read = { officer: { agent: 'agent-watch', read_t: 1000 } }
+const unread = { officer: null }
+assert.equal(officerShown('claude', unread, 'ok'), true, 'a situation with a model officer: shown before it first reads, so the person can write ahead')
+assert.equal(officerShown('codex', unread, 'ok'), true)
+assert.equal(officerShown('playbook', read, 'ok'), false, 'the playbook never reads requests: hidden (hostile-act-engagement, AI=playbook)')
+assert.equal(officerShown('none', unread, 'ok'), false, 'no AI (the tutorial, group-command): hidden')
+assert.equal(officerShown(null, unread, 'ok'), false, 'the open world: hidden until an officer has read the tasking')
+assert.equal(officerShown(null, read, 'ok'), true, 'the open world, an officer has read it: shown (and stays, saying so, if it goes quiet)')
+assert.equal(officerShown(undefined, read, 'ok'), true, 'no situation answer yet: the open world rule')
+assert.equal(officerShown(undefined, { officer: undefined }, 'ok'), false, 'a bridge that does not say who reads: no officer known')
+assert.equal(officerShown('claude', unread, 'missing'), false, 'no tasking channel on this bridge: none')
 
 // ---- the turn link: guidance and the orders proposed in the turn that read it -------------------
 const item = (id: string, at_t: number, extra: Partial<TaskingItem> = {}): TaskingItem => ({ id, text: `guidance ${id}`, by: 'op-1', at_t, active: true, ...extra })

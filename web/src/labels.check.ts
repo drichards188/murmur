@@ -6,7 +6,7 @@
 // caller's order; each priority's zoom floor holds; an obstacle (a cluster marker) takes room and
 // is never counted; labels off the screen are not counted; Show all draws every one in full; the
 // counts add up. Throws on the first failure, prints "labels: ok" otherwise.
-import { FEW, LABEL_MIN_ZOOM, planLabels, rightOf, type Box, type LabelCandidate, type Priority } from './declutter.ts'
+import { centred, FEW, LABEL_MIN_ZOOM, planLabels, rightOf, textBox, textWidth, type Box, type LabelCandidate, type Priority } from './declutter.ts'
 
 function check(cond: unknown, what: string) {
   if (!cond) throw new Error(`labels: ${what}`)
@@ -99,6 +99,28 @@ crowd.push(cand('v:sel2', 605, 402, 1, { force: true }))
 {
   const p = planLabels(crowd, { ...opts, all: true })
   check(crowd.every((c) => p.level(c.key) === 'full') && p.stats.full === crowd.length && p.stats.all, 'Show all draws every label in full')
+}
+
+// one budget across layers (bd murmur-iobd.3): an event's label and a callsign beside it
+{
+  // a text block's box as deck.gl draws it: anchored, padded, with room kept round it
+  const b = textBox(['ENGAGE i2'], 11, 'start', 'bottom', [10, -10])
+  check(b[0] === 10 && b[2] === 10 + textWidth('ENGAGE i2', 11) && b[3] === -10 && b[1] === -10 - 13, `a start-anchored line above its point (${b})`)
+  const two = textBox(['Act A-2: launch at HUNTER 1', 'from T-0008 (0.97)'], 12, 'middle', 'bottom', [0, -20], [6, 4], 4)
+  check(two[2] - two[0] === textWidth('Act A-2: launch at HUNTER 1', 12) + 12 + 8 && two[3] === -20 + 4 + 4 && two[1] === -20 + 4 - (2 * 12 * 1.25 + 8) - 4, `a centred two-line block with its padding and room (${two})`)
+  // HUNTER 1 just right of the strike's point, the engagement's label above right of the point
+  const callsign = rightOf(12, 'HUNTER 1', 12)
+  const badge = centred('DAMAGED: CANNOT MOVE', 10, 16, 5)
+  const engage = (short: boolean): LabelCandidate => ({ key: 'x:i2', at: [400, 400], full: textBox(['ENGAGE i2 · ASSESSED PERSISTS'], 11, 'start', 'bottom', [10, -10], [0, 0], 4), short: textBox([short ? 'ENGAGE i2' : 'ENGAGE i2 · ASSESSED PERSISTS'], 11, 'start', 'bottom', [10, -10], [0, 0], 4), priority: 1 })
+  const vehicle: LabelCandidate = { key: 'v:1', at: [450, 405], short: callsign, full: callsign, priority: 4 }
+  const p = planLabels([vehicle, engage(true)], opts)
+  check(p.level('x:i2') === 'full' && p.level('v:1') === 'none', `the engagement's label is placed, the callsign under it gives way (${p.level('x:i2')}, ${p.level('v:1')})`)
+  // the damage under HUNTER 1's symbol comes first: the engagement's label falls back to its name
+  const slot: LabelCandidate = { key: 'vl:1', at: [450, 370], short: badge, full: badge, priority: 1 }
+  const q = planLabels([slot, vehicle, engage(true)], opts)
+  check(q.level('vl:1') === 'full' && q.level('x:i2') !== 'full', `the damage slot is kept, the event's label gives way (${q.level('vl:1')}, ${q.level('x:i2')})`)
+  const r = planLabels([slot, vehicle, engage(false)], opts)
+  check(r.level('x:i2') === 'none', 'no form that fits: left out, never drawn over it')
 }
 
 console.log('labels: ok')

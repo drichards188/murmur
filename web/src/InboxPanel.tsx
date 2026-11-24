@@ -20,8 +20,10 @@ import { RefusalFold } from './RefusalFold'
 import { alertParts } from './bluf'
 import { waitingItems } from './blocking'
 import { EngageCard, EngagementsSection } from './EngageCard'
+import { needsYou } from './needsYou'
+import { agoWhen, plainText } from './plainText'
 import { RationaleText } from './Rationale'
-import { ReviewSection } from './ReviewSection'
+import { ReviewSection, SettledFlags } from './ReviewSection'
 import { isEngage } from './engage'
 import { distanceM } from './geo'
 import { reportView } from './operatorView'
@@ -67,31 +69,16 @@ interface Props {
 
 // ---- top bar button -------------------------------------------------------------------------
 
-export function InboxButton({ decisions, open, onClick, hiddenAlerts }: { decisions: Decisions | null; open: boolean; onClick: () => void; hiddenAlerts: Set<string> }) {
-  const pending = decisions?.inbox.pending.length ?? 0
-  // a swarm's folded member alerts count once, as its swarm alert
-  const alerts: { severity: Alert['severity'] }[] = [
-    ...unfolded(decisions?.inbox.alerts ?? []).filter((a) => !hiddenAlerts.has(a.id)),
-    ...(decisions?.inbox.swarm_alerts ?? []),
-  ]
-  const high = alerts.filter((a) => a.severity === 'high').length
-  const medium = alerts.filter((a) => a.severity === 'medium').length
-  // rules 23: informational alerts ask nothing: in the title, never a badge
-  const info = alerts.filter((a) => a.severity === 'info').length
-  const review = decisions?.inbox.counts.review ?? 0
-  // review items that alone hold up a nomination (blocking.ts): counted apart, first
-  const waiting = waitingItems(decisions?.inbox.blocking).length
-  const parts = [`${pending} pending approval${pending === 1 ? '' : 's'}`, `${high} high alert${high === 1 ? '' : 's'}`, `${medium} medium alert${medium === 1 ? '' : 's'}`, `${review} for review`]
-  if (waiting > 0) parts.unshift(`${waiting} waiting on you (holding up a nomination)`)
-  if (info > 0) parts.push(`${info} for information`)
+/** The Inbox's button: one number, what needs the person (needsYou.ts, the same count as the
+ *  drawer's Pending tab), coloured by the most urgent kind in it; its title says what it counts and
+ *  what it leaves out. Each item counts once: a review item holding up a nomination is one review
+ *  item, not also a second badge. */
+export function InboxButton({ decisions, open, onClick, hiddenAlerts, settled }: { decisions: Decisions | null; open: boolean; onClick: () => void; hiddenAlerts: Set<string>; settled: ReadonlyMap<string, string> }) {
+  const n = needsYou(decisions?.inbox, hiddenAlerts, new Set(settled.keys()))
   return (
-    <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
+    <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={n.says} aria-label={`Inbox: ${n.says}`}>
       Inbox
-      {waiting > 0 && <span className="ix-badge wait">{waiting}</span>}
-      {pending > 0 && <span className="ix-badge pend">{pending}</span>}
-      {high > 0 && <span className="ix-badge high">{high}</span>}
-      {medium > 0 && <span className="ix-badge med">{medium}</span>}
-      {review > 0 && <span className="ix-badge rev">{review}</span>}
+      {n.total > 0 && n.tone && <span className={`ix-badge ${n.tone}`}>{n.total}</span>}
     </button>
   )
 }
@@ -450,7 +437,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
                   {c.rule}
                   {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
                 </span>
-                <span className="ix-detail">{c.detail}</span>
+                <span className="ix-detail">{plainText(c.detail, { nameOf: (u) => nameOf(vehicles, u), when: agoWhen(now()) })}</span>
               </span>
             </div>
           ))}
@@ -516,6 +503,7 @@ function AlertCard({
   muted,
   mem,
   onFocus,
+  name,
 }: {
   alert: Alert
   now: () => number
@@ -523,6 +511,8 @@ function AlertCard({
   muted: string | null
   mem: ReturnType<typeof useAlertMemory>
   onFocus: () => void
+  /** one of ours by its uid, for a detail that names one by uid */
+  name: (uid: string) => string
 }) {
   const [snoozing, setSnoozing] = useState(false)
   // rules 12: a restore that will never be confirmed (the vehicle lost or spent, another one
@@ -567,7 +557,8 @@ function AlertCard({
         <span className="ix-who">{a.callsign ?? `vehicle ${a.uid}`}</span>
         <span className="ix-age">{fmtDuration(age)} ago</span>
       </header>
-      <Bluf className="ix-adetail" parts={alertParts(a, fmtDuration(age))} />
+      {/* the bridge's detail with its epoch stamps in words ("since t=1795533627.2": "9 min 48 s ago") */}
+      <Bluf className="ix-adetail" parts={alertParts({ kind: a.kind, detail: plainText(a.detail, { nameOf: name, when: agoWhen(now()) }) }, fmtDuration(age))} />
       {a.intent_id != null && <p className="ix-link">from intent i{a.intent_id}</p>}
       <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
         {muted ? (
@@ -699,7 +690,7 @@ function SwarmAlertCard({ alert: a, members, vehicles, now, selected, onFocus }:
           {uids.map((u) => (
             <li key={u}>
               <b>{nameOf(vehicles, String(u))}</b>
-              <span>{(members.get(u) ?? []).map((m) => m.detail).join('; ') || 'no member alert of its own'}</span>
+              <span>{(members.get(u) ?? []).map((m) => plainText(m.detail, { nameOf: (x) => nameOf(vehicles, x), when: agoWhen(now()) })).join('; ') || 'no member alert of its own'}</span>
             </li>
           ))}
         </ul>
@@ -767,7 +758,7 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
               <li key={k}>
                 <span className="ix-t">+{fmtDuration((h.t - t0) / 1000)}</span>
                 <b>{h.state.replace('_', ' ')}</b>
-                <BlufReason className="compact" text={h.reason} ctx={{ who: names }} />
+                <BlufReason className="compact" text={plainText(h.reason, { nameOf: (u) => nameOf(vehicles, u), when: agoWhen(now()) })} ctx={{ who: names }} />
               </li>
             ))}
           </ol>
@@ -779,7 +770,7 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
                 .filter((c) => c.outcome !== 'pass')
                 .map((c, k) => (
                   <li key={k} className={c.outcome}>
-                    {OUTCOME_MARK[c.outcome]} {c.rule}: {c.detail}
+                    {OUTCOME_MARK[c.outcome]} {c.rule}: {plainText(c.detail, { nameOf: (u) => nameOf(vehicles, u), when: agoWhen(now()) })}
                   </li>
                 ))}
             </ul>
@@ -831,7 +822,7 @@ interface Notice {
   tone: 'ok' | 'bad'
 }
 
-export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden, cause }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
+export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden, settled, cause }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string>; settled: ReadonlyMap<string, string> }) {
   // a card chosen from outside this drawer (a line at the head of another, the task panel's link)
   // is brought into view; one clicked here already is (`nearest` leaves it be)
   const selId = selection?.kind === 'intent' ? selection.id : null
@@ -854,6 +845,9 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
   const swarmAlerts = decisions?.inbox.swarm_alerts ?? []
   const blocking = decisions?.inbox.blocking
   const waiting = waitingItems(blocking).length > 0
+  // what needs the person, counted as the Inbox button counts it (needsYou.ts)
+  const need = needsYou(decisions?.inbox, hidden, new Set(settled.keys()))
+  const name = (uid: string) => nameOf(vehicles, uid)
   // (the strip's and the Situation panel's links open the Pending tab themselves: App.tsx)
   const engagements = (
     <EngagementsSection
@@ -874,8 +868,9 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
       now={now}
       onTrack={onTrack}
       blocking={blocking}
+      settled={settled}
       focus={focus}
-      nameOf={(uid) => nameOf(vehicles, uid)}
+      nameOf={name}
       onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
     />
   )
@@ -897,8 +892,8 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
       <header className="ix-top">
         <h2>Inbox</h2>
         <div className="seg">
-          <button className={tab === 'inbox' ? 'on' : ''} onClick={() => setTab('inbox')}>
-            Pending{pending.length + live.length + swarmAlerts.length ? ` (${pending.length + live.length + swarmAlerts.length})` : ''}
+          <button className={tab === 'inbox' ? 'on' : ''} onClick={() => setTab('inbox')} title={need.says}>
+            Pending{need.total ? ` (${need.total})` : ''}
           </button>
           <button className={tab === 'decisions' ? 'on' : ''} onClick={() => setTab('decisions')}>
             Decisions
@@ -985,8 +980,11 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
             </h3>
             {live.length === 0 && <p className="empty">No active alerts.</p>}
             {live.map((a) => (
-              <AlertCard key={a.id} alert={a} now={now} selected={selection?.kind === 'alert' && selection.id === a.id} muted={null} mem={mem} onFocus={() => onFocus({ kind: 'alert', id: a.id }, [a.uid], null)} />
+              <AlertCard key={a.id} alert={a} now={now} selected={selection?.kind === 'alert' && selection.id === a.id} muted={null} mem={mem} name={name} onFocus={() => onFocus({ kind: 'alert', id: a.id }, [a.uid], null)} />
             ))}
+            {/* open flags a later declaration settled: below the live items, quiet, each still
+                opening its card to confirm or dismiss (the person's act; nothing resolves them here) */}
+            <SettledFlags review={decisions?.inbox.review} settled={settled} now={now} onTrack={onTrack} nameOf={name} focus={focus} onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])} />
             {muted.length > 0 && (
               <>
                 <button className="ix-toggle" onClick={() => setShowHidden(!showHidden)}>
@@ -994,7 +992,7 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
                 </button>
                 {showHidden &&
                   muted.map((a) => (
-                    <AlertCard key={a.id} alert={a} now={now} selected={false} muted={mutedLabel(a)} mem={mem} onFocus={() => onFocus({ kind: 'alert', id: a.id }, [a.uid], null)} />
+                    <AlertCard key={a.id} alert={a} now={now} selected={false} muted={mutedLabel(a)} mem={mem} name={name} onFocus={() => onFocus({ kind: 'alert', id: a.id }, [a.uid], null)} />
                   ))}
               </>
             )}

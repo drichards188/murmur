@@ -1559,12 +1559,24 @@ def agent_activity(events: list[dict[str, Any]], agent: str | None) -> list[dict
     return out
 
 
-def _rule_basis(by: dict[str, Any]) -> str:
+def _rule_basis(by: dict[str, Any], who: Any = None) -> str:
+    """A rule declaration's act, whom it was against (one of ours by `who(uid)`, its callsign,
+    where given) and its attribution."""
     ev = by.get("evidence") or {}
     against = ev.get("against") or {}
-    victim = f"vehicle {against.get('uid')}" if against.get("kind") == "vehicle" else str(against.get("track") or "?")
+    uid = against.get("uid")
+    victim = (who(uid) if who else f"vehicle {uid}") if against.get("kind") == "vehicle" else str(against.get("track") or "?")
     att = ev.get("attribution")
     return f"act {ev.get('act', '?')} against {victim}" + (f", attribution {att:.2f}" if isinstance(att, (int, float)) else "")
+
+
+SENSOR_WORDS = {"radar": "radar", "eo_ir": "EO/IR", "ais": "AIS", "sonar": "sonar", "esm": "ESM"}
+
+
+def _and(xs: list[str]) -> str:
+    if len(xs) <= 1:
+        return xs[0] if xs else ""
+    return f"{', '.join(xs[:-1])} and {xs[-1]}"
 
 
 class EngagementChain:
@@ -1575,10 +1587,12 @@ class EngagementChain:
     released effect, the assessment, and any stop, reset or refusal; from rules 30 the standing
     of ours struck on the way (presumed lost on its evidence, confirmed lost and by whom, heard
     again). Only what the C2 itself logged: nothing of the truth. `callsigns` names our vehicles
-    by uid (strings)."""
+    by uid (strings); `scripted`, the run's scripted operator ids, are marked "(scripted)" where
+    they confirm or sign, so the panel says each such act once, as the audit log has it."""
 
-    def __init__(self, callsigns: dict[str, str] | None = None):
+    def __init__(self, callsigns: dict[str, str] | None = None, scripted: Any = None):
         self.callsigns = {str(k): v for k, v in (callsigns or {}).items()}
+        self.scripted = {str(x) for x in (scripted or ())}
         # intent id -> what happened to that nomination
         self.engagements: dict[int, dict[str, Any]] = {}
         # declaration id -> {track, by, confirmed_by}
@@ -1592,6 +1606,28 @@ class EngagementChain:
     def _who(self, uid: Any) -> str:
         cs = self.callsigns.get(str(uid))
         return f"{cs} (uid {uid})" if cs else f"vehicle {uid}"
+
+    def _by(self, operator: Any) -> str:
+        """An operator id as the chain says it: a scripted one marked so."""
+        return f"{operator} (scripted)" if str(operator) in self.scripted else str(operator)
+
+    def _sensors(self, ids: list[Any]) -> str:
+        """Sensor ids as the engine logs them ("1:eo_ir", "2:radar"), by vehicle in words:
+        "HUNTER 1 EO/IR and REAPER 1 (radar and EO/IR)"."""
+        by: dict[str, list[str]] = {}
+        for s in ids:
+            uid, _, kind = str(s).partition(":")
+            if not kind:
+                uid, kind = "", uid
+            label = SENSOR_WORDS.get(kind, kind.replace("_", " "))
+            if label not in by.setdefault(uid, []):
+                by[uid].append(label)
+        parts = []
+        for uid, kinds in by.items():
+            who = (self.callsigns.get(uid) or f"vehicle {uid}") if uid else ""
+            what = kinds[0] if len(kinds) == 1 else (f"({_and(kinds)})" if who else _and(kinds))
+            parts.append(f"{who} {what}".strip())
+        return _and(parts) or "no sensor named"
 
     def feed(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """New audit events in; one line per chain moment out: `{t, what, text, intent?}` (t in
@@ -1607,13 +1643,13 @@ class EngagementChain:
                 a = e.get("act") or {}
                 against = a.get("against") or {}
                 victim = self._who(against.get("uid")) if against.get("kind") == "vehicle" else f"track {against.get('track')}"
-                line(e, "act", f"our sensors observed a hostile act ({a.get('act')}) against {victim}: seen by {', '.join(a.get('sensors') or [])}")
+                line(e, "act", f"our sensors observed a hostile act ({a.get('act')}) against {victim}: seen by {self._sensors(a.get('sensors') or [])}")
             elif kind == "ident.declared":
                 d = e.get("declaration") or {}
                 by = d.get("by") or {}
                 self.declarations[int(d.get("id", 0))] = {"track": d.get("track"), "affiliation": d.get("affiliation"), "by": by, "confirmed_by": None}
                 if by.get("kind") == "rule":
-                    line(e, "declared", f"the engine declared {d.get('track')} {d.get('affiliation')} by rule ({_rule_basis(by)}): an operator confirms or revokes it")
+                    line(e, "declared", f"the engine declared {d.get('track')} {d.get('affiliation')} by rule ({_rule_basis(by, self._who)}): an operator confirms or revokes it")
                 else:
                     line(e, "declared", f"{by.get('operator')} declared {d.get('track')} {d.get('affiliation')}")
             elif kind == "ident.flagged":
@@ -1623,7 +1659,7 @@ class EngagementChain:
                 d = self.declarations.get(int(e.get("declaration", 0)))
                 if d is not None:
                     d["confirmed_by"] = e.get("by")
-                line(e, "confirmed", f"{e.get('by')} confirmed the rule declaration D-{e.get('declaration')} on {e.get('track')}")
+                line(e, "confirmed", f"{self._by(e.get('by'))} confirmed the rule declaration D-{e.get('declaration')} on {e.get('track')}")
             elif kind == "ident.revoked":
                 line(e, "revoked", f"{e.get('by')} revoked the declaration D-{e.get('declaration')} on {e.get('track')}")
             elif kind == "intent.created" and (e.get("intent") or {}).get("kind") == "lay":
@@ -1712,7 +1748,7 @@ class EngagementChain:
                 rec["signed"].append(e.get("by"))
                 n = len(rec["signed"])
                 done = ": approved" if kind == "approval.granted" else ""
-                line(e, "signed", f"{e.get('by')} signed intent {e.get('intent')} ({n} of {e.get('of') or n}){done}", intent=e.get("intent"))
+                line(e, "signed", f"{self._by(e.get('by'))} signed intent {e.get('intent')} ({n} of {e.get('of') or n}){done}", intent=e.get("intent"))
             elif kind == "approval.reset":
                 rec = self.engagements.get(int(e.get("intent", 0)))
                 if rec is None:
@@ -1782,7 +1818,7 @@ class EngagementChain:
                 n.update({"lost_t": round(float(e.get("t", 0)) / 1000.0, 3), "by": e.get("by"), "state": "lost"})
                 line(
                     e, "lost",
-                    f"{e.get('by')} confirmed {self._who(e.get('uid'))} lost: it leaves every keep-out and takes no order, "
+                    f"{self._by(e.get('by'))} confirmed {self._who(e.get('uid'))} lost: it leaves every keep-out and takes no order, "
                     "its orders end and its owed lost-link values close",
                 )
             elif kind == "node.loss_revoked":
@@ -1799,7 +1835,7 @@ class EngagementChain:
         lines: list[str] = []
         for d in self.declarations.values():
             by = d["by"]
-            how = f"by rule ({_rule_basis(by)})" if by.get("kind") == "rule" else f"by {by.get('operator')}"
+            how = f"by rule ({_rule_basis(by, self._who)})" if by.get("kind") == "rule" else f"by {by.get('operator')}"
             conf = f", confirmed by {d['confirmed_by']}" if d.get("confirmed_by") else (", not confirmed" if by.get("kind") == "rule" else "")
             lines.append(f"  declared {d['track']} {d['affiliation']} {how}{conf}")
         for uid, n in sorted(self.nodes.items()):

@@ -125,8 +125,10 @@ function dirLine(d: EmuDir) {
 }
 
 /** The link emulator's state for this vehicle's link (Link section rows), from the bridge's
- *  /api/links/{uid}. Nothing when no emulator runs. */
-function EmuItems({ uid }: { uid: number }) {
+ *  /api/links/{uid}. Nothing when no emulator runs. The depth its link profile is gated on only for
+ *  a vehicle that dives (`dives`): an aircraft's SATCOM profile has the gate too, and its details
+ *  said "Depth: surfaced" (bd murmur-iobd.8). */
+function EmuItems({ uid, dives }: { uid: number; dives: boolean }) {
   const ans = useEmuLink(uid)
   if (!ans || !ans.enabled) return null
   const l = ans.link
@@ -185,7 +187,7 @@ function EmuItems({ uid }: { uid: number }) {
           )}
         </Item>
       )}
-      {n?.down_when && (
+      {dives && n?.down_when && (
         <Item k="Depth">
           {l.depth_state} ({l.profile} {n.down_when === 'surfaced' ? 'needs the vehicle submerged' : 'needs the vehicle surfaced'}
           {n.gated_profile ? `; otherwise ${n.gated_profile}` : ''})
@@ -516,7 +518,7 @@ export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onC
               {planText(v.link.telemetry)}
             </Item>
           )}
-          <EmuItems uid={v.uid} />
+          <EmuItems uid={v.uid} dives={domain === 'subsurface'} />
         </dl>
       </section>
 

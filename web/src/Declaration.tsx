@@ -4,7 +4,8 @@
 // its state, each stating its consequence where it is pressed:
 //  - a rule declaration nobody confirmed: Confirm and Revoke, side by side and alike, two
 //    deliberate clicks each (docs/DECISIONS.md "Confirming is never the easy act in the console");
-//  - a declaration in force: Revoke (and, hostile on a track card, Nominate an engagement);
+//  - a declaration in force: Revoke (and, hostile on a track card, Nominate an engagement; while
+//    an engagement on the track is in play, a line that opens it instead);
 //  - none (track card only): Declare hostile, two clicks and apart from the restrictive marks
 //    (suspect, neutral, unknown), which stay one click each.
 // The acts are the operator actions the bridge already has (`/api/tracks/{id}/confirm`,
@@ -20,6 +21,7 @@ import { AFFILIATION_LABEL, type Affiliation, declareTrack, type Track } from '.
 import { type Vehicle, vehicleNamer } from './types'
 import { focusInView } from './reveal'
 import { type Blocking, waited } from './blocking'
+import type { TrackEngagement } from './trackEngagement'
 import './declaration.css'
 
 type Ask = 'none' | 'confirm' | 'revoke'
@@ -43,6 +45,8 @@ export function DeclarationBlock({
   where,
   onChanged,
   holding,
+  engagement,
+  onOpenEngagement,
 }: {
   t: Track
   vehicles: Vehicle[]
@@ -54,6 +58,11 @@ export function DeclarationBlock({
   onChanged?: (what: 'confirmed' | 'revoked') => void
   /** the bridge's reading that this declaration alone holds up a nomination (blocking.ts) */
   holding?: Blocking
+  /** the track card's: an engagement on this track in play, or the last that ended
+   *  (trackEngagement.ts); while one is in play the card says so and offers no Nominate */
+  engagement?: TrackEngagement | null
+  /** open that engagement's card in the Inbox */
+  onOpenEngagement?: (id: number) => void
 }) {
   const [operator] = useOperator()
   const [ask, setAsk] = useState<Ask>('none')
@@ -114,6 +123,17 @@ export function DeclarationBlock({
           {d.note && <li>Note: {d.note}</li>}
         </ul>
       )}
+      {engagement && (
+        <p className={`dc-engaged${engagement.inPlay ? ' live' : ''}`}>
+          {onOpenEngagement ? (
+            <button type="button" className="dc-link" onClick={() => onOpenEngagement(engagement.id)} title="Open its card in the Inbox">
+              {engagement.line}
+            </button>
+          ) : (
+            engagement.line
+          )}
+        </p>
+      )}
       {ask === 'none' && (
         <div className="dc-actions">
           {unconfirmed && (
@@ -121,8 +141,10 @@ export function DeclarationBlock({
               Confirm {aff}…
             </button>
           )}
-          {!unconfirmed && d.affiliation === 'hostile' && onEngage && (
-            <button type="button" className="dc-btn engage" onClick={onEngage} data-tutorial="nominate">
+          {/* none while an engagement on it is in play (the line above opens it); after one ended,
+              an ordinary button: a person may rightly nominate again */}
+          {!unconfirmed && d.affiliation === 'hostile' && onEngage && !engagement?.inPlay && (
+            <button type="button" className={`dc-btn${engagement ? '' : ' engage'}`} onClick={onEngage} data-tutorial="nominate">
               Nominate an engagement…
             </button>
           )}

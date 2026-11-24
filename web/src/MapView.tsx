@@ -15,8 +15,8 @@ import { ALL_FULL, planLabels, type LabelCandidate, type LabelLevel, type LabelP
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { burstShown, LAUNCH_FLASH_MS, munitionShown, type BurstFire, type GroundAt, type MunitionFlight } from './munition'
 import { buildMunitionLayers, buildTracerLayers, type Flying, type Tracer } from './munitionLayers'
-import { buildActLayers } from './actLayers'
-import { buildWeaponLayers, weaponsAnimating } from './weaponLayers'
+import { actLabelCandidates, buildActLayers } from './actLayers'
+import { buildWeaponLayers, weaponLabelCandidates, weaponsAnimating } from './weaponLayers'
 import { shownWeapons, type WeaponTrack } from './weapon'
 import { type ActDrawing, animating, visibleActs } from './hostileAct'
 import { GLIDE_LAYER_IDS } from './orderLayers'
@@ -26,7 +26,7 @@ import { reducedMotion } from './reveal'
 import { drapedWater } from './sea'
 import { vehiclesGeneration } from './useBridge'
 import type { SpaceOverlay } from './space'
-import type { NodeLossView } from './nodeLoss'
+import { exceptionOf, type ExceptionContext } from './vehicleException'
 import { EMPTY_OVERLAY } from './space'
 import { spaceFeatures, spaceLinkLayers } from './spaceLayers'
 import { buildPreviewLayers, buildSurfaceLayers, type SurfaceScale } from './surfaceLayers'
@@ -78,9 +78,10 @@ interface Props {
   bridgeNow?: () => number
   /** platforms that are their own munition, on their way, each with its tag (vehicleLayers.ts) */
   oneWay?: ReadonlyMap<number, string>
-  /** rules 30: our vehicles' standing (nodeLoss.ts): a stale one's badge says SILENT, PRESUMED
-   *  LOST or LOST instead of the link's LOST (a run before rules 30: as always) */
-  nodes?: NodeLossView
+  /** what each of ours' exception slot under its symbol is made from (vehicleException.ts):
+   *  rules 30's standing (a stale one's badge says SILENT, PRESUMED LOST or LOST; before rules 30
+   *  the link's LOST, as always), damage reports, spent loadouts */
+  exceptions?: ExceptionContext
   /** gun bursts the bridge reported (rules 26), drawn as tracers on the clock of `bridgeNow` */
   tracers?: TracerSpec[]
   /** hostile acts our sensors observed (hostileAct.ts), drawn as fire events on the clock of
@@ -238,6 +239,9 @@ try {
  *  glide frame scales with the vehicles drawn, not those gliding: every vehicle's position is
  *  recomputed in each attached layer whenever anything glides. */
 const GLIDE_MANY = 300
+/** The label budget's counts reach the map legend at most this often, ms (from a timer, never as
+ *  an update from the effect that plans the labels). */
+const STATS_MS = 500
 
 // prefers-reduced-motion, kept current by a listener (not asked of the browser every frame)
 let reducedNow = reducedMotion()
@@ -364,7 +368,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, nodes, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp, groups = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, exceptions, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp, groups = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -392,13 +396,15 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     () => (map.current && ready.current ? surfaceScale(map.current) : null),
   )
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay, nodes, groupDraw: null as GroupDraw | null, groupGeo: new Map<string, GroupOnScreen>(), cells: new Map<string, CellChip>() })
+  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay, exceptions, groupDraw: null as GroupDraw | null, groupGeo: new Map<string, GroupOnScreen>(), cells: new Map<string, CellChip>() })
   // the groups: their marks and what a chip does, the chips laid out last (GroupChips.tsx), and the
   // function that moves them with the camera
   const groupsRef = useRef(groups)
   groupsRef.current = groups
   const [chips, setChips] = useState<ChipSpot[]>([])
   const chipsKey = useRef('')
+  // where each chip shown goes now (planNow): moved by the placer, not by a render
+  const chipSpots = useRef<ChipSpot[]>([])
   const chipPlacer = useRef<ChipPlacer | null>(null)
   // the label budget (declutter.ts): our vehicles' candidates as last seen on screen, the other
   // layers' source, Show all, the plan last made and its counts
@@ -407,6 +413,11 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const allLabelsRef = useRef(allLabels)
   const planRef = useRef<LabelPlan>(ALL_FULL)
   const statsRef = useRef<string>('')
+  const statsLatest = useRef<LabelStats | null>(null)
+  const statsTimer = useRef<number | null>(null)
+  useEffect(() => () => {
+    if (statsTimer.current != null) window.clearTimeout(statsTimer.current)
+  }, [])
   const statsCb = useRef(onLabelStats)
   const tooltipRef = useRef(tooltipProp)
   statsCb.current = onLabelStats
@@ -464,6 +475,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const actsRef = useRef(acts)
   const actsDismissed = useRef(actsDismissedAt)
   const actsDrawn = useRef(false)
+  // the act and weapon labels the last label plan weighed (actLabelCandidates, weaponLabelCandidates)
+  const actsPlanned = useRef<ReadonlySet<string>>(new Set())
   // the opponent weapons, where each one's victim was, the names, and whether any was drawn last
   const weaponsRef = useRef(weapons)
   const weaponVictimRef = useRef(weaponVictim)
@@ -622,9 +635,16 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       return { key: `c:${cell.x}:${cell.y}`, at: screen.at(cell.c[0], cell.c[1], 0), short: [-w, -r, w, r + 3 + 12 * lines.length], full: [-w, -r, w, r + 3 + 12 * lines.length], priority: 2, obstacle: true }
     })
     const others = labelsRef.current?.(screen) ?? []
+    // the observed acts' labels as they stand now (bd murmur-iobd.3); the act layers draw each as
+    // this plan placed it, and one newer than the plan in full until the next
+    const actT = clockRef.current?.()
+    const actCands = actT == null ? [] : actLabelCandidates(actsAt(actT), actT, screen)
+    // and the opponent weapons' launch and strike labels, which stay where they are
+    const weaponCands = actT == null ? [] : weaponLabelCandidates(weaponsAt(actT), actT, screen, weaponVictimRef.current, nameOfRef.current)
+    actsPlanned.current = new Set([...actCands, ...weaponCands].map((c) => c.key))
     const { cands: chipCands, spots } = chipLayout(screen)
     const t1 = performance.now()
-    const plan = planLabels([...obstacles, ...chipCands, ...vehicleLabels.current, ...others], {
+    const plan = planLabels([...obstacles, ...chipCands, ...vehicleLabels.current, ...actCands, ...weaponCands, ...others], {
       zoom: m.getZoom(),
       width: c.clientWidth,
       height: c.clientHeight,
@@ -653,17 +673,28 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const old = latest.current
     if (old.labels.size !== levels.size || [...levels].some(([k, l]) => old.labels.get(k) !== l)) old.labels = levels
     if (old.badges.size !== badges.size || [...badges].some((k) => !old.badges.has(k))) old.badges = badges
-    // the chips the budget placed (all of them before the map has a camera)
+    // the chips the budget placed (all of them before the map has a camera). Where each one goes
+    // moves with its members on every update: that lives in a ref the placer reads, and React is
+    // told only when which chips there are, or what one says, changes (bd murmur-iobd.12: a new
+    // chips state on every update was an update from this passive effect on every commit, which
+    // at 105 vehicles chained past React's nested-update limit)
     const shown = spots.filter((c) => plan.level(c.key) !== 'none')
-    const ck = shown.map((c) => `${c.key}@${c.lift}:${c.xAt.join()}:${c.yAt.join()}`).join('|')
+    chipSpots.current = shown
+    const ck = shown.map((c) => `${c.key}:${c.id}:${c.leader ?? 0}${c.cell ? `:${c.cell.total}:${c.cell.none}:${c.cell.groups.join(';')}` : ''}`).join('|')
     if (ck !== chipsKey.current) {
       chipsKey.current = ck
       setChips(shown)
-    }
+    } else chipPlacer.current?.place(screen)
+    // the counts go to the legend a moment later, from a timer: never as an update from this
+    // effect, and at most once a STATS_MS however often the labels change
     const key = JSON.stringify(plan.stats)
     if (key !== statsRef.current) {
       statsRef.current = key
-      statsCb.current?.(plan.stats)
+      statsLatest.current = plan.stats
+      statsTimer.current ??= window.setTimeout(() => {
+        statsTimer.current = null
+        if (statsLatest.current) statsCb.current?.(statsLatest.current)
+      }, STATS_MS)
     }
     return plan
   }
@@ -683,7 +714,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         clusters: buildClusterLayers(latest.current.clusters),
       }
     } else if (previewToo && m) staticLayers.current.preview = buildPreviewLayers(previewData(), surfaceScale(m))
-    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl, groupDraw } = latest.current
+    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, exceptions: ex, groupDraw } = latest.current
     const { three, surface, preview: previewLayers, link, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
     const glide = build3dGlide(vs, groupDraw ? stemColorOf(groupDraw) : undefined, groupDraw)
@@ -710,7 +741,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
-      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl, groups: groupDraw }),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, exceptions: ex, groups: groupDraw }),
       // hostile acts our sensors observed: the fire event, then what lingers of it
       ...actLayers(),
       // opponent weapons as our sensors know them: the estimate, the fixes, the strike
@@ -762,7 +793,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const t = clockRef.current?.()
     const live = t == null ? [] : actsAt(t)
     actsDrawn.current = live.length > 0
-    return live.length ? buildActLayers(live, t!, reducedNow) : []
+    const level = (key: string) => (actsPlanned.current.has(key) ? planRef.current.level(key) : undefined)
+    return live.length ? buildActLayers(live, t!, reducedNow, level) : []
   }
   /** the opponent weapons drawn at `t` (weapon.ts shownWeapons) */
   const weaponsAt = (t: number) => shownWeapons(weaponsRef.current, t)
@@ -775,7 +807,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const t = clockRef.current?.()
     const live = t == null ? [] : weaponsAt(t)
     weaponsDrawn.current = live.length > 0
-    return live.length ? buildWeaponLayers(live, t!, screenNow(), reducedNow, weaponVictimRef.current, nameOfRef.current) : []
+    const level = (key: string) => (actsPlanned.current.has(key) ? planRef.current.level(key) : undefined)
+    return live.length ? buildWeaponLayers(live, t!, screenNow(), reducedNow, weaponVictimRef.current, nameOfRef.current, level) : []
   }
   /** a munition, an act or an opponent weapon wants animation frames */
   const animated = () => munitionsFlying() || actsAnimating() || weaponsMoving()
@@ -1473,8 +1506,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const { groups: groupGeo, crowded } = groupsOnScreen(members)
     for (const { v, at } of onScreen) {
       const mine = selected.has(v.uid) || v.uid === follow
-      const priority: Priority = mine ? 1 : isStale(v) ? 3 : 4
-      const own = vehicleLabelCandidates(v, at, aloft.has(v.uid), priority, mine, nodes)
+      // one of ours with something wrong (vehicleException.ts) is labelled before the rest
+      const x = exceptions ? exceptionOf(v, exceptions) : null
+      const priority: Priority = mine ? 1 : isStale(v) || x?.tone === 'bad' ? 3 : 4
+      const own = vehicleLabelCandidates(v, at, aloft.has(v.uid), priority, mine, exceptions)
       // a member crowding another of its group: no callsign (its chip names the group; hover shows
       // it, selecting it labels it), its LOST badge as any vehicle's
       cands.push(...(!mine && crowded.has(v.uid) ? own.filter((c) => !c.key.startsWith('v:')) : own))
@@ -1483,7 +1518,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // far out: which groups fill each cluster tile (every vehicle, those sent lite too)
     const cells = g && clustered ? cellGroups(vehicles, (uid) => g.marks.ofUid.get(uid)?.id ?? null, clusters!.z) : new Map<string, CellChip>()
     const groupDraw: GroupDraw | null = g ? { ofUid: g.marks.ofUid, crowded, hovered: g.hovered, selected: g.selected } : null
-    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay, nodes, groupDraw, groupGeo, cells }
+    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay, exceptions, groupDraw, groupGeo, cells }
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
@@ -1510,7 +1545,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, nodes, follow, groups])
+  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, exceptions, follow, groups])
 
   useEffect(() => {
     spaceRef.current = space
@@ -1784,7 +1819,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   return (
     <>
       <div ref={container} className="map" />
-      {groups && <GroupChips spots={chips} groups={groups} placer={chipPlacer} screen={screenNow} />}
+      {groups && <GroupChips spots={chips} live={chipSpots} groups={groups} placer={chipPlacer} screen={screenNow} />}
       <div ref={tooltip} className="vtip" hidden />
       <div ref={covTip} className="covtip" hidden />
       {glLost && (

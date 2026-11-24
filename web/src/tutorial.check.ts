@@ -7,7 +7,7 @@
 import type { Intent } from './decisions'
 import type { ObservedAct, Review } from './ident'
 import type { Track } from './tracks'
-import { ATTACK_READ_MS, CONSOLE_OPERATOR, findBoat, HOLD, identityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
+import { ATTACK_READ_MS, CARD_BOTTOM, CARD_GAP, coachPlace, CONSOLE_OPERATOR, findBoat, HOLD, identityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
 import type { WeaponTrack } from './weapon.ts'
 
 function eq(a: unknown, b: unknown, what: string) {
@@ -142,5 +142,16 @@ eq([at(f), f.assessment?.result], ['done', 'ceased'], 'assessed: the walk is don
 // an abort after dispatch ends it without an effect: back to nominating
 f = facts([confirmed], [engage(9, 'aborted')])
 eq([at(f), f.nominationEnded?.state], ['nominate', 'aborted'], 'aborted: nominate again')
+
+// the coach card sits above the weather bar, never under it (bd murmur-iobd.11): the map at
+// 1600x900 and 1366x768 (less the top bar), the bar folded (about 45 px tall, 50 px off the foot)
+for (const mapH of [856, 724]) {
+  const barTop = mapH - 50 - 45
+  const p = coachPlace(mapH, barTop)
+  eq([mapH - p.bottom <= barTop - CARD_GAP, p.maxHeight > 300], [true, true], `the card's foot is above the bar at map height ${mapH}`)
+  const open = coachPlace(mapH, mapH - 50 - 260)
+  eq(mapH - open.bottom <= mapH - 50 - 260 - CARD_GAP, true, `above the bar opened too at ${mapH}`)
+}
+eq(coachPlace(724, null), { bottom: CARD_BOTTOM, maxHeight: 724 - CARD_BOTTOM - 86 }, 'no weather bar: where it always was')
 
 console.log('tutorial: ok')

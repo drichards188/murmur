@@ -1,4 +1,4 @@
-import { fmtZ } from './decisions'
+import { fmtWorldZ } from './scenarioClock'
 import { courseText, fmtDist, KEEP_OUT_KIND_LABEL, type BehavingInfo, type EffectWindow, type KeepOutExplanation, type KeepOutItem, type KeepOutLost, type MoveWithin } from './engage'
 
 /** Why a keep-out blocks the chosen option of the nomination form, and what would clear it
@@ -46,7 +46,7 @@ function AcceptLost({ l, on, onToggle }: { l: KeepOutLost; on: boolean; onToggle
   return (
     <label className="ko-accept">
       <input type="checkbox" checked={on} onChange={(e) => onToggle(l, e.target.checked)} />
-      Accept {l.track} as lost for this engagement, out of view since its last fix at {fmtZ(l.since)} (engagement authority; logged under your session with the
+      Accept {l.track} as lost for this engagement, out of view since its last fix at {fmtWorldZ(l.since)} (engagement authority; logged under your session with the
       nomination; it covers this loss only)
     </label>
   )
@@ -63,7 +63,7 @@ function AcceptBehaving({ b, on, onToggle }: { b: BehavingInfo; on: boolean; onT
         <label className="ko-accept">
           <input type="checkbox" checked={on} onChange={(e) => onToggle(b, e.target.checked)} />
           <span>
-            <b>Accept as behaving now</b>: {b.track}, {courseText(b.velocity_mps, b.velocity_sigma_mps)}, its estimate at {fmtZ(b.estimate_t)} (engagement authority;
+            <b>Accept as behaving now</b>: {b.track}, {courseText(b.velocity_mps, b.velocity_sigma_mps)}, its estimate at {fmtWorldZ(b.estimate_t)} (engagement authority;
             logged under your session with the nomination; for this engagement only)
           </span>
         </label>
@@ -104,7 +104,7 @@ function Item({
           {ex.move_within && <li>{clearsText(i, ex)}</li>}
           {i.wait && (
             <li>
-              {i.wait.why} <span className="ko-at">(at {fmtZ(i.wait.nominate_t)})</span>
+              {i.wait.why} <span className="ko-at">(at {fmtWorldZ(i.wait.nominate_t)})</span>
             </li>
           )}
           {i.not_by_waiting && <li>{i.not_by_waiting}</li>}
@@ -194,7 +194,7 @@ export function KeepOutExplain({ ex, name, now, acceptLost, onAcceptLost, accept
             <b>Wait</b>
             {ex.wait ? (
               <span>
-                {ex.wait.why} <span className="ko-at">(at {fmtZ(ex.wait.nominate_t)})</span>
+                {ex.wait.why} <span className="ko-at">(at {fmtWorldZ(ex.wait.nominate_t)})</span>
               </span>
             ) : (
               <span>{ex.wait_none}</span>

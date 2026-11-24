@@ -1,3 +1,4 @@
+import { LayerExtension } from '@deck.gl/core'
 import { LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers'
 import type { LiftedBridge } from './bridges'
 import { drawnTick, drawnXYZ, shownAlt, smoothing } from './drawn'
@@ -18,6 +19,25 @@ type XYZ = [number, number, number]
 const AIR: RGBA = [127, 184, 255, 255]
 const SEA: RGBA = [111, 224, 196, 255]
 const GROUND: RGBA = [214, 196, 140, 255]
+
+/** A billboard's size in pixels is exact only at the camera's focal distance: deck.gl scales it
+ *  by that distance over the point's own, so in a pitched view what is nearer the camera is drawn
+ *  larger. With heights drawn twice over, an aircraft high up can come within a few hundred
+ *  metres of the camera: REAPER 1 at 7,600 m after a strike's View was drawn a fifth of the map
+ *  tall, its label in 40 px letters (bd murmur-iobd.6). This caps a billboard (icon, text, its
+ *  background, a pixel-sized ring) at its nominal size: never larger nearer the camera, smaller
+ *  far off as before, so the label budget's boxes (declutter.ts) hold for it. For billboard
+ *  layers only: it reads the clip position the billboard branch has just set. */
+class NoNearGrowth extends LayerExtension {
+  static extensionName = 'NoNearGrowth'
+  getShaders() {
+    return { inject: { 'vs:DECKGL_FILTER_SIZE': 'size *= clamp(gl_Position.w / project.focalDistance, 0.0, 1.0);' } }
+  }
+}
+
+/** `extensions` for a billboard layer of pixel-sized marks (NoNearGrowth): one shared instance,
+ *  so a rebuilt layer keeps its shader. */
+export const NO_NEAR_GROWTH = [new NoNearGrowth()]
 
 export function colour(v: Vehicle, alpha = 255): RGBA {
   const c = domainOf(v) === 'air' ? AIR : domainOf(v) === 'ground' ? GROUND : SEA

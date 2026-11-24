@@ -153,6 +153,26 @@ impl ScenarioClock {
             "at": self.at.map(iso),
         })
     }
+
+    /// For a reader that keeps the bridge's clock itself (the console, from its state frames):
+    /// the map from that clock to scenario time (ms), the rate, and where the start came from.
+    /// Read-only, never logged.
+    pub fn map_json(&self) -> Value {
+        json!({
+            "map": self.map(),
+            "rate": self.rate,
+            "source": if self.at.is_some() { "MURMUR_AT" } else { "wall clock" },
+            "at": self.at.map(iso),
+        })
+    }
+}
+
+/// The bridge's scenario clock, one for the process: the space API's (made when its router is
+/// built, at the bridge's start) and the one the console's top bar reads from `GET /api/weather`
+/// (bd murmur-iobd.5).
+pub fn console_clock() -> &'static ScenarioClock {
+    static CLOCK: std::sync::OnceLock<ScenarioClock> = std::sync::OnceLock::new();
+    CLOCK.get_or_init(ScenarioClock::from_env)
 }
 
 /// RFC 3339 and the shorter forms people type: `2026-06-14T10:00Z`, `2026-06-14T10:00`
@@ -231,7 +251,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(
     on_loaded: Option<OnLoaded>,
 ) -> Router<S> {
     let root = repo_root();
-    let api = Arc::new(SpaceApi::new(world, root, ScenarioClock::from_env()));
+    // the same clock the console's top bar reads (`console_clock`): one clock, made here when
+    // the router is built at the bridge's start, as before (no read of the clock added: the
+    // headless simulator's charged clock counts every read)
+    let api = Arc::new(SpaceApi::new(world, root, console_clock().clone()));
     let loader = api.clone();
     #[cfg(not(murmur_headless))]
     std::thread::spawn(move || {

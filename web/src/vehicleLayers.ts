@@ -18,9 +18,11 @@
 //                     depth and (vehicle-types) the model label left of it: only for the vehicles
 //                     the label budget placed (declutter.ts), which is bounded by the screen, not
 //                     the fleet; the full block for the selected or while few labels are in view
-//   vehicle-lost      "LOST 12s" under vehicles whose link is stale, where the budget placed it;
-//                     in a run under rules 30 its standing instead (nodeLoss.ts): "SILENT 12s",
-//                     "PRESUMED LOST 12s", or "LOST" once an operator confirmed it, grey
+//   vehicle-exception its one exception slot under the symbol (vehicleException.ts), in the same
+//                     words as its fleet row, where the budget placed it: "LOST 12s" while its
+//                     link is stale (under rules 30 its standing: "SILENT 12s", "PRESUMED LOST
+//                     12s", or "LOST" once an operator confirmed it, grey), "DAMAGED: CANNOT
+//                     MOVE", "LINK DOWN", "OUT OF ROUNDS", "LINK DEGRADED"
 //   vehicle-oneway    "ONE-WAY > T-12" ("STRIKING > T-12" from its release) over a platform that is its
 //                     own munition, on its way
 //                     to its engagement's effect (bd murmur-64z)
@@ -32,8 +34,9 @@
 import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { besides, centred, type LabelCandidate, type LabelLevel, type Priority, rightOf } from './declutter'
 import { drawnTick, drawnXYZ, lastKnownAlt, smoothing } from './drawn'
-import { drawnHeight, HEIGHT_EXAGGERATION } from './map3d'
-import { NO_NODE_LOSS, type NodeLossView, staleBadge, standingOf } from './nodeLoss'
+import { drawnHeight, HEIGHT_EXAGGERATION, NO_NEAR_GROWTH } from './map3d'
+import { emuCause } from './linkEmu'
+import { exceptionOf, exceptionPriority, type ExceptionContext, type ExceptionTone, NO_EXCEPTIONS, type VehicleException } from './vehicleException'
 import { frameIcon, typeLabel } from './symbols'
 import { rgba, type GroupMark } from './swarmsModel'
 import type { Vehicle } from './types'
@@ -83,27 +86,27 @@ export function vehicleLabel(v: Vehicle): string {
   return h ? `${callsign(v)} · ${h}` : callsign(v)
 }
 
-/** "LOST 12s": the badge under a vehicle whose link is stale; under rules 30 its standing
- *  ("SILENT 12s", "PRESUMED LOST 12s", "LOST" once confirmed) */
-function lostText(v: Vehicle, nodes: NodeLossView = NO_NODE_LOSS) {
-  return staleBadge(standingOf(nodes, v.uid, true), (v.link.since_last_ms ?? 0) / 1000)
-}
-
 /** A vehicle's labels as the budget weighs them (declutter.ts): its callsign (`v:<uid>`; the full
- *  block adds its height and model), and its LOST badge (`vl:<uid>`) while its link is stale, at
- *  `at` (where it is seen, CSS px), or at its foot when it is drawn above the view. */
-export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, aloft: boolean, priority: Priority, force: boolean, nodes?: NodeLossView): LabelCandidate[] {
+ *  block adds its height and model), and its exception slot (`vl:<uid>`) when something is wrong
+ *  with it (vehicleException.ts), at `at` (where it is seen, CSS px), or at its foot when it is
+ *  drawn above the view. */
+export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, aloft: boolean, priority: Priority, force: boolean, exceptions?: ExceptionContext): LabelCandidate[] {
   const stale = isStale(v)
   const icon = frameIcon(v, stale)
   const out: LabelCandidate[] = aloft
     ? [{ key: `v:${v.uid}`, at, short: centred(`▲ ${callsign(v)}`, 11, -8, 5), full: centred(`▲ ${vehicleLabel(v)}`, 11, -8, 5), priority, force }]
     : [{ key: `v:${v.uid}`, at, short: rightOf(icon.halfW, callsign(v), 12), full: besides(icon.halfW, typeLabel(v), 11, vehicleLabel(v), 12), priority, force }]
-  if (stale && !aloft) {
-    const badge = centred(lostText(v, nodes), 10, icon.halfH + 4, 5)
-    out.push({ key: `vl:${v.uid}`, at, short: badge, full: badge, priority: priority === 4 ? 3 : priority, force })
+  const x = aloft ? null : exceptionOf(v, exceptions ?? NO_EXCEPTIONS, emuCause)
+  if (x) {
+    const badge = centred(x.text, 10, icon.halfH + 4, 5)
+    out.push({ key: `vl:${v.uid}`, at, short: badge, full: badge, priority: exceptionPriority(x, priority), force })
   }
   return out
 }
+
+/** the slot's background by its tone: the alarm red, amber, a settled grey */
+const TONE_BG: Record<ExceptionTone, RGBA> = { bad: BAD, warn: [242, 193, 78, 255], settled: SETTLED }
+const INK_DARK: RGBA = [26, 18, 6, 255]
 
 export interface VehicleLayerInput {
   vehicles: Vehicle[]
@@ -118,8 +121,8 @@ export interface VehicleLayerInput {
   /** platforms that are their own munition (catalog `expended_by_effect`) and whose engagement is
    *  dispatched: tagged, so the operator sees what is on the way */
   oneWay?: ReadonlyMap<number, string>
-  /** rules 30: our vehicles' standing (the review's), for the stale badge */
-  nodes?: NodeLossView
+  /** what each one's exception slot is made from (vehicleException.ts) */
+  exceptions?: ExceptionContext
   /** the groups (swarms): each member's ring and code */
   groups?: GroupDraw | null
 }
@@ -182,7 +185,7 @@ function partition({ vehicles, selected, labels, badges, aloft, oneWay, groups }
     // no position, nowhere to draw it (the fleet list still shows it); no altitude is no reason
     if (!v.position) continue
     parts.placed.push(v)
-    if (isStale(v) && badges.has(v.uid)) parts.lost.push(v)
+    if (badges.has(v.uid)) parts.lost.push(v)
     if (selected.has(v.uid)) parts.ringed.push(v)
     const level = labels.get(v.uid) ?? 'none'
     if (aloft.has(v.uid)) {
@@ -204,6 +207,14 @@ function partition({ vehicles, selected, labels, badges, aloft, oneWay, groups }
 
 export function buildVehicleLayers(input: VehicleLayerInput) {
   const { placed, labelled, typed, ringed, lost, aloft, oneWay, oneWayTags, members, coded } = partition(input)
+  // the exception slots the budget placed, as they stand now (a few: those with something wrong)
+  const slots = new Map<number, VehicleException>()
+  for (const v of lost) {
+    const x = exceptionOf(v, input.exceptions ?? NO_EXCEPTIONS, emuCause)
+    if (x) slots.set(v.uid, x)
+  }
+  const slotted = slots.size === lost.length ? lost : lost.filter((v) => slots.has(v.uid))
+  const slotKey = [...slots].map(([u, x]) => `${u}:${x.tone}:${x.text}`).join('|')
   const groups = input.groups
   const groupOf = (v: Vehicle) => groups?.ofUid.get(v.uid)
   // a member's ring: its group's colour, full on the hovered or selected group, dim on the others
@@ -246,6 +257,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       getPixelOffset: (v) => [0, groupRingDrop(v)],
       getColor: ringColor,
       updateTriggers: { ...posTrigger, getColor: groupTrigger, getSize: groupTrigger, getPixelOffset: groupTrigger },
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new ScatterplotLayer<Vehicle>({
@@ -261,6 +273,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       getLineWidth: 5,
       lineWidthUnits: 'pixels',
       updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new ScatterplotLayer<Vehicle>({
@@ -276,6 +289,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       getLineWidth: 2,
       lineWidthUnits: 'pixels',
       updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new IconLayer<Vehicle>({
@@ -288,6 +302,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       sizeUnits: 'pixels',
       getColor: (v) => (isStale(v) ? FADED : OPAQUE),
       updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
@@ -308,6 +323,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
       updateTriggers: { ...posTrigger, getText: groupTrigger, getColor: groupTrigger, getBackgroundColor: groupTrigger },
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
@@ -328,6 +344,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
       updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
@@ -346,26 +363,29 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
       updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
-      id: 'vehicle-lost',
-      data: lost,
+      id: 'vehicle-exception',
+      data: slotted,
       getPosition: at,
-      getText: (v) => lostText(v, input.nodes),
+      getText: (v) => slots.get(v.uid)?.text ?? '',
       getSize: 10,
-      getColor: WHITE,
+      getColor: (v) => (slots.get(v.uid)?.tone === 'warn' ? INK_DARK : WHITE),
       getTextAnchor: 'middle',
       getAlignmentBaseline: 'top',
-      getPixelOffset: (v) => [0, frameIcon(v, true).halfH + 4],
+      getPixelOffset: (v) => [0, frameIcon(v, isStale(v)).halfH + 4],
       fontFamily: FONT,
       fontWeight: 600,
       background: true,
-      getBackgroundColor: (v) => (input.nodes?.lost.has(v.uid) ? SETTLED : BAD),
+      getBackgroundColor: (v) => TONE_BG[slots.get(v.uid)?.tone ?? 'bad'],
       backgroundPadding: [5, 3, 5, 3],
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
-      updateTriggers: { ...posTrigger, getText: input.nodes, getBackgroundColor: input.nodes },
+      // the words tick with a silence and change with a report: rebuilt with each new slot list
+      updateTriggers: { ...posTrigger, getText: slotKey, getColor: slotKey, getBackgroundColor: slotKey, getPixelOffset: slotKey },
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
@@ -386,6 +406,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
       updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
@@ -407,6 +428,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
       updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
       parameters: onTop,
     }),
   ]

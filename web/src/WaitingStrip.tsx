@@ -12,7 +12,9 @@ const PENDING_LINES = 3
  *  takes the person to the item's card in the Inbox's Review, where they read its evidence and
  *  decide with the card's own buttons. In Saturation the reserve's loadout refuses an air track,
  *  so the urgent strip never shows, and this line was missing: the confirmation that matters most
- *  had only a count on the Inbox button. */
+ *  had only a count on the Inbox button. An open flag a person has since settled by a later
+ *  declaration on its tracks is not given to it (App.tsx, needsYou.ts `settledFlags`): it waits,
+ *  quiet, below the Inbox's live items, still open there for the person to resolve. */
 export function PendingStrip({ items, now, onOpen }: { items: Pending[]; now: () => number; onOpen: (id: string) => void }) {
   if (!items.length) return null
   const nowMs = now()

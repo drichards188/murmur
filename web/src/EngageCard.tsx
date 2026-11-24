@@ -1,10 +1,11 @@
 import { useCeilingReason } from './policy'
 import { useEffect, useRef, useState } from 'react'
 import type { ApproveExtra, Check, Intent } from './decisions'
-import { fmtDuration, fmtZ, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
+import { fmtDuration, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { reportView } from './operatorView'
 import { ChecksFold } from './Bluf'
-import { checksLine, checkTitle, declarationLine, declFactsOf, span } from './engageSteps'
+import { checkLabel, checksLine, checkTitle, declarationLine, declFactsOf, span } from './engageSteps'
+import { againstPlan, plainText, relWords, waitingWords } from './plainText'
 import { focusInView } from './reveal'
 import { scriptedBadge } from './situationIds'
 import { RationaleText } from './Rationale'
@@ -22,7 +23,6 @@ import {
   salvoLine,
   firing,
   fmtDist,
-  fmtRel,
   isEngage,
   LAPSE_LABEL,
   previewOf,
@@ -38,6 +38,7 @@ import {
   type PictureToken,
 } from './engage'
 import './engage.css'
+import { fmtWorldZ } from './scenarioClock'
 import { distanceM } from './geo'
 import { secondsToImpact } from './munition'
 import { unconfirmedRule } from './ident'
@@ -84,6 +85,16 @@ function nameOf(vehicles: Vehicle[], uid: string | number) {
   return v ? callsign(v) : `vehicle ${uid}`
 }
 
+/** A time `deltaMs` from now, in words: "in 44 s", "6 min 02 s ago" (never "-6m02s"). */
+const rel = (deltaMs: number) => relWords(deltaMs, 0)
+
+/** The engine's words on a card (a check's detail, an assessment's evidence, a stop's reason) with
+ *  callsigns for uids, sensor names for sensor ids and times in words (plainText.ts); the engine's
+ *  string itself is logged as it is. */
+function plain(text: string, vehicles: Vehicle[], nowMs: number) {
+  return plainText(text, { nameOf: (uid) => nameOf(vehicles, uid), when: (ms) => relWords(ms, nowMs) })
+}
+
 /** Rules 6: the lost vehicles an operator accepted for this engagement, shown to every signer
  *  (and while it is under way), each with a button to withdraw it (any operator may). */
 function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardProps, 'intent' | 'vehicles' | 'now' | 'onDone'> & { signing?: boolean }) {
@@ -127,7 +138,7 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
       {accepted.map((a) => (
         <p key={a.engine_uid} className="eg-alarm" role="status">
           Accepted as lost by {a.by}: {a.uid == null ? a.engine_uid : nameOf(vehicles, a.uid)}, position unknown{' '}
-          {a.since == null ? '(it never reported one)' : `since ${fmtRel(a.since - now())}`}. The friendly keep-out leaves it out while it stays lost since then
+          {a.since == null ? '(it never reported one)' : `for ${span(now() - a.since)}`}. The friendly keep-out leaves it out while it stays lost since then
           {signing ? '; your signature covers this acceptance.' : '.'}{' '}
           {a.uid != null && (
             <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); void withdraw(a.uid as number) }}>
@@ -140,8 +151,8 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
         const b = standing.get(a.track)
         return (
           <div key={`behaving-${a.track}`} className="eg-alarm eg-behaving" role="status">
-            <b>Accepted as behaving now</b> by {a.by} {fmtRel(a.t - now())}: {a.track} ({a.identity ?? 'unclassified'}, {a.affiliation}, {a.domain}),{' '}
-            {courseText(a.velocity_mps, a.velocity_sigma_mps)} on its estimate at {fmtZ(a.estimate_t)}. The keep-out counts it along that course, not anywhere it
+            <b>Accepted as behaving now</b> by {a.by} {rel(a.t - now())}: {a.track} ({a.identity ?? 'unclassified'}, {a.affiliation}, {a.domain}),{' '}
+            {courseText(a.velocity_mps, a.velocity_sigma_mps)} on its estimate at {fmtWorldZ(a.estimate_t)}. The keep-out counts it along that course, not anywhere it
             could turn or speed up to; the acceptance lapses on its own if it departs from that course beyond its uncertainty or goes out of view
             {signing ? '; your signature covers this acceptance.' : '.'}{' '}
             <button
@@ -161,7 +172,7 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
       })}
       {lost.map((a) => (
         <p key={`lost-${a.track}`} className="eg-alarm" role="status">
-          Accepted as a lost contact by {a.by}: {a.track}, dropped by the tracker, out of view {a.since == null ? '' : `since ${fmtRel(a.since - now())}`}. The keep-out
+          Accepted as a lost contact by {a.by}: {a.track}, dropped by the tracker, out of view {a.since == null ? '' : `for ${span(now() - a.since)}`}. The keep-out
           on tracks leaves it out while it stays lost since then (a track an operator confirms as it counts as any track in its place)
           {signing ? '; your signature covers this acceptance.' : '.'}{' '}
           <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); void withdrawLost(a.track) }}>
@@ -209,7 +220,7 @@ function AcceptLostHere({ intent: i, now, onDone }: Pick<CardProps, 'intent' | '
       {open.map((l) => (
         <p key={l.track} className="muted">
           Lost contact {l.track} ({l.identity ?? 'unclassified'}, {l.affiliation}
-          {l.ais ? `, AIS ${l.ais}` : ''}), out of view since {fmtRel(l.since - now())}: the keep-out counts it anywhere it could have got to since.{' '}
+          {l.ais ? `, AIS ${l.ais}` : ''}), out of view for {span(now() - l.since)}: the keep-out counts it anywhere it could have got to since.{' '}
           <button
             type="button"
             className="ghost mini"
@@ -261,7 +272,7 @@ function BehavingLapses({ intent: i, now }: Pick<CardProps, 'intent' | 'now'>) {
         ))}
         {lapsed.map((l) => (
           <li key={`${l.track}@${l.t}`}>
-            {l.track} (accepted by {l.accepted_by}) {LAPSE_LABEL[l.kind] ?? l.kind} {fmtRel(l.t - now())}: {l.detail}
+            {l.track} (accepted by {l.accepted_by}) {LAPSE_LABEL[l.kind] ?? l.kind} {rel(l.t - now())}: {plain(l.detail, [], now())}
           </li>
         ))}
       </ul>
@@ -308,7 +319,7 @@ function AcceptBehavingHere({ intent: i, onDone }: Pick<CardProps, 'intent' | 'o
         <div key={b.track} className={`ko-behaving ${b.acceptable ? '' : 'not'}`}>
           <span className="eg-behaving-head">
             Live blocker <b>{b.track}</b>
-            {b.acceptable ? `, ${courseText(b.velocity_mps, b.velocity_sigma_mps)} on its estimate at ${fmtZ(b.estimate_t)}` : ''}
+            {b.acceptable ? `, ${courseText(b.velocity_mps, b.velocity_sigma_mps)} on its estimate at ${fmtWorldZ(b.estimate_t)}` : ''}
           </span>
           <div className="ko-behaving-reason">{b.reason}</div>
           {b.acceptable && !b.clears && (
@@ -391,7 +402,7 @@ function ChecksList({ checks, live, vehicles, now }: { checks: Check[]; live?: C
                 {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
                 {changed && <em className="eg-was"> was {MARK[then.outcome].toLowerCase()} at nomination</em>}
               </span>
-              <span className="ix-detail">{c.detail}</span>
+              <span className="ix-detail">{plain(c.detail, vehicles, now)}</span>
             </span>
           </div>
         )
@@ -406,11 +417,11 @@ function PreviewFacts({ p, now, platform }: { p: EngagePreview; now: () => numbe
     <dl className="eg-facts">
       <dt>Effect</dt>
       <dd>
-        <b>{fmtRel(p.effect_t - now())}</b> at {ll(p.effect_point)}, radius {Math.round(p.effect_radius_m)} m
+        <b>{rel(p.effect_t - now())}</b> at {ll(p.effect_point)}, radius {Math.round(p.effect_radius_m)} m
       </dd>
       <dt>Platform</dt>
       <dd>
-        {platform}: {km(p.distance_m)} at {p.cruise_mps.toFixed(0)} m/s, straight line, starts {fmtRel(p.start_t - p.t)} after the decision
+        {platform}: {km(p.distance_m)} at {p.cruise_mps.toFixed(0)} m/s, straight line, starts {span(p.start_t - p.t)} after the decision
       </dd>
       <dt>Track</dt>
       <dd>
@@ -419,7 +430,7 @@ function PreviewFacts({ p, now, platform }: { p: EngagePreview; now: () => numbe
       <dt>Keep-out</dt>
       <dd>{Math.round(p.keep_out_m)} m around the effect point (no vehicle of ours, no protected track)</dd>
       <dt>Window</dt>
-      <dd>closes {fmtRel(p.window.until - now())}</dd>
+      <dd>closes {rel(p.window.until - now())}</dd>
     </dl>
   )
 }
@@ -455,7 +466,7 @@ interface CardProps {
  *  the nomination's preview; and, quietly, a check that got better, or nothing. The bridge
  *  compares with the nomination (`live.changed`); once a first signature froze the plan, every
  *  later signer signs that plan and the live checks are run on it. */
-function Changes({ view, now }: { view: Intent['engage']; now: () => number }) {
+function Changes({ view, now, vehicles }: { view: Intent['engage']; now: () => number; vehicles: Vehicle[] }) {
   const live = view?.live
   const worse = (live?.changed ?? []).filter((c) => c.worse)
   const better = (live?.changed ?? []).filter((c) => !c.worse)
@@ -470,12 +481,12 @@ function Changes({ view, now }: { view: Intent['engage']; now: () => number }) {
       <ul>
         {reset && (
           <li>
-            Signatures of {reset.dropped.join(', ')} dropped {fmtRel(reset.t - now())}: {reset.reason}. They must sign again on the picture as it is now.
+            Signatures of {reset.dropped.join(', ')} dropped {rel(reset.t - now())}: {reset.reason}. They must sign again on the picture as it is now.
           </li>
         )}
         {worse.map((c, k) => (
           <li key={`w${k}`}>
-            {checkTitle(c.rule)} now {c.now === 'pass' ? 'passes' : 'blocks'}: {c.detail}
+            {checkTitle(c.rule)} now {c.now === 'pass' ? 'passes' : 'blocks'}: {plain(c.detail, vehicles, now())}
           </li>
         ))}
         {drifted && <li>The target is {Math.round(drift)} m from where the nomination's preview put it now.</li>}
@@ -723,8 +734,8 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           <li>
             <span className="eg-k">Time</span>
             <span>
-              {effectT != null ? `effect ${fmtRel(effectT - now())}${plan ? ' (the frozen plan)' : ' if signed now'}` : 'no effect time'}
-              {windowUntil != null ? `; window closes ${fmtRel(windowUntil - now())}` : ''}
+              {effectT != null ? `effect ${rel(effectT - now())}${plan ? ' (the frozen plan)' : ' if signed now'}` : 'no effect time'}
+              {windowUntil != null ? `; window closes ${rel(windowUntil - now())}` : ''}
             </span>
           </li>
           {pv?.salvo && (
@@ -759,7 +770,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           Plan frozen by {plan.by}&apos;s signature {span(now() - plan.t)} ago: every signature is on exactly this plan; if it stops holding, all of them are dropped.
         </p>
       )}
-      <Changes view={view} now={now} />
+      <Changes view={view} now={now} vehicles={vehicles} />
       <BehavingLapses intent={i} now={now} />
 
       <section className="eg-sec">
@@ -837,7 +848,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
             </p>
             <ul>
               <li>
-                Effect {Math.round(shown.plan.effect_radius_m)} m around {ll(shown.plan.effect_point)}, {fmtRel(shown.plan.effect_t - now())}
+                Effect {Math.round(shown.plan.effect_radius_m)} m around {ll(shown.plan.effect_point)}, {rel(shown.plan.effect_t - now())}
               </li>
               <li>
                 {platform}; if it stops before the effect: {FALLBACK_LABEL[p.fallback]}
@@ -848,18 +859,18 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
               {Object.entries(shown.unknown_accepted ?? {}).map(([uid, a]) => (
                 <li key={uid} className="warn">
                   It covers {nameOf(vehicles, uid)} accepted as lost by {a.by}
-                  {a.since == null ? ' (it never reported a position)' : ` (position unknown since ${fmtRel(a.since - now())})`}
+                  {a.since == null ? ' (it never reported a position)' : ` (position unknown for ${span(now() - a.since)})`}
                 </li>
               ))}
               {Object.entries(shown.lost_accepted ?? {}).map(([track, a]) => (
                 <li key={`lost-${track}`} className="warn">
                   It covers lost contact {track} accepted by {a.by}
-                  {a.since == null ? '' : ` (out of view since ${fmtRel(a.since - now())})`}
+                  {a.since == null ? '' : ` (out of view for ${span(now() - a.since)})`}
                 </li>
               ))}
               {Object.entries(shown.behaving_accepted ?? {}).map(([track, a]) => (
                 <li key={`behaving-${track}`} className="warn">
-                  It covers {track} accepted as behaving now by {a.by} {fmtRel(a.t - now())} ({courseText(a.facts.velocity_mps ?? null)} on its estimate at {fmtZ(a.facts.position.t)})
+                  It covers {track} accepted as behaving now by {a.by} {rel(a.t - now())} ({courseText(a.facts.velocity_mps ?? null)} on its estimate at {fmtWorldZ(a.facts.position.t)})
                 </li>
               ))}
             </ul>
@@ -914,7 +925,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
         <strong className="ix-kind eg-kind">ENGAGE</strong>
         <span className="ix-id">i{i.id}</span>
         <span className={`eg-state ${i.state}`}>{STATE_LABEL[i.state] ?? i.state}</span>
-        {p && abortable && <span className="eg-eta">effect {fmtRel(p.effect_t - now())}</span>}
+        {p && abortable && <span className="eg-eta">effect {rel(p.effect_t - now())}</span>}
       </header>
       <div className="eg-target">
         <b>{engageParams(i).track}</b>
@@ -929,15 +940,15 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
           {watch.holds
             ? watch.ready
               ? 'Picture holds; release conditions met.'
-              : `Picture holds (checked ${fmtRel(watch.t - now())}); waiting: ${failing.map((c) => c.rule).join(', ') || 'the next step'}`
-            : `Picture changed: ${failing.map((c) => `${c.rule} (${c.detail})`).join('; ')}`}
+              : `Picture holds (checked ${rel(watch.t - now())}); ${waitingWords(failing.map((c) => c.rule), nameOf(vehicles, i.uids[0] ?? '?'))}`
+            : `Picture changed: ${failing.map((c) => `${checkLabel(c.rule)} (${plain(c.detail, vehicles, now())})`).join('; ')}`}
         </p>
       )}
       <BehavingLapses intent={i} now={now} />
       {abortable && <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} />}
       {e?.effect && (
         <p className="eg-effect">
-          Effect released {fmtRel(e.effect.t - now())} at {ll(e.effect.point)} (radius {Math.round(e.effect.radius_m)} m, planned {fmtRel(e.effect.planned_t - e.effect.t)} from release)
+          Effect released {rel(e.effect.t - now())} at {ll(e.effect.point)} (radius {Math.round(e.effect.radius_m)} m; released {againstPlan(e.effect.planned_t, e.effect.t)})
         </p>
       )}
       {e?.munition &&
@@ -947,13 +958,13 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
           </p>
         ) : (
           <p className="eg-munition">
-            <b>Impact at {fmtZ(e.munition.impact_t)}</b> ({e.munition.name}, {Math.round(e.munition.tof_s)} s from its launch at {fmtZ(e.munition.launch_t)})
+            <b>Impact at {fmtWorldZ(e.munition.impact_t)}</b> ({e.munition.name}, {Math.round(e.munition.tof_s)} s from its launch at {fmtWorldZ(e.munition.launch_t)})
           </p>
         ))}
       {e?.fire && (
         <p className={`eg-fire ${e.fire.ended ? '' : 'firing'}`} title={e.fire.ended?.detail}>
           <b>{fireLine(e.fire)}</b>
-          {!e.fire.ended && ` (last ${e.fire.salvo ? 'round' : 'burst'} ${fmtRel(e.fire.last_t - now())})`}
+          {!e.fire.ended && ` (last ${e.fire.salvo ? 'round' : 'burst'} ${rel(e.fire.last_t - now())})`}
         </p>
       )}
       {e?.fire?.salvo && (
@@ -967,17 +978,17 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       )}
       {i.state === 'effected' && !(e?.munition && now() < e.munition.impact_t) && (
         <p className="muted">
-          Assessing: the effect point covered for {e?.covered_s.toFixed(0) ?? 0} s{e?.observe?.covered_by.length ? ` by ${e.observe.covered_by.join(', ')}` : ' (no sensor of ours covers it)'}
+          Assessing: the effect point covered for {e?.covered_s.toFixed(0) ?? 0} s{e?.observe?.covered_by.length ? ` by ${plain(e.observe.covered_by.join(', '), vehicles, now())}` : ' (no sensor of ours covers it)'}
         </p>
       )}
       {e?.assessment && (
         <p className={`eg-assess ${e.assessment.result}`}>
-          <b>Assessed {e.assessment.result}</b>: {e.assessment.evidence}
+          <b>Assessed {e.assessment.result}</b>: {plain(e.assessment.evidence, vehicles, now())}
         </p>
       )}
       {e?.stop && (
         <p className="eg-stop">
-          <b>{i.state === 'aborted' ? 'Aborted' : i.state === 'voided' ? 'Voided' : 'Fire stopped'}</b>: {e.stop.reason}
+          <b>{i.state === 'aborted' ? 'Aborted' : i.state === 'voided' ? 'Voided' : 'Fire stopped'}</b>: {plain(e.stop.reason, vehicles, now())}
           {e.stop.cause.kind === 'superseded' ? ` (superseded by i${e.stop.cause.by})` : ''}
           {e.stop.fallback ? `; fallback ${e.stop.fallback} commanded` : ''}
         </p>
@@ -1022,11 +1033,14 @@ export function EngagementsSection({
   const running = engagements.filter((i) => RUNNING.includes(i.state))
   const ended = engagements.filter((i) => ['aborted', 'done', 'voided'].includes(i.state) && i.engagement?.snapshot).slice(0, 3)
   if (!running.length && !ended.length) return null
+  // the heading counts what the section shows, and says how many of them are in play
   return (
     <>
       <h3 className="ix-h">
-        Engagements <span>{running.length}</span>
-        <small>in play, then the last that ended</small>
+        Engagements <span>{running.length + ended.length}</span>
+        <small>
+          {running.length} in play{ended.length ? `, then the last ${ended.length === 1 ? 'one' : ended.length} that ended` : ''}
+        </small>
       </h3>
       {[...running, ...ended].map((i) => (
         <RunCard key={i.id} intent={i} vehicles={vehicles} now={now} selected={selection?.kind === 'intent' && selection.id === i.id} onFocus={() => onFocus(i)} onDone={onDone} />

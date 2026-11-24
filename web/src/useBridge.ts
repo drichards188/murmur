@@ -23,6 +23,13 @@ interface Delta {
   clusters?: Clusters | null
 }
 
+/** a link without a lite snapshot's verdict on it */
+function withoutVerdict(link: Vehicle['link']): Vehicle['link'] {
+  const rest = { ...link }
+  delete rest.stale
+  return rest
+}
+
 function applyDelta(prev: BridgeState, d: Delta): BridgeState {
   if (!d.vehicles.length && !d.taskings && d.clusters === undefined) return { ...prev, t: d.t }
   const byUid = new Map(prev.vehicles.map((v) => [v.uid, v]))
@@ -32,7 +39,12 @@ function applyDelta(prev: BridgeState, d: Delta): BridgeState {
       v.lod === 'lite' ? [] : whole ? whole.slice(-TRAIL_MAX) : trail_add?.length ? [...(old?.trail ?? []), ...trail_add].slice(-TRAIL_MAX) : (old?.trail ?? [])
     // a full update carries the link's fast fields (packet time, loss, RTT) or its slow
     // ones (plan, emulator) or both: merge them; a lite link is whole and replaces it
-    const link = v.link && v.lod !== 'lite' && old?.link ? { ...old.link, ...v.link } : v.link
+    const merged = v.lod === 'lite' ? v.link : v.link && old?.link ? { ...old.link, ...v.link } : (v.link ?? old?.link)
+    // a lite snapshot's verdict on the link (`stale`) is for a vehicle out of view: one sent in full
+    // is judged by when it was last heard, never by a verdict kept from when it was lite (ten
+    // members whose links were cut stayed "heard" in the fleet list and the group strip while the
+    // Inbox said LOST LINK, bd murmur-iobd.19)
+    const link = merged && v.lod !== 'lite' && 'stale' in merged ? withoutVerdict(merged) : merged
     byUid.set(v.uid, { ...old, ...v, ...(link ? { link } : {}), trail } as Vehicle)
   }
   return {

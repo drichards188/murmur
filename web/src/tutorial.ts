@@ -239,3 +239,22 @@ export function resumeAt(f: Facts): number {
   const k = STEPS.findIndex((s) => s.kind === 'wait' && !stepDone(s.id, f))
   return k < 0 ? STEPS.length - 1 : k
 }
+
+// ---- where the coach card sits ------------------------------------------------------------------
+
+/** px kept between the coach card and the weather bar under it */
+export const CARD_GAP = 8
+/** px the card leaves free at the map's top (the Situation chip and the map's buttons) */
+export const CARD_TOP_ROOM = 86
+/** the card's bottom with no weather bar on the map, px (tutorial.css) */
+export const CARD_BOTTOM = 34
+
+/** The coach card's place over the map's bottom left, in px from the map's foot (`bottom`) and its
+ *  tallest (`maxHeight`; its body scrolls inside): just above the weather bar, which shares that
+ *  corner and changes height as it folds and opens (`barTop`: the bar's top edge in px from the
+ *  map's top; null without one), and never higher than the map's top room allows. The card once
+ *  sat under the bar, so at 1600x900 its Next button was the bar's to click (bd murmur-iobd.11). */
+export function coachPlace(mapHeight: number, barTop: number | null): { bottom: number; maxHeight: number } {
+  const bottom = barTop == null ? CARD_BOTTOM : Math.max(CARD_BOTTOM, Math.ceil(mapHeight - barTop) + CARD_GAP)
+  return { bottom, maxHeight: Math.max(0, mapHeight - bottom - CARD_TOP_ROOM) }
+}

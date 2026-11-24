@@ -42,20 +42,23 @@ interface Props {
   }
 }
 
-/** `mine`: a fleet without swarms, where the drawer holds only the operator's own groups (this many):
- *  the button is named for them. */
+/** The drawer's button, named as the drawer is: Groups, whatever it holds (bd murmur-iobd.18: the
+ *  button read Groups or Swarms by the fleet, the drawer Swarms, its first section Your groups). Its
+ *  sections keep the two apart: your own groups (sets of vehicles you made), the group orders in
+ *  force, the fleet's swarms (units its file defines). `mine`: a fleet without swarms, where the
+ *  drawer holds only the operator's own groups (this many). */
 export function SwarmsButton({ feed, open, onClick, mine = null }: { feed: SwarmsFeed; open: boolean; onClick: () => void; mine?: number | null }) {
   const swarms = feed.doc?.swarms ?? []
   const trouble = swarms.filter((s) => swarmTone(s) !== 'ok').length
   const title =
     mine != null
-      ? `Your groups: ${mine} (this fleet has no swarms)`
+      ? `Groups: your ${mine} group${mine === 1 ? '' : 's'} (this fleet has no swarms)`
       : feed.status === 'missing'
-        ? 'Swarms: no swarm data from the bridge'
-        : `${swarms.length} swarms, ${trouble} with members unheard or low on battery`
+        ? 'Groups: your groups (no swarm data from the bridge)'
+        : `Groups: your groups and the fleet's ${swarms.length} swarms, ${trouble} with members unheard or low on battery`
   return (
     <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={title} aria-label={title}>
-      {mine != null ? 'Groups' : 'Swarms'}
+      Groups
       {trouble > 0 && <span className="ix-badge sw-badge">{trouble}</span>}
     </button>
   )
@@ -204,11 +207,11 @@ export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, al
   for (const a of alerts) alertsBy.set(a.swarm, (alertsBy.get(a.swarm) ?? 0) + 1)
   const roles = [...ROLE_ORDER, ...new Set(swarms.map((s) => s.role).filter((r) => !ROLE_ORDER.includes(r)))]
   return (
-    <aside className="ix sw" aria-label="Swarms">
+    <aside className="ix sw" aria-label="Groups">
       <div className="ix-top">
-        <h2>Swarms</h2>
+        <h2>Groups</h2>
         <span className="q-sub">{swarms.length ? `${swarms.length} swarms · ${total.toLocaleString()} vehicles` : ''}</span>
-        <button className="ghost close" onClick={onClose} aria-label="Close the swarms">
+        <button className="ghost close" onClick={onClose} aria-label="Close the groups">
           ×
         </button>
       </div>
@@ -244,8 +247,8 @@ export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, al
           if (!group.length) return null
           return (
             <section key={role} className="sw-group">
-              <h3 className="ix-h">
-                {ROLE_LABEL[role] ?? role} <span>{group.length}</span>
+              <h3 className="ix-h" title="The fleet's swarms in this role: units its fleet file defines, not groups of yours">
+                {ROLE_LABEL[role] ?? role} swarms <span>{group.length}</span>
                 <small>{group.reduce((n, s) => n + s.count, 0).toLocaleString()} vehicles</small>
               </h3>
               {group.map((s) => (
