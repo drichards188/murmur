@@ -244,7 +244,7 @@ fn rule_declaration_off_decides_as_rules_8_did() {
         // rules 25's: a platform's own damage report; nor rules 26's: a gun's bursts; nor rules
         // 30's: a vehicle confirmed lost left out of the keep-outs, its orders ended; nor rules
         // 31's: an identify order sized by the track's size class; nor rules 32's: a sensor's
-        // reach under the conditions now)
+        // reach under the conditions now; nor rules 35's: a salvo's rounds)
         let text = std::fs::read_to_string(&f).unwrap();
         if text.contains("action = \"act\"")
             || text.contains("tracked_s")
@@ -270,6 +270,7 @@ fn rule_declaration_off_decides_as_rules_8_did() {
             || text.starts_with("# Rules 32")
             || text.starts_with("# Rules 33")
             || text.starts_with("# Rules 34")
+            || text.starts_with("# Rules 35")
         {
             continue;
         }

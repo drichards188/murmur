@@ -23,7 +23,7 @@ violation.
 **Live engagement steps.** A storyline step `kind = "engage"` nominates an armed platform
 against a track on the live stack through the run's proposer (the bridge takes `task =
 "engage"` with `track`, `effect_radius_m`, `window_s`, `fallback` and, where the step names one,
-the loadout `weapon` (rules 24) on `POST /api/intents`, and `track_id` for the track on the MCP
+the loadout `weapon` (rules 24) and, for a salvo, `rounds` and `spacing_s` (rules 35) on `POST /api/intents`, and `track_id` for the track on the MCP
 `propose_intent`). An engagement needs two operators
 with engagement authority (`MURMUR_ENGAGE_OPERATORS`), each asking for a picture token (`POST
 /api/intents/{id}/picture`) and approving with it (`{"token": id}`). `eval/proxy.py`
@@ -244,6 +244,34 @@ class EngageAdapter:
         self.bridge = bridge
         self.signers_ready = signers_ready
         self.poll_s = poll_s
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._intent_of: dict[str, int] = {}  # step id -> the intent its nomination made
+
+    async def after_fire(self, story: Any, step_id: str, after_step: str, after_s: float, wait_s: float) -> str | None:
+        """Rules 35: hold a step until the salvo another step nominated has released its last
+        round, then `after_s` more seconds from that release (the engine's own time, not from when
+        this poll saw it). Returns why it gave up (the other plan never fired within `wait_s`, or
+        ended without releasing), else None."""
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            iid = self._intent_of.get(after_step)
+            if iid is not None:
+                out = await asyncio.to_thread(story.bridge.try_get, "/api/intents")
+                i = next((x for x in (out or {}).get("intents", []) if int(x.get("id", -1)) == iid), None)
+                if i is None or i.get("state") in ("aborted", "voided", "rejected", "failed", "expired"):
+                    return f"{after_step}'s nomination (intent {iid}) ended {i.get('state') if i else 'unknown'} without firing"
+                fire = (i.get("engagement") or {}).get("fire") or {}
+                if fire.get("ended") is not None or i.get("state") == "done":
+                    last = fire.get("last_t")
+                    now = ((await asyncio.to_thread(story.bridge.try_get, "/api/state")) or {}).get("t")
+                    if last is not None and now is not None:
+                        await asyncio.sleep(max(0.0, float(last) / 1000.0 + after_s - float(now)))
+                    else:
+                        await asyncio.sleep(after_s)
+                    story.log.write({"kind": "after_fire", "step": step_id, "t_rel": story.t_rel(), "after": after_step, "intent_id": iid, "after_s": after_s})
+                    return None
+            await asyncio.sleep(1.0)
+        return f"{after_step} did not fire within {wait_s:g} s"
 
     async def standing(self, story: Any, track: Any) -> dict[str, Any] | None:
         out = await asyncio.to_thread(story.bridge.try_get, "/api/intents")
@@ -255,6 +283,9 @@ class EngageAdapter:
         body = {"track": x["track"], "effect_radius_m": x["effect_radius_m"], "window_s": x["window_s"], "fallback": x["fallback"], "uids": req["uids"]}
         if x.get("weapon"):
             body["weapon"] = x["weapon"]
+        for k in ("rounds", "spacing_s"):  # rules 35: a salvo's rounds, judged as the nomination is
+            if x.get(k) is not None:
+                body[k] = x[k]
         out = await asyncio.to_thread(story.bridge.post, "/api/engage/options", body)
         want = {str(u) for u in req["uids"]}
         return next((o for o in (out or {}).get("options", []) if str(o.get("uid")) in want), None)
@@ -277,10 +308,20 @@ class EngageAdapter:
         }
         if p.get("weapon"):
             extra["weapon"] = str(p["weapon"])
+        # rules 35: a salvo, one plan for `rounds` of the weapon (at most the policy's ceiling), a
+        # nomination may ask more than the policy's least spacing between them
+        if p.get("rounds") is not None:
+            extra["rounds"] = int(p["rounds"])
+        if p.get("spacing_s") is not None:
+            extra["spacing_s"] = float(p["spacing_s"])
         return {"task": "engage", "uids": uids, "extra": extra}
 
     async def run_step(self, story: Any, step: Step) -> dict[str, Any]:
         p = dict(step.params)
+        if p.get("after_step"):
+            why = await self.after_fire(story, step.id, str(p["after_step"]), float(p.get("after_s", 5)), float(p.get("after_wait_s", 1200)))
+            if why:
+                return {"kind": "skipped", "step": step.id, "t_rel": story.t_rel(), "reason": why}
         sel = {"task": "engage", "vehicles": p["vehicles"], "center": {"track": p["track"]}, "rationale": p.get("rationale", "")}
         deadline = time.monotonic() + float(p.get("wait_s", 0))
         said = None
@@ -336,6 +377,37 @@ class EngageAdapter:
         try:
             out = await story.proposer.propose(req, rationale)
             rec.update({"intent_id": out.get("id"), "state": out.get("state"), "dispatched": out.get("dispatched")})
+            if out.get("id") is not None:
+                self._intent_of[step.id] = int(out["id"])
         except ProposeError as e:
             rec["error"] = str(e)
+        # rules 35: a scripted Cease partway through the salvo (an operator ceases it; the script
+        # stands in for one, and says so in its note)
+        if p.get("cease_after_rounds") and rec.get("intent_id") is not None:
+            task = asyncio.create_task(self.cease_after(story, int(rec["intent_id"]), int(p["cease_after_rounds"]), float(p.get("cease_wait_s", 1200))))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         return rec
+
+    async def cease_after(self, story: Any, intent_id: int, rounds: int, wait_s: float) -> None:
+        """Rules 35: once the salvo of intent `intent_id` has released `rounds` rounds and still
+        fires, the situation's scripted operator (op-planner, never a person) ceases it
+        (`POST /api/intents/{id}/abort`: any operator may), and the record says so. Gives up when
+        the intent ends or `wait_s` passes."""
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            out = await asyncio.to_thread(story.bridge.try_get, "/api/intents")
+            i = next((x for x in (out or {}).get("intents", []) if int(x.get("id", -1)) == intent_id), None)
+            if i is None or i.get("state") in ("done", "aborted", "voided", "rejected", "failed", "expired"):
+                return
+            fire = (i.get("engagement") or {}).get("fire") or {}
+            if i.get("state") == "effected" and fire.get("ended") is None and int(fire.get("bursts") or 0) >= rounds:
+                op = story.declare_operator
+                note = f"situation timeline (scripted, not a person): ceases the salvo after {fire.get('bursts')} of {(fire.get('salvo') or {}).get('asked')} rounds"
+                try:
+                    await asyncio.to_thread(story.bridge.post, f"/api/intents/{intent_id}/abort", {"note": note}, op)
+                    story.log.write({"kind": "cease", "step": f"cease-{intent_id}", "t_rel": story.t_rel(), "intent_id": intent_id, "operator": op, "rounds": fire.get("bursts"), "note": note})
+                except Exception as e:  # noqa: BLE001 (recorded; the run goes on)
+                    story.log.write({"kind": "error", "step": f"cease-{intent_id}", "t_rel": story.t_rel(), "error": repr(e)})
+                return
+            await asyncio.sleep(1.0)

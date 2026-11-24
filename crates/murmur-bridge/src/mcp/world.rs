@@ -460,7 +460,7 @@ pub fn nominations(mcp: &Mcp, agent: &AgentId, mine: bool, state: Option<&str>) 
     json!({
         "t": now,
         "count": list.len(),
-        "note": "Newest first. An engagement is an abstract effect (a point, a radius, a time). It needs the human signatures listed in engage.approvers_needed by operators with engagement authority, never its proposer; after approval the picture is held every second and any change voids it.",
+        "note": "Newest first. An engagement is an abstract effect (a point, a radius, a time). It needs the human signatures listed in engage.approvers_needed by operators with engagement authority, never its proposer; after approval the picture is held every second and any change voids it. A salvo (rules 35: params.rounds above one) is one plan for several rounds: engagement.fire.salvo lists each round's flight, the round held now and why, and the rounds asked; each round is checked at its own release, a failing one is held (the plan is not voided), and any operator may cease it.",
         "nominations": list,
     })
 }

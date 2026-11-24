@@ -1,0 +1,13 @@
+# sim/situations/policies/watch.toml with a salvo's ceiling raised to 18 rounds a plan and its least
+# spacing cut to 2 s (HIV3 salvo, docs/SALVO.md; decision rules 35, policy schema 10). Standing, one
+# plan releases one round, at least 5 s after the last. Raising the ceiling multiplies what one human
+# decision releases, and a shorter spacing is how fast it does; both are loosenings, so the file
+# names each with its reason (`loosened`): logged with the policy, stated on the card, the record
+# and the report. Every other threshold is the watch policy's.
+
+extends = "watch.toml"
+loosened = { "rules.engage.max_rounds_per_plan" = "the situation is a drill of a launcher that holds 18 rounds, so one plan may ask for up to all of them; a live watch keeps one", "rules.engage.salvo_spacing_s" = "a launcher's tubes fire in a series; the drill asks for rounds 2 s apart, where a live watch keeps 5 s" }
+
+[rules.engage]
+max_rounds_per_plan = 18
+salvo_spacing_s = 2

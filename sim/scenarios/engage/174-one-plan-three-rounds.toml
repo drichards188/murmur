@@ -1,0 +1,84 @@
+# Rules 35 (bd murmur-4nik.2, docs/SALVO.md): one plan, signed once by two operators, releases a
+# series of rounds. The drone-launcher UGV stands 1,800 m south of a boat holding west of the
+# bridge, declared hostile, inside its HIV3-class launcher's band (300 to 10,000 m): the plan asks
+# three of its 18 rounds. The policy raises the ceiling to six rounds a plan and names that as a
+# loosening (policies/salvo-ceiling-6.toml). The release is round 1; each next goes the plan's
+# spacing (5 s) after the last, every one judged at its own time, each flown 90 s at 20 m/s on its
+# own flight and drawn on its own stream. The boat leaves play at the third round's strike, and the
+# assessment runs from that last impact: ceased. The fire ended on its own once the three were out
+# (`engage.fire_ended`, all_released); fifteen rounds are left.
+title = "One plan, three rounds"
+invariant = "approval"
+attack = "a series of releases that a single decision did not authorise"
+expect = "done"
+expect_assessment = "ceased"
+expect_rounds = 3
+expect_fire_end = "all_released"
+expect_rounds_left = 15
+cease_at_round = 3
+policy = "sim/scenarios/engage/policies/salvo-ceiling-6.toml"
+min_rules = 35
+end_s = 300
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "hive-1"
+platform = "ugv_launcher"   # 18 rounds of the HIV3-class launcher; its sight covers the point
+autopilot = "ugv"           # a stand-in rover: the heartbeat says so, the catalog's stand-in entry does not
+at = [-122.4950, 37.7960]   # on the shore, 1,800 m south of the boat (the runner's land)
+alt_m = 10
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "hive-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 600
+weapon = "HIV3-class launcher"
+rounds = 3
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

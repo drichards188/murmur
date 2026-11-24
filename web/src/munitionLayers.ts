@@ -4,7 +4,10 @@
 // engagement's weapon kind) in the friendly colours with the anticipated (dashed) look, since none
 // of ours reports its position in flight, pointing along its flight on the screen, a short fading
 // trail behind it, a thin dashed line on to the impact point, and "HELLFIRE · REAPER 1 > T-12 ·
-// 9 s PRED" beside it; a flash at the launch point as it leaves. A gun's last reported burst is
+// 9 s PRED" beside it; a flash at the launch point as it leaves. A "dive" missile (the
+// drone-launcher UGV's rounds, bd murmur-4nik.5) is a quadcopter on its own path over the same ends
+// and times (munition.ts divePath: up out of the tube, a cruise, a dive onto the point), and its
+// heading, trail, dashes and label follow that path. A gun's last reported burst is
 // drawn as tracer lines from the platform to the target (munition-tracers). MapView builds these on every animation frame while one is
 // in flight (and at the console's tick under reduced motion, without the flash), so they move as
 // smoothly as the vehicles' glides; the strike itself is the impact marker (impact.ts).
@@ -19,7 +22,7 @@
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { MapScreen } from './aloft'
 import { z } from './map3d'
-import { dashesAhead, flightLabel, inFlight, launchFlash, munitionAt, screenAngle, trailPoints, tracerHeads, type BurstFire, type MunitionFlight, type Pt3 } from './munition'
+import { dashesAhead, flightFraction, flightLabel, flightPath, headingPoint, inFlight, launchFlash, munitionAt, screenAngle, trailPoints, tracerHeads, type BurstFire, type FlightPath, type GroundAt, type MunitionFlight, type Pt3 } from './munition'
 import { weaponIcon, weaponSymbolKind, WEAPON_COLORS } from './weaponSymbols'
 
 type RGBA = [number, number, number, number]
@@ -57,37 +60,60 @@ interface Flash {
   ring: boolean
 }
 
+/** Each flight's path (munition.ts flightPath), made once at its first frame from the terrain
+ *  then (again once if there was none), so it does not shift while it flies; dropped once it is
+ *  no longer drawn. */
+const paths = new Map<string, { path: FlightPath; ground: boolean }>()
+function pathOf(f: MunitionFlight, ground: GroundAt | undefined): FlightPath {
+  const m = f.m
+  const key = `${f.kind}|${f.profile}|${m.launch_t}|${m.impact_t}|${m.launch_point}|${m.impact_point}|${m.launch_alt_m}|${m.impact_alt_m}`
+  let p = paths.get(key)
+  if (!p || (!p.ground && ground)) paths.set(key, (p = { path: flightPath(f, ground), ground: !!ground }))
+  return p.path
+}
+
 /** The munitions in flight at `nowMs` (engine ms, the bridge's clock) and the launch flashes then,
  *  as deck.gl layers. `screen` says where the camera puts a point (for the missile's turn and
- *  what is above the view); `reduced`: prefers-reduced-motion, no flash. */
-export function buildMunitionLayers(munitions: MunitionFlight[], nowMs: number, screen: MapScreen, reduced: boolean) {
+ *  what is above the view); `reduced`: prefers-reduced-motion, no flash; `ground`: the terrain's
+ *  height where the console has it, which a shaped path keeps above. */
+export function buildMunitionLayers(munitions: MunitionFlight[], nowMs: number, screen: MapScreen, reduced: boolean, ground?: GroundAt) {
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const flying: Flying[] = []
   const flashes: Flash[] = []
   const trails: Pt3[][] = []
   const dashes: Pt3[][] = []
+  const used = new Set<FlightPath>()
   for (const f of munitions) {
     const m = f.m
+    const path = pathOf(f, ground)
+    used.add(path)
     const p = launchFlash(m, nowMs)
     if (p != null && !reduced) {
       const at = drawn([...m.launch_point, m.launch_alt_m])
       flashes.push({ at, p, ring: true }, { at, p, ring: false })
     }
     if (!inFlight(m, nowMs)) continue
-    const at = drawn(munitionAt(m, nowMs))
-    const to = drawn([...m.impact_point, m.impact_alt_m])
-    // its line is straight on the screen too: towards the impact point, or on from the launch
-    // point when it is nearly there
+    const here = munitionAt(m, nowMs, path)
+    const at = drawn(here)
+    // its heading on the screen: along its path where it is (a straight one's towards the impact
+    // point), or on from the launch point when it is nearly there; a drone popping up under a
+    // camera straight above it faces along its track
     const a = screen.at(at[0], at[1], at[2])
-    const b = screen.at(to[0], to[1], to[2])
+    const toward = (q: Pt3) => {
+      const b = screen.at(q[0], q[1], q[2])
+      return a && b && Math.hypot(b[0] - a[0], b[1] - a[1]) > 2 ? screenAngle(b[0] - a[0], b[1] - a[1]) : null
+    }
+    const ahead: Pt3 = path.shaped ? headingPoint(path, path.flown(flightFraction(m, nowMs))) : [...m.impact_point, m.impact_alt_m]
+    const track: Pt3 | null = path.shaped ? [...m.impact_point, here[2]] : null
     const from = drawn([...m.launch_point, m.launch_alt_m])
     const c = screen.at(from[0], from[1], from[2])
-    const angle = a && b && Math.hypot(b[0] - a[0], b[1] - a[1]) > 2 ? screenAngle(b[0] - a[0], b[1] - a[1]) : a && c ? screenAngle(a[0] - c[0], a[1] - c[1]) : 180
-    flying.push({ m, kind: weaponSymbolKind(f.kind), at, angle, label: flightLabel(f, nowMs), aloft: screen.aloft(at[0], at[1], at[2]) })
-    const trail = trailPoints(m, nowMs).map(drawn)
+    const angle = toward(drawn(ahead)) ?? (track && toward(drawn(track))) ?? (a && c ? screenAngle(a[0] - c[0], a[1] - c[1]) : 180)
+    flying.push({ m, kind: weaponSymbolKind(f.kind, f.profile), at, angle, label: flightLabel(f, nowMs), aloft: screen.aloft(at[0], at[1], at[2]) })
+    const trail = trailPoints(m, nowMs, path.shaped ? 16 : 8, path).map(drawn)
     if (trail.length > 1) trails.push(trail)
-    for (const [d0, d1] of dashesAhead(m, nowMs)) dashes.push([drawn(d0), drawn(d1)])
+    for (const d of dashesAhead(m, nowMs, path)) dashes.push(d.map(drawn))
   }
+  for (const [k, p] of paths) if (!used.has(p.path)) paths.delete(k)
   if (!flying.length && !flashes.length) return []
   // smoke at the tail, hot at the munition
   const fade = (k: number, n: number): RGBA => [60 + Math.round(136 * (k / n)), 170 + Math.round(72 * (k / n)), 255, Math.round(235 * (k / n))]

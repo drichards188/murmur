@@ -979,7 +979,12 @@ burst every few seconds while the picture holds, from a firing position within i
 the last burst's time, and why the fire ended) and `engagement.weapon` (the last burst's rounds
 left). An agent can neither start nor stop the fire. Rules 28: a missile on a ground or surface
 platform (the armed UGV's Javelin) is launched from a firing position within its range too (the
-plan's `fire_from`), not from the effect point. It always waits for two human operators
+plan's `fire_from`), not from the effect point. Rules 35: optional `rounds` (and `spacing_s`) ask for
+a salvo, one plan for several rounds of a weapon that flies, at most the policy's
+`max_rounds_per_plan` (a refusal names it) and the rounds left; the two signatures cover them all, each round
+is checked at its own release (a failing one is held, the plan not voided), and
+`engagement.fire.salvo` lists each round's flight, the round held and why; an agent can propose a
+salvo and never sign or cease it. It always waits for two human operators
 with engagement authority; the agent can preview it and follow it (`get_nominations`,
 `explain_intent`) and withdraw it while it waits, never sign, stop or release it: no such
 tool exists, and the engine's agent port has no such method. While an engagement is in play

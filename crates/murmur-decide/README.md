@@ -2582,6 +2582,40 @@ Rules versions:
   identity check's words aside), `v33-identify-goes-on-past-a-first-naming-scenario-149.jsonl`
   (relabelled rules 32, its logged settings, its own looks' sensors and its `named` step are
   caught; with the settings taken out as rules 32 logged a policy, the last two still are).
+- **35** (`SALVO_SINCE`, bd murmur-4nik.2, docs/SALVO.md, the owner's decisions of 2026-11-20, DECISIONS.md
+  "One decision, many releases"; policy schema 10, `SALVO_SCHEMA_SINCE`; built behind
+  `RULES_NEWEST = 35`, `RULES_VERSION` still 33, the rules between them being another branch's): *one
+  plan, signed once by two people, releases up to N rounds of a weapon that flies*. `Task::Engage`
+  gains `rounds` (absent: one) and `spacing_s` (absent: the policy's; a nomination may ask for more,
+  never less). The policy gains `[rules.engage] max_rounds_per_plan` (standing 1, the floor) and
+  `salvo_spacing_s` (standing 5 s [E]); a ceiling above the file it extends, or a shorter spacing, is a
+  loosening the file names in `loosened` (`LOOSENABLE`, four keys now), and `Policy::fits_salvo`
+  refuses either under older rules. The `salvo` check (`engage::salvo_check`, on the nomination and on
+  every re-check) refuses more rounds than the ceiling, a spacing under the policy's, a weapon that
+  does not fly (a gun keeps its bursts, a `self` platform is one round) and more rounds than the
+  platform has of the weapon left. The preview carries `salvo` (rounds, spacing, ceiling, each
+  round's predicted release and strike) and `flight_s` (the weapon's predicted time of flight, which
+  also moves the preload's re-reading to that much before the strike's time: a flight of 90 s was
+  released long before the old 30 s lead began). The release is round 1 and opens a fire
+  (`FireRecord::salvo`: rounds asked, ceiling, every round's flight, the hold if any); each next round
+  is judged as a release of its own at its own time (`engage::round_picture`: every check of the
+  picture and of the release at the round's own strike, without lateness), logged as `engage.picture`
+  then `engage.round` (its number, its flight launched now, the weapon with rounds left, counted in
+  rules 24's ledger), a spacing after the last. A round whose checks fail is held, not the plan voided:
+  `engage.round_held` with the failed checks, logged when it starts and when the rules that hold it
+  change. The fire ends (`engage.fire_ended`) when the rounds asked are out (`all_released`), the ledger
+  is empty (`rounds_out`), the approved window closes, or the picture no longer has the target
+  (`target_gone`, replay binds it to that picture); a stop is a Cease (any operator, rules 26's
+  `engage.stopped`), after which no round follows and rounds in flight go on. The assessment runs from
+  the last impact (`observed_from`, `effect_in_flight`), and a target seen again while rounds fly is no
+  verdict. The truth side draws each round on its own stream (`effect:<intent>:r<round>`, `EffectOrder::round`).
+  Replay recomputes each round's flight and weapon from the picture before it, binds the round to the
+  spacing, its number to the plan's count and the plan to the logged policy's ceiling
+  (`salvo_plan_mismatch`). Markers: `engage.round`, `engage.round_held`, `"salvo":{`,
+  `max_rounds_per_plan`, `salvo_spacing_s`. Scenarios 174-180 (the scenario's `[[vehicle]]`
+  `autopilot` names a stand-in rover's, which the catalog's stand-in entry does not), runner keys
+  `cease_at_round`, `expect_rounds`, `expect_rounds_held`, tampers `round_after_stop`, `extra_round`,
+  `edit_ceiling`; `tests/rules35.rs`.
 
 - **34** (`GROUP_ORDER_SINCE`, the owner's decisions of 2026-11-10 and the go-ahead of 2026-11-20,
   DECISIONS.md "Group orders for the ordinary tasks" and its stages; docs/SWARMS.md; bd
@@ -2660,7 +2694,9 @@ accepts up to `POLICY_SCHEMA_NEWEST`, `POLICY_SCHEMA` itself while no schema is 
 adds `[group]` (`min_share`, above 0 and at most 1, written out with its default 0.8;
 `GROUP_ORDER_SCHEMA_SINCE`, rules 34: a run under rules 34 logs schema 9, one asked for rules 33
 logs 8 and drops `[group]`, and a run of older rules refuses a `[group]` other than the standing
-one, `Policy::fits_rules`).
+one, `Policy::fits_rules`); **10** adds `[rules.engage] max_rounds_per_plan` and `salvo_spacing_s`,
+optional and written out with their standing values (`SALVO_SCHEMA_SINCE`, rules 35, built behind
+`RULES_NEWEST`).
 
 ## Integration contract for the bridge
 

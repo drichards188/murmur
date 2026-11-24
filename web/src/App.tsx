@@ -30,7 +30,7 @@ import { span } from './engageSteps'
 import { shownAlt } from './drawn'
 import './act.css'
 import { ESTIMATE_NOTE, weaponBanner, weaponReports, type WeaponTrack } from './weapon'
-import { secondsToImpact } from './munition'
+import { loadoutProfile, secondsToImpact } from './munition'
 import { usePlatformLimits } from './taskDefaults'
 import { estimated } from './estimate'
 import { buildEstimateLayers, estimateLabelCandidates, estimateTooltip, hiddenHypotheses } from './estimateLayers'
@@ -523,6 +523,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const allIntents = decisions?.intents
   const impactNowMs = now()
   const engageTick = Math.floor(impactNowMs / 1000)
+  // the platform catalog (/api/platforms): the one-way platforms' tags below, and the profile a
+  // munition is drawn by, which the intent record does not carry
+  const platformCatalog = usePlatformLimits()
   // Strikes (bd murmur-64z): a munition's impact, the time of flight after its release; a
   // platform that is its own munition strikes at the release.
   const impacts = useMemo<ImpactEvent[]>(() => (allIntents ?? []).flatMap((i) => {
@@ -530,10 +533,20 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     const m = i.engagement?.munition
     const platform = allVehicles.find((v) => v.uid === Number(i.uids[0]))
     const t = m ? m.impact_t : effect?.t
-    return effect && t != null ? [{ key: `i${i.id}@${t}`, intentId: i.id, point: m ? m.impact_point : effect.point, t, radius_m: effect.radius_m, munition: m, kind: i.engagement?.weapon?.kind,
+    const profile = m ? loadoutProfile(platformCatalog?.get(platform?.identity?.platform ?? '')?.loadout, i.engagement?.weapon?.name ?? m.name) : undefined
+    // rules 35: a salvo's every round has a flight and a strike of its own (the release is the
+    // first of them), each drawn and flashed on its own. Keyed `r{n}` from the first flight on,
+    // so round 1's key does not change when a later round joins (which would re-frame it afresh)
+    const flights = i.engagement?.fire?.salvo?.flights
+    if (effect && flights && flights.length >= 1) {
+      return flights.map((f, n) => ({ key: `i${i.id}r${n + 1}@${f.impact_t}`, intentId: i.id, point: f.impact_point, t: f.impact_t, radius_m: effect.radius_m, munition: f, kind: i.engagement?.weapon?.kind, profile,
+        platform: platform ? callsign(platform) : undefined, track: i.engagement?.snapshot?.track_id ?? i.engage?.track,
+        assessment: i.engagement?.assessment }))
+    }
+    return effect && t != null ? [{ key: `i${i.id}@${t}`, intentId: i.id, point: m ? m.impact_point : effect.point, t, radius_m: effect.radius_m, munition: m, kind: i.engagement?.weapon?.kind, profile,
       platform: platform ? callsign(platform) : undefined, track: i.engagement?.snapshot?.track_id ?? i.engage?.track,
       assessment: i.engagement?.assessment }] : []
-  }), [allIntents, allVehicles])
+  }), [allIntents, allVehicles, platformCatalog])
   const seenImpacts = useRef(new Set<string>())
   /** frame the strike: its effect circle, with room around it */
   const focusImpact = useCallback((impact: ImpactEvent) => {
@@ -623,7 +636,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   }, [dock])
   // platforms that are their own munition (catalog expended_by_effect) on their way: tagged on
   // the map, so the operator sees what is on the way (bd murmur-64z)
-  const platformCatalog = usePlatformLimits()
   // its tag says what it is doing to which track: "ONE-WAY > T-12" on its way, "STRIKING > T-12"
   // from the engine's release (the engagement's `effect`) to its strike
   const oneWayKey = JSON.stringify(

@@ -22,10 +22,10 @@ fn catalog_marks_exactly_the_armed_platforms() {
         .collect();
     // rules 24 (bd murmur-lbw8.1): the CCA is armed in real life; magura_pre_loadout is the
     // Magura as the engagement scenarios before rules 24 had it; rules 27 (bd murmur-lbw8.4): the
-    // Orca and the mine-laying UGV lay their mines
+    // Orca and the mine-laying UGV lay their mines; bd murmur-4nik.5: the drone-launcher UGV
     assert_eq!(
         armed,
-        vec!["cca", "fpv", "magura", "magura_pre_loadout", "mq9b_armed", "orca", "switchblade", "ugv_armed", "ugv_mines"]
+        vec!["cca", "fpv", "magura", "magura_pre_loadout", "mq9b_armed", "orca", "switchblade", "ugv_armed", "ugv_launcher", "ugv_mines"]
     );
 }
 

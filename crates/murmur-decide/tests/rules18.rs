@@ -168,6 +168,8 @@ fn a_dry_run_and_its_explanation_read_the_trackers_velocity_error() {
             window: Some(EngageWindow { from: None, until: T0.plus_ms(600_000) }),
             fallback: Fallback::Return,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         uids: vec![uid("blade-1")],
         constraints: Constraints::default(),

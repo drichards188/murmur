@@ -307,6 +307,16 @@ impl Decision {
     /// nomination that names neither), for the console's forms.
     pub fn policy_api_json(&self) -> Value {
         let e = self.rules.engage_rules();
+        let mut defaults = json!({
+            "effect_radius_m": e.default_effect_radius(),
+            "window_s": e.default_window_s,
+        });
+        // rules 35: a ceiling above one round a plan, for the form's rounds and its spacing (the
+        // reason a file gave for raising it is in `policy.loosened`)
+        if e.salvo() && e.max_rounds() > 1 {
+            defaults["max_rounds_per_plan"] = json!(e.max_rounds());
+            defaults["salvo_spacing_s"] = json!(e.salvo_spacing());
+        }
         json!({
             "t": crate::clock::wall(),
             "rules_version": self.rules.rules_version,
@@ -315,10 +325,7 @@ impl Decision {
             "group_orders": self.rules.group_orders(),
             "policy": self.policy_json(),
             "watch": self.watch_json(),
-            "engage_defaults": {
-                "effect_radius_m": e.default_effect_radius(),
-                "window_s": e.default_window_s,
-            },
+            "engage_defaults": defaults,
         })
     }
 

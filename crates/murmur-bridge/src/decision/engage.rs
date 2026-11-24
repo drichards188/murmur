@@ -103,6 +103,13 @@ pub struct EngageParams {
     /// (`GET /api/loadouts`); absent: the engine picks one and says why.
     #[serde(default)]
     pub weapon: Option<String>,
+    /// Rules 35: how many rounds of the weapon the plan may release, one decision for a salvo
+    /// (absent: one; at most the policy's `max_rounds_per_plan`).
+    #[serde(default)]
+    pub rounds: Option<u32>,
+    /// Rules 35: the seconds the nomination asks between a salvo's releases (absent: the policy's).
+    #[serde(default)]
+    pub spacing_s: Option<f64>,
 }
 
 /// Rules 19: "track `track`, as it is behaving now: accept" (its estimate at the acceptance).
@@ -838,6 +845,8 @@ pub(super) fn proposal(req: &IntentRequest, now: Time) -> Result<Proposal, Decis
             window,
             fallback,
             weapon: p.weapon.clone().filter(|w| !w.trim().is_empty()),
+            rounds: p.rounds,
+            spacing_s: p.spacing_s,
         },
         req.uids.iter().map(|u| duid(*u)).collect(),
     );
@@ -1563,6 +1572,61 @@ impl Decision {
                     since_t: (heard.0 as f64 / 1000.0).min(now_wall),
                     op_id: None,
                     intent_id: sp.from.is_none().then_some(sp.by.0),
+                })
+            })
+            .collect()
+    }
+
+    /// Rules 35: a warning that a salvo released fewer rounds than the one plan two operators
+    /// signed for. Once its fire has ended for any reason other than all its rounds released (the
+    /// window closed, the weapon ran out, the target left the picture, an operator ceased it, or
+    /// the assessment ended it), the operators are told how many of how many went out and why, so
+    /// an authorisation not carried out in full never passes unseen. Derived from the engagement's
+    /// fire, display only; it lasts while the engagement is still shown. (A salvo the engine could
+    /// not plan is refused at nomination instead: [`murmur_decide::engage::salvo_check`].)
+    pub(super) fn salvo_alerts(&self, core: &Core, now_wall: f64) -> Vec<super::alerts::Alert> {
+        if !self.rules.salvo() {
+            return Vec::new();
+        }
+        let fleet = self.fleet();
+        core.engine
+            .intents()
+            .filter_map(|i| {
+                let fire = i.engagement()?.fire.as_ref()?;
+                let salvo = fire.salvo.as_ref()?;
+                let ended = fire.ended.as_ref()?;
+                // all the rounds signed for went out: nothing to warn about
+                if ended.why.as_str() == "all_released" || fire.bursts >= salvo.asked {
+                    return None;
+                }
+                let reason = match ended.why.as_str() {
+                    "rounds_out" => "the weapon ran out of rounds",
+                    "window_closed" => "the approved window closed first",
+                    "target_gone" => "the target left the picture",
+                    "stopped" => "an operator ceased it",
+                    "ceased" => "the target was assessed as ceased",
+                    "unknown" => "the strike could not be assessed",
+                    _ => ended.detail.as_str(),
+                };
+                let uid = i.spec().uids.first().and_then(bridge_uid)?;
+                let cell = fleet.get(&uid);
+                let on = match &i.spec().task {
+                    Task::Engage { track, .. } if !track.is_empty() => format!(" on {track}"),
+                    _ => String::new(),
+                };
+                Some(super::alerts::Alert {
+                    id: format!("salvo:{}", i.id().0),
+                    kind: "salvo_partial",
+                    severity: super::alerts::Severity::Medium,
+                    uid,
+                    callsign: cell.and_then(|c| super::alerts::callsign(c)),
+                    detail: format!(
+                        "the salvo{on} released {} of the {} rounds of the {} it was signed for: {reason}. The rounds already in flight go on; any more would take a new nomination.",
+                        fire.bursts, salvo.asked, fire.weapon
+                    ),
+                    since_t: (ended.t.0 as f64 / 1000.0).min(now_wall),
+                    op_id: None,
+                    intent_id: Some(i.id().0),
                 })
             })
             .collect()
@@ -2635,6 +2699,12 @@ pub struct OptionsRequest {
     /// Rules 24: the loadout weapon to judge each platform with (absent: the engine picks one).
     #[serde(default)]
     pub weapon: Option<String>,
+    /// Rules 35: the rounds a salvo asks for, judged as the nomination would be (absent: one).
+    #[serde(default)]
+    pub rounds: Option<u32>,
+    /// Rules 35: the seconds between its releases (absent: the policy's).
+    #[serde(default)]
+    pub spacing_s: Option<f64>,
 }
 
 /// Rules 24 (bd murmur-lbw8.1): a platform's loadout as the console and the agents read it: each
@@ -2804,6 +2874,8 @@ impl Decision {
                     window: Some(window),
                     fallback,
                     weapon: req.weapon.clone(),
+                    rounds: req.rounds,
+                    spacing_s: req.spacing_s,
                 },
                 uids: vec![duid(uid)],
                 constraints: murmur_decide::Constraints::default(),

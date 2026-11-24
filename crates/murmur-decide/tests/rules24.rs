@@ -212,6 +212,8 @@ fn nomination(weapon: Option<&str>) -> IntentSpec {
             window: None,
             fallback: Fallback::Return,
             weapon: weapon.map(str::to_string),
+            rounds: None,
+            spacing_s: None,
         },
         uids: vec![uid("reaper-1")],
         constraints: Default::default(),
@@ -374,7 +376,7 @@ fn rules_23_logs_replay_unchanged() {
 fn the_catalog_lists_the_loadouts_and_the_cca_fights_only_in_the_air() {
     let c = catalog();
     let with: Vec<&str> = c.platforms.iter().filter(|(_, p)| !p.loadout.is_empty()).map(|(id, _)| id.as_str()).collect();
-    assert_eq!(with, vec!["cca", "fpv", "magura", "mq9b_armed", "orca", "switchblade", "ugv_armed", "ugv_mines"]);
+    assert_eq!(with, vec!["cca", "fpv", "magura", "mq9b_armed", "orca", "switchblade", "ugv_armed", "ugv_launcher", "ugv_mines"]);
     // armed and usable now (rules 27: the mines too, so the Orca and the mine-laying UGV are armed)
     for (id, p) in &c.platforms {
         if p.loadout.iter().any(|w| w.kind.usable()) {

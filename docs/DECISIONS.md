@@ -4164,3 +4164,47 @@ policy and waits in the Inbox where it waits today. Decided:
 Left: a real model has not been run on a request (that needs the owner's go-ahead to spend); the
 plumbing was checked with a stand-in CLI that calls the tools. Retiring a request leaves the groups
 made for it (the operator deletes them), and an answer cannot be edited, only followed by another.
+
+## 2026-11-20: One decision, many releases: the salvo (murmur-4nik.2, decision rules 35)
+
+The owner's goal: "launch a series of rounds on 1 sign off, so a plan can now authorize n rounds
+per approval ... shown in the HIV3 scenario, launching several drones in series according to the
+sign off of the plan with N launches permitted." Until then an engagement released one effect on
+two signatures (DECISIONS.md "One engagement per platform"), so a series was a series of
+nominations and twice as many signatures. The question the US Army's demonstration of 12 November
+2026 left open (one human decision or eighteen) could not be put to Murmur. Chosen (docs/SALVO.md
+has the design; rules 26's guns are the model: one signed plan, many releases):
+
+- **One plan, N rounds, bounded.** `Task::Engage` takes `rounds` (absent: one). The bounds are the
+  target (one declared track), the effect circle, the approved window, the platform's rounds left,
+  the policy's ceiling `max_rounds_per_plan` and a Cease. The signers sign the rounds, the spacing
+  and the ceiling with the plan's point, radius and window; the picture token carries them.
+- **Every round is a release of its own.** The first is the effect's release; each next a spacing
+  later is judged on the picture then (the target declared and identified, in the plan's circle,
+  clear of ours and of the protected at its strike, the link, navigation, a round left, the
+  preload read back, the weapon's band), not on the picture the signers saw. One flight and one
+  seeded draw stream per round (`effect:<intent>:r<n>`).
+- **A failing round is held, never the plan voided** (as a gun's unseen target holds its fire): the
+  hold is logged with the checks that hold it (`engage.round_held`) and the round goes when they
+  pass, until the window closes, the rounds asked are out, the ledger is empty, the target leaves the
+  picture or someone ceases. Rounds in flight are committed: a Cease stops further releases only,
+  and the assessment runs from the last impact, with a target seen again while rounds fly no verdict.
+- **A ceiling above one round is a loosening, so is a shorter spacing.** Standing: one round, 5 s
+  apart [E: the spacing is a control setting, not a weapon figure]. A scenario that raises either
+  names it in `loosened` with its reason (rules 33's mechanism), stated on the card, the record and
+  the report: it multiplies what one human decision releases, which is what the CCW draft's limit
+  on "the number of engagements" is about (docs/research/hiv3.md [23]).
+- **The preload is re-read earlier for a flight.** A weapon that flies is released its time of
+  flight before the strike's time, so the plan carries `flight_s` and the lead of the preload's
+  re-reading (30 s before the window opens) grows by it. Found by the HIV3 launcher's 90 s flights,
+  which were released long before the old lead began and failed their own fallback-preload check.
+  Rules 35 only; older logs decide as they did.
+- **The HIV3 situation replaces the first spec's Salvo range** (owner, 2026-11-20): HIVE 1
+  (`ugv_launcher`, 18 rounds, an abstract effect) on the bluff at the bridge's south end, two static
+  vessels in the engagement zone, a ceiling of 18 and a spacing of 2 s under `loosened`; plan 1
+  asks 6 on target A (12 left), plan 2 asks 6 on target B and a scripted operator ceases it after
+  the third (9 left). Both targets are declared by the range's procedure (a script in autoplay,
+  said in its note): a range has no hostile act.
+- **Built in stages behind `RULES_NEWEST = 35`**, `RULES_VERSION` unchanged until the flip (rules 34
+  and policy schema 9 went to the group orders, the default since 2026-11-20). The MCP tool list changes at
+  the flip, so no headless digest is re-taken before it.

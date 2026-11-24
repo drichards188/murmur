@@ -149,7 +149,10 @@ pub struct Scenario {
     /// again after its fire was stopped), and for rules 24 `edit_rounds` (every release logged with one
     /// more round left than it spent), and for rules 30 `lost_by_agent` (a confirmed loss credited
     /// to an agent), `hide_loss_revoked` (every revocation of a loss cut) and `redate_loss` (a
-    /// confirmation's report moved 20 s later, everywhere the loss appears).
+    /// confirmation's report moved 20 s later, everywhere the loss appears), and for rules 35
+    /// `round_after_stop` (a salvo's last round logged again after its fire was stopped),
+    /// `extra_round` (one more than its plan asked for) and `edit_ceiling` (the logged policy's
+    /// ceiling on a plan's rounds raised).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -166,8 +169,18 @@ pub struct Scenario {
     /// Rules 26: the bursts the gun must have fired (the release counts as the first).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_bursts: Option<u32>,
-    /// Rules 26: how its fire must have ended: `ceased`, `unknown`, `rounds_out`,
-    /// `window_closed` or `stopped`.
+    /// Rules 35: a salvo's target leaves play at this round's strike (default 1, the release).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cease_at_round: Option<u32>,
+    /// Rules 35: the rounds the salvo must have released (the release counts as the first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_rounds: Option<u32>,
+    /// Rules 35: the holds a salvo's rounds must have met (`engage.round_held` logged: a round
+    /// held first, and again when what holds it changes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_rounds_held: Option<u32>,
+    /// Rules 26 and 35: how its fire must have ended: `ceased`, `unknown`, `rounds_out`,
+    /// `window_closed`, `stopped`, and for a salvo `all_released` or `target_gone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_fire_end: Option<String>,
     /// Rules 26: the gun's rounds left after its last burst.
@@ -375,6 +388,11 @@ pub struct VehicleDef {
     /// } }, thermal = true }] }`. Absent: not known (a vehicle step's `reach_now` sets it later).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reach_now: Option<crate::reach::ReachNow>,
+    /// The autopilot its heartbeat reports, where the catalog gives none: a stand-in UGV imitates
+    /// ArduRover (`autopilot = "ugv"`), which the live bridge reads from its heartbeat but the
+    /// catalog's `sim = "standin"` entry does not say. Absent: the catalog's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autopilot: Option<crate::catalog::AutopilotKind>,
 }
 
 /// Rules 29: a vehicle's starting task in a scenario file (`[[vehicle]]`'s `start`).
@@ -565,6 +583,12 @@ pub enum Action {
         /// picks one).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weapon: Option<String>,
+        /// Rules 35: the rounds the plan may release, a salvo (absent: one).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rounds: Option<u32>,
+        /// Rules 35: the seconds between its releases (absent: the policy's).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spacing_s: Option<f64>,
     },
     /// Rules 6: an operator with engagement authority accepts, for the last nomination while
     /// it waits with no signature, that one of our vehicles is lost since its last report
@@ -2061,12 +2085,17 @@ pub fn run(
                         EngagementEvent::Effect(e) => {
                             // rules 26: a gun's target leaves at the burst the scenario names
                             // (the first by default)
-                            let ceases = e.burst.is_none_or(|b| b == sc.cease_at_burst.unwrap_or(1));
+                            // rules 35: and a salvo's, at the round the scenario names
+                            let ceases = e.burst.is_none_or(|b| b == sc.cease_at_burst.unwrap_or(1))
+                                && e.round.is_none_or(|r| r == sc.cease_at_round.unwrap_or(1));
                             if sc.after_effect != "persists" && ceases {
                                 target_out = Some((e.track.clone(), e.strike_t()));
                             }
                             if let Some(b) = e.burst {
                                 extra.bursts.push(format!("t={s} burst {b}: {} rounds", e.burst_rounds.unwrap_or(0)));
+                            }
+                            if let Some(r) = e.round {
+                                extra.bursts.push(format!("t={s} round {r}"));
                             }
                         }
                         EngagementEvent::Voided { .. } | EngagementEvent::Assessed { .. } => {}
@@ -2242,6 +2271,20 @@ pub fn run(
             "expected {n} bursts, got {:?} ({:?})",
             fire.map(|f| f.bursts),
             extra.bursts
+        ));
+    }
+    // rules 35: a salvo's rounds released (the release the first) and the holds it met
+    if let Some(n) = sc.expect_rounds
+        && fire.map(|f| f.bursts) != Some(n)
+    {
+        failures.push(format!("expected {n} rounds released, got {:?} ({:?})", fire.map(|f| f.bursts), extra.bursts));
+    }
+    if let Some(n) = sc.expect_rounds_held
+        && fire.and_then(|f| f.salvo.as_ref()).map(|s| s.holds) != Some(n)
+    {
+        failures.push(format!(
+            "expected {n} holds on a salvo's rounds, got {:?}",
+            fire.and_then(|f| f.salvo.as_ref()).map(|s| s.holds)
         ));
     }
     if let Some(w) = &sc.expect_fire_end
@@ -2830,7 +2873,7 @@ fn earlier_log(sc: &Scenario, c: &CarriedDef, policy: &Policy, catalog: &Catalog
         w.vehicles.insert(
             Uid::new(&l.uid),
             VehicleFacts {
-                autopilot: p.as_ref().and_then(|p| p.autopilot).map(|a| Fact::new(a, last)),
+                autopilot: v.autopilot.or_else(|| p.as_ref().and_then(|p| p.autopilot)).map(|a| Fact::new(a, last)),
                 nav_ready: Some(Fact::new(true, last)),
                 position: Some(Fact::new(at_pos, last)),
                 home: Some(Fact::new(home, T0)),
@@ -2876,7 +2919,7 @@ fn snapshot(
     w.areas = Some(areas.clone());
     for (uid, v) in vehicles {
         let p = catalog.get(&v.def.platform).cloned();
-        let ap = p.as_ref().and_then(|p| p.autopilot);
+        let ap = v.def.autopilot.or_else(|| p.as_ref().and_then(|p| p.autopilot));
         let t = v.last_t;
         w.vehicles.insert(
             Uid::new(uid),
@@ -3239,6 +3282,8 @@ fn act(
             accept_lost,
             accept_behaving,
             weapon,
+            rounds,
+            spacing_s,
         } => {
             let task = Task::Engage {
                 track: track.clone(),
@@ -3249,6 +3294,8 @@ fn act(
                 }),
                 fallback: *fallback,
                 weapon: weapon.clone(),
+                rounds: *rounds,
+                spacing_s: *spacing_s,
             };
             let mut proposal = Proposal::new(task, vec![Uid::new(platform)]);
             let w = world(tracks, vehicles);
@@ -4504,6 +4551,8 @@ fn proxies(
                 accept_lost: Vec::new(),
                 accept_behaving: Vec::new(),
                 weapon: None,
+                rounds: None,
+                spacing_s: None,
             },
             engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals, fallback_seen, failures,
             engaging, extra, s,
@@ -5862,6 +5911,44 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             let at = events.iter().position(|e| e.t > again.t).unwrap_or(events.len());
             events.insert(at, again);
+        }
+        "round_after_stop" | "extra_round" => {
+            // rules 35: a salvo's last round logged again, one number higher and one spacing on:
+            // after its fire was stopped (`round_after_stop`), or past the count its plan asked for
+            // (`extra_round`)
+            let stop = events.iter().position(|e| matches!(&e.body, EventBody::EngageStopped { .. }));
+            if kind == "round_after_stop" && stop.is_none() {
+                return Err("no engage.stopped".into());
+            }
+            let last = events[..stop.unwrap_or(events.len())]
+                .iter()
+                .rposition(|e| matches!(&e.body, EventBody::EngageRound { .. }))
+                .ok_or("no engage.round to repeat")?;
+            let mut again = events[last].clone();
+            let after = stop.map_or(events[last].t, |i| events[i].t.max(events[last].t));
+            again.t = after.plus_ms(if kind == "round_after_stop" { 1000 } else { 5000 });
+            if let EventBody::EngageRound { round, weapon, .. } = &mut again.body {
+                *round += 1;
+                weapon.left = weapon.left.map(|n| n.saturating_sub(weapon.spent()));
+            }
+            let at = events.iter().position(|e| e.t > again.t).unwrap_or(events.len());
+            events.insert(at, again);
+        }
+        "edit_ceiling" => {
+            // rules 35: a log whose policy says a plan may release more rounds than it did when
+            // the plan was signed (as if the ceiling had been raised after the fact)
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::RunStarted { policy, .. } = &mut e.body {
+                    let mut r = policy.rules.engage_rules();
+                    r.max_rounds_per_plan = Some(r.max_rounds() + 6);
+                    policy.rules.engage = Some(r);
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no run.started".into());
+            }
         }
         "drop_damage" => {
             // rules 25: a platform's own damage report hidden from every decision that logged it

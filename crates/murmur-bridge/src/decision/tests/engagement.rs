@@ -286,6 +286,8 @@ impl Erig {
                 accept_lost: Vec::new(),
                 accept_behaving: Vec::new(),
                 weapon: None,
+                rounds: None,
+                spacing_s: None,
             },
             standoff_m: None,
             count: None,
@@ -541,6 +543,8 @@ async fn a_dry_run_replacing_a_pending_nomination_frees_its_platform() {
             passed_only: false,
             replaces,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         })
     };
     let held = dry(None).await.expect("options");
@@ -2975,6 +2979,8 @@ async fn only_engagement_authority_accepts_a_live_track_as_behaving_now() {
             passed_only: false,
             replaces: None,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         })
         .await
         .expect("options");
@@ -3100,4 +3106,20 @@ async fn a_lay_order_goes_out_without_a_start_logged_ahead() {
     );
     let rep = replay::replay_str(&text).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+/// Rules 35: a nomination's `rounds` and `spacing_s` (REST `POST /api/intents`, MCP `propose_intent`)
+/// reach the engine's task; absent, the task asks for none (one round, as before).
+#[test]
+fn a_nominations_rounds_and_spacing_reach_the_task() {
+    let req = |extra: serde_json::Value| -> IntentRequest {
+        let mut v = json!({"task": "engage", "uids": [1], "track": "T-0001", "effect_radius_m": 75.0, "fallback": "abort"});
+        v.as_object_mut().expect("an object").extend(extra.as_object().expect("an object").clone());
+        serde_json::from_value(v).expect("a request")
+    };
+    let now = murmur_decide::Time(1_000);
+    let salvo = engage::proposal(&req(json!({"rounds": 6, "spacing_s": 3.0})), now).expect("a proposal");
+    assert!(matches!(salvo.task, Task::Engage { rounds: Some(6), spacing_s: Some(s), .. } if s == 3.0), "{:?}", salvo.task);
+    let plain = engage::proposal(&req(json!({})), now).expect("a proposal");
+    assert!(matches!(plain.task, Task::Engage { rounds: None, spacing_s: None, .. }), "{:?}", plain.task);
 }

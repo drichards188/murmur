@@ -276,7 +276,7 @@ def test_no_file_copies_a_setting_outside_the_standing_policy_the_frozen_files_a
 
 
 def test_no_situation_repeats_its_policy_s_circle():
-    from eval.policy_file import show
+    from eval.policy_file import newest_rules, show
     from eval.situation import load_situation
 
     found = []
@@ -290,7 +290,8 @@ def test_no_situation_repeats_its_policy_s_circle():
         policy = load_situation(p).policy
         if policy is None:
             continue
-        area = show(policy)["watch"].get("area")
+        # (a policy of rules being built in stages, as the salvo's, is read under those rules)
+        area = show(policy, newest_rules())["watch"].get("area")
         if area is None:
             continue
         c = tuple(area["center"])

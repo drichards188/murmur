@@ -358,6 +358,8 @@ impl Decision {
                         window: Some(window),
                         fallback: Fallback::Return,
                         weapon: None,
+                        rounds: None,
+                        spacing_s: None,
                     },
                     uids: vec![uid],
                     constraints: murmur_decide::Constraints::default(),

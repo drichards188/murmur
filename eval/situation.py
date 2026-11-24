@@ -173,8 +173,12 @@ STEP_KEYS = {
     # wait_s: wait this long for the platform to pass every nomination check (the form's dry run);
     # weapon: the loadout weapon the nomination names, by its name (rules 24; absent: the engine
     # picks the first usable one and says why)
+    # rounds, spacing_s: a salvo (rules 35): one plan for this many rounds of the weapon, at least
+    # this many seconds apart (the policy's ceiling and least spacing bound them); cease_after_rounds:
+    # the scripted operator (op-planner, never a person) ceases it once this many are released,
+    # waiting up to cease_wait_s for them (default 1200)
     "engage": {"track", "vehicles", "effect_radius_m", "window_s", "fallback", "rationale", "label", "reason", "retry_s",
-               "unless_nominated", "wait_s", "weapon"},
+               "unless_nominated", "wait_s", "weapon", "rounds", "spacing_s", "cease_after_rounds", "cease_wait_s", "after_step", "after_s", "after_wait_s"},
 }
 # the faults only the headless simulator makes (docs/HEADLESS.md, faults and timelines; each
 # modelled as the stand-ins or ArduPilot behave): the live runner refuses a situation with one
@@ -427,6 +431,22 @@ def _steps(raw: list[Any], sit: Path, duration_s: float, contacts: Path | None =
             raise SituationError(f"{sit}: step {sid!r}: fallback is abort, return or loiter")
         if "weapon" in s and not (isinstance(s["weapon"], str) and s["weapon"].strip()):
             raise SituationError(f"{sit}: step {sid!r}: weapon is the name of a weapon of the platform's loadout")
+        if "rounds" in s and not (isinstance(s["rounds"], int) and not isinstance(s["rounds"], bool) and s["rounds"] >= 1):
+            raise SituationError(f"{sit}: step {sid!r}: rounds is a whole number from 1: how many rounds the one plan may release")
+        if "cease_after_rounds" in s:
+            c = s["cease_after_rounds"]
+            if not (isinstance(c, int) and not isinstance(c, bool) and c >= 1) or c >= int(s.get("rounds") or 1):
+                raise SituationError(f"{sit}: step {sid!r}: cease_after_rounds is a whole number from 1, below the rounds the plan asks for")
+        if "after_step" in s:
+            if s["after_step"] == sid or s["after_step"] not in seen:
+                raise SituationError(f"{sit}: step {sid!r}: after_step names an earlier step of the situation")
+        for k in ("after_s", "after_wait_s"):
+            if k in s and _num(s[k], f"step {sid!r}: {k}", sit) < 0:
+                raise SituationError(f"{sit}: step {sid!r}: {k} is zero or more seconds")
+        if "cease_wait_s" in s and _num(s["cease_wait_s"], f"step {sid!r}: cease_wait_s", sit) <= 0:
+            raise SituationError(f"{sit}: step {sid!r}: cease_wait_s is a positive number of seconds")
+        if "spacing_s" in s and _num(s["spacing_s"], f"step {sid!r}: spacing_s", sit) <= 0:
+            raise SituationError(f"{sit}: step {sid!r}: spacing_s is a positive number of seconds")
         if kind == "flood":
             for k, t in enumerate(s.get("templates") or []):
                 if not isinstance(t, dict):
@@ -1088,6 +1108,8 @@ def step_text(rec: dict[str, Any], step: Step | None) -> str:
         else:
             said = str(rec.get("error") or f"answered {rec.get('status')}: {rec.get('answer')}")
         detail = f"{order.get('node')} ordered to {order.get('do')}: {said}"
+    elif kind == "cease":
+        detail = f"{rec.get('operator')} (scripted) ceased the salvo of intent {rec.get('intent_id')} after {rec.get('rounds')} rounds"
     elif kind == "skipped":
         detail = f"step {rec.get('step')} skipped: {rec.get('reason')}"
     elif kind == "error":
@@ -1620,6 +1642,7 @@ class EngagementChain:
                     "count": p.get("count"),
                     "live_h": p.get("live_h"),
                     "weapon": p.get("weapon"),
+                    "rounds": p.get("rounds"),
                     "signed": [],
                     "laid": 0,
                     "state": "proposed",
@@ -1674,6 +1697,8 @@ class EngagementChain:
                 self.engagements[int(i.get("id", 0))] = rec
                 # rules 24: the loadout weapon it names (none named: the engine picks one)
                 named = f", weapon {p['weapon']}" if p.get("weapon") else ""
+                if p.get("rounds"):
+                    named += f", {p['rounds']} rounds on the one plan"
                 line(
                     e, "nominated",
                     f"engagement nominated by {src.get('kind')} {src.get('id')}: intent {i.get('id')}, {rec['platform']} on {p.get('track')}{named}, "

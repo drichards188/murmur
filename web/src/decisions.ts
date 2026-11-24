@@ -205,6 +205,8 @@ export interface Alert {
     // rules 30: one of ours confirmed lost (information), and one reported again after it
     | 'node_lost'
     | 'node_reported_again'
+    // rules 35: a salvo released fewer rounds than the one plan was signed for
+    | 'salvo_partial'
   severity: Severity
   uid: number
   callsign: string | null
@@ -402,6 +404,7 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   identify_meanwhile: 'IDENTIFIED MEANWHILE',
   node_lost: 'CONFIRMED LOST',
   node_reported_again: 'LOST, REPORTING AGAIN',
+  salvo_partial: 'SALVO CUT SHORT',
 }
 
 // ---- operator ------------------------------------------------------------------------------

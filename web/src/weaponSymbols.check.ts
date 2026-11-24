@@ -16,6 +16,11 @@ check(weaponSymbolKind('self') === 'unknown' && weaponSymbolKind('mine') === 'un
 // the threat library's classes (the weapon picture's `class_symbol` is already one of the four)
 check(weaponSymbolKind('atgm') === 'missile' && weaponSymbolKind('air_missile') === 'missile' && weaponSymbolKind('Rocket') === 'missile', 'atgm, air missile, rocket fly as missiles')
 check(weaponSymbolKind(undefined) === 'unknown' && weaponSymbolKind(null) === 'unknown' && weaponSymbolKind('') === 'unknown', 'none')
+// a catalog missile flying the dive profile is a drone (bd murmur-4nik.5); the profile changes
+// nothing else
+check(weaponSymbolKind('missile', 'dive') === 'drone' && weaponSymbolKind('Missile', 'Dive') === 'drone', 'a dive missile is a drone')
+check(weaponSymbolKind('missile', 'lofted') === 'missile' && weaponSymbolKind('missile', null) === 'missile', 'other missiles stay missiles')
+check(weaponSymbolKind('self', 'dive') === 'unknown' && weaponSymbolKind('bomb', 'dive') === 'bomb' && weaponSymbolKind('atgm', 'dive') === 'missile', 'only a catalog missile')
 
 // every variant: its own id, a drawing of its own, the contract's shape; the same object again
 const seen = new Set<string>()
@@ -31,7 +36,16 @@ for (const affiliation of WEAPON_AFFILIATIONS)
       check(weaponIcon({ affiliation, kind, predicted }) === i, `${i.id} cached`)
       check(predicted === weaponIconSvg({ affiliation, kind, predicted }).includes('stroke-dasharray'), `${i.id} dashed only when predicted`)
     }
-check(seen.size === 30 && drawings.size === 30, 'thirty distinct icons')
+check(seen.size === 36 && drawings.size === 36, 'thirty-six distinct icons')
+// the drone from above: four rotor discs round a body, its X frame under them, turned about the
+// body's middle (the anchor, as every icon)
+const quad = weaponIconSvg({ affiliation: 'friend', kind: 'drone', predicted: true })
+const arcs = (quad.match(/A6 6 0 1 0/g) ?? []).length
+check(arcs > 0 && arcs % 8 === 0, 'four rotor discs, two arcs each, in every path of the body')
+// after the glow (the first of each), the frame's own path comes before the body's
+const second = (sub: string) => quad.indexOf(sub, quad.indexOf(sub) + 1)
+check(second('M9.7 25.3') > 0 && second('M9.7 25.3') < second('M2.5 26.5 A6'), 'the frame drawn under the discs')
+check(weaponIcon({ affiliation: 'hostile', kind: 'drone', predicted: false }).anchorY === weaponIcon({ affiliation: 'friend', kind: 'missile', predicted: false }).anchorY, 'the same anchor')
 
 // the label: weapon, launcher > target, seconds, PRED
 const f: MunitionFlight = {

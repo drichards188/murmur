@@ -1,0 +1,234 @@
+# HIV3 salvo: one decision, a series of rounds (docs/SALVO.md, bd murmur-4nik.2; decision rules 35).
+#   MURMUR_RULES=35 make situation NAME=hiv3-salvo      (autoplay, no AI: watch it; rules 35 until the flip)
+#
+# On 12 November 2026 the US Army launched about 18 drones from an unmanned ground vehicle in what it
+# called an "autonomous strike", and nobody has said whether that was one human decision or eighteen
+# (docs/research/hiv3.md). This situation shows the answer Murmur's engine gives: one nomination,
+# signed once by two people, releases up to N rounds in series, each checked at its own release,
+# with a Cease. The launcher is HIVE 1 (ugv_launcher, "HIV3-class launcher": 18 rounds, drones
+# flown 20 m/s in a dive, an abstract effect: no hit, kill or damage figure), on the high ground at
+# the bridge's south end where shore-battery's BULL 1 stands; the targets are two static vessels in
+# the engagement zone. Plan 1 asks 6 of the 18 rounds on target A; plan 2 asks 6 on target B, and a
+# scripted operator ceases it after the third.
+#
+# The range has no hostile act: an operator declares each target (a scripted declare, op-planner's,
+# in autoplay; the live mode of a situation refuses a declare step), the brief saying it is the
+# range's own procedure. op-2 and op-3 sign each plan (scripted). The policy raises the salvo's
+# ceiling to 18 rounds a plan and its least spacing to 2 s, naming both as loosenings
+# (policies/hiv3-salvo.toml); the standing policy is one round, 5 s apart.
+#
+# Clock: every `at_s` here counts from the stack's start (the link emulator's); the contacts come a
+# few seconds later.
+title = "HIV3 salvo"
+brief = """
+You have the watch at the Golden Gate on a June morning, on a closed range. The range is closed
+to shipping: two small boats lie at anchor in the engagement zone west of the bridge, targets A and B
+(truth: range targets, not hostile; no hostile act is in play). Two of ours are on station: HUNTER 1,
+a sensor ship patrolling mid-channel just west of the bridge, and HIVE 1, a drone-launcher
+unmanned ground vehicle on the high ground at the bridge's south end: an HIV3-class launcher with
+18 rounds (small drones, 300 to 10,000 m, flown at 20 m/s and dived onto the point; an abstract effect, no
+figure of what a hit does).
+
+The range's own procedure declares each target by an operator before anything is nominated: there
+is no hostile act to observe, so no rule declares them. Any engagement needs two operators with engagement
+authority, neither its proposer. On this range the policy lets one plan carry up to 18 rounds, 2 s
+apart: a salvo. One nomination, signed once by two people, releases up to that many rounds in
+series. Each round is checked at its own release, on the picture then: the target still declared and
+identified, still inside the plan's circle, clear of ours and of anyone we protect at its strike,
+HIVE 1 heard and in position, a round left. A round whose checks fail is held, and goes when they pass; it
+does not void the plan. Any operator may cease the salvo: no further round is released. Rounds
+already flying cannot be recalled: they go on and are assessed.
+
+Standing, the policy is one round a plan, 5 s apart. This range loosens both, and says so on the
+card.
+"""
+director = """
+Truth: two small fast boats (no AIS, no armed kind) at anchor, 670 m apart: target A at [-122.4950,
+37.8120], 1,720 m from HIVE 1, and target B at [-122.4900, 37.8075], 1,170 m from it. Neither moves.
+The launcher's rounds have a placeholder warhead and no hit or damage figures, so a strike is abstract:
+whatever is inside its radius at the impact leaves play, nothing is drawn. HUNTER 1 patrols 900 m or
+more from either, its camera identifying them and covering each strike point.
+What should happen: at about 1:20 the script declares both (op-planner), then nominates plan 1: HIVE
+1's launcher on A, 6 rounds, 2 s apart, one nomination; op-2 and op-3 sign once; HIVE 1 stands where
+it is (A is inside its band), and the engine releases round 1 some 20 s after the dispatch less the
+flight (some 85 s at 20 m/s) and rounds 2 to 6 each 2 s after the last, every one logged
+(`engage.round`) with its own flight on the map; all six are in the air before the first strikes. The
+first strike removes A; the other five fall on an empty point (rounds that had nothing to strike); the
+assessment from the last impact says ceased. 12 rounds are left. Plan 2 waits for HIVE 1 to be free,
+then the same on B, 6 rounds; after the third round is out the script ceases it (op-planner,
+scripted, not a person): rounds 4 to 6 are never released, the three in flight strike, 9 rounds are left.
+What should not: a nomination before the declaration, a round released with a check failing, a
+round after a Cease, more rounds than the plan asked for or than the ceiling, a signature by the
+proposer or by an agent.
+"""
+
+world = "golden-gate-v3"                      # sim/worlds/golden-gate-v3.toml: the Golden Gate's map, links,
+                                              # station and tidewater, as golden-gate's (live runs the same:
+                                              # this file names its own fleet, contacts, time and policy);
+                                              # headless it runs on the physical sensing model, as live, under
+                                              # its own policy (the v1 world's legacy pin takes watch.toml only)
+fleet = "sim/fleets/hiv3-salvo.toml"
+contacts = "sim/scenarios/hiv3-salvo.toml"
+events = []                                   # no comms or GNSS events: the situation is the salvo
+policy = "sim/situations/policies/hiv3-salvo.toml"   # watch.toml + a salvo's ceiling and spacing, loosened
+tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day: the sight's day camera
+rate = 1
+duration_s = 720                              # 12 minutes of situation time
+ai_start_s = 30
+
+operator = "autoplay"
+ai = "none"                                   # the timeline declares and nominates; any AI may be added
+cosigner = "scripted"
+reveal = false
+seed = 1
+
+[summary]
+headline = "One decision, many rounds: two people sign once, the launcher releases six, then a Cease stops a second salvo after three."
+bullets = [
+  "HIVE 1 (drone-launcher UGV, 18 rounds of an HIV3-class launcher) holds the high ground at the bridge's south end; HUNTER 1 (sensor ship) patrols west of the bridge.",
+  "Two static range targets are declared by an operator before anything is nominated; there is no hostile act on a range.",
+  "A plan asks for N rounds (here 6 of 18, 2 s apart); two operators sign it once; each round is checked at its own release.",
+  "A round whose checks fail is held, not the plan voided; any operator may cease the salvo, and rounds in flight go on.",
+  "The policy's ceiling (18 rounds a plan) and spacing (2 s) are loosened from the standing one round, 5 s, and the card says why.",
+]
+
+# ---- opening order, once the fleet is ready: issued by the setup script (op-setup); never for an
+# armed platform (refused at load), so HIVE 1 stays where it spawns.
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4840, 37.8140], [-122.4840, 37.8210]]
+note = "Opening order: patrol mid-channel just west of the bridge"
+
+# ---- the timeline
+[[step]]
+id = "range-open"
+at_s = 5
+kind = "note"
+text = "Two range targets lie at anchor in the engagement zone (truth: not hostile, a range)"
+director = true
+
+# The range's procedure: an operator declares each target before any nomination. In autoplay the
+# script (op-planner, not a person) does it, once HUNTER 1's camera has them.
+[[step]]
+id = "declare-a"
+at_s = 80
+kind = "declare"
+track = { select = "nearest", near = [-122.4950, 37.8120], radius_km = 0.4, domain = "surface" }
+affiliation = "hostile"
+note = "range procedure (scripted, not a person): target A declared for the drill"
+text = "Range target A declared by the range's procedure (a script, not a person)"
+
+[[step]]
+id = "declare-b"
+at_s = 82
+kind = "declare"
+track = { select = "nearest", near = [-122.4900, 37.8075], radius_km = 0.4, domain = "surface" }
+affiliation = "hostile"
+note = "range procedure (scripted, not a person): target B declared for the drill"
+text = "Range target B declared by the range's procedure (a script, not a person)"
+
+# Plan 1: six of the launcher's 18 rounds on A, 2 s apart, one nomination (the form's dry run must
+# pass first, the declaration and the identification among its checks).
+[[step]]
+id = "plan-1-salvo-on-a"
+at_s = 90
+kind = "engage"
+track = { select = "nearest", near = [-122.4950, 37.8120], radius_km = 0.4, domain = "surface" }
+vehicles = { callsign = "HIVE 1" }
+weapon = "HIV3-class launcher"
+rounds = 6
+spacing_s = 2
+effect_radius_m = 50
+window_s = 600
+fallback = "abort"                            # a UGV holds where it is
+unless_nominated = true
+wait_s = 180
+retry_s = 30
+rationale = "{track}, declared for the range's drill ({kind}, seen {age} ago). {callsign} passes every nomination check now (the form's dry run): 6 rounds of its HIV3-class launcher on one plan, 2 s apart, from where it stands, effect radius 50 m, fallback hold."
+text = "Plan 1 (script): 6 of HIVE 1's 18 rounds on target A, one nomination, rounds 2 s apart"
+
+# Plan 2: six rounds on B, proposed 5 s after plan 1's last round leaves the launcher (one engagement
+# per platform: HIVE 1 is free once plan 1's fire ends), and a scripted Cease after the third.
+[[step]]
+id = "plan-2-salvo-on-b"
+at_s = 100
+kind = "engage"
+after_step = "plan-1-salvo-on-a"             # wait for plan 1's last round, then...
+after_s = 5                                   # ...5 s after it leaves the launcher
+track = { select = "nearest", near = [-122.4900, 37.8075], radius_km = 0.4, domain = "surface" }
+vehicles = { callsign = "HIVE 1" }
+weapon = "HIV3-class launcher"
+rounds = 6
+spacing_s = 2
+cease_after_rounds = 3
+cease_wait_s = 600
+effect_radius_m = 50
+window_s = 600
+fallback = "abort"
+unless_nominated = true
+wait_s = 120
+retry_s = 30
+rationale = "{track}, declared for the range's drill ({kind}, seen {age} ago). {callsign} is free of its first plan and passes every nomination check now (the form's dry run): 6 rounds of its HIV3-class launcher on one plan, 2 s apart, from where it stands, effect radius 50 m, fallback hold."
+text = "Plan 2 (script): 6 rounds on target B once HIVE 1 is free; a scripted operator will cease it after the third"
+
+# ---- what to watch for, shown in the console's Situation panel as each comes due
+[[watch]]
+at_s = 0
+headline = "Stack up: a sensor ship and the drone-launcher UGV"
+bullets = ["HUNTER 1 patrols just west of the bridge (order by policy)", "HIVE 1 is armed: no script orders it; it holds the high ground"]
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol mid-channel just west of the bridge. HIVE 1 is armed: no script orders it, so it holds the high ground at the bridge's south end. Its loadout is in the vehicle details (Loadout): one weapon, 18 rounds."
+
+[[watch]]
+at_s = 60
+headline = "A range: the targets are declared, not observed"
+bullets = ["No hostile act is in play: an operator declares each target", "Until it is declared nothing can be nominated on it"]
+text = "A range has no hostile act, so no rule declares its targets: the range's procedure has an operator declare each one before anything is nominated (in autoplay a script does, and says so in the note). Until a target is declared and identified, no nomination on it can pass its checks."
+
+[[watch]]
+at_s = 95
+headline = "One plan, six rounds"
+bullets = ["The card says 6 rounds, 2 s apart, the ceiling 18 and why it was raised", "Two signatures, once, for all six", "Each round is checked at its own release"]
+text = "Plan 1: the nomination asks for six rounds of the HIV3-class launcher. The card shows the rounds, the spacing, the ceiling and the reason the policy raised it above one, and each round's predicted release and strike. Two operators sign it once. After the dispatch the engine releases the first round, then each next 2 s after the last, each checked on the picture at its own time; the map draws every round in flight, rising out of the tube, cruising and diving onto the point."
+
+[[watch]]
+at_s = 220
+headline = "Rounds in flight cannot be recalled"
+bullets = ["All six are in the air before the first strikes", "The first strike removes the target; the rest find nothing", "Assessed from the last impact"]
+text = "Rounds in flight are committed: a Cease stops further releases, never a round already flying. With rounds 2 s apart and flights of some 85 s, all six of plan 1 are in the air before the first strikes, so a Cease could not have saved any: the card shows the rounds asked, released, in flight and struck. The assessment runs from the last impact, not the last release."
+
+[[watch]]
+at_s = 330
+headline = "A Cease partway through a salvo"
+bullets = ["Plan 2 asks for six; a scripted operator ceases it after the third", "No further round is released; those in flight strike and are assessed", "The card's Cease button does the same"]
+text = "Plan 2: the same on target B. After the third round is out a scripted operator (op-planner, not a person) ceases the salvo: the engagement stops at once, rounds 4 to 6 are never released, the three in flight go on to strike. Live, any operator may cease it from the engagement card."
+
+[[watch]]
+at_s = 600
+headline = "Two minutes left"
+bullets = ["The audit log holds each round, hold and Cease, with the rounds left", "The runner prints the replay command at the end"]
+text = "Two minutes left. The audit log holds the declaration, each nomination and its signatures, every round with its own flight and the rounds left of 18, any hold with the checks that held it, and the Cease; replay recomputes each round from the picture it was released on."
+
+# ---- the playbook engine (AI=playbook, and the shadow beside a model): where to watch and what
+# to protect; every threshold is the engine's shipped default. It has no engagement play: the
+# timeline nominates.
+[playbook]
+
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]
+radius_m = 3000
+
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]
+
+# ---- the scripted operator on autoplay (eval/proxy.py): quick looks. An engagement is never its
+# own (op-2 and op-3 sign).
+[autoplay]
+preset = "default"
+attend_s = 4.0
+read_s = 3.0
+read_per_check_s = 0.3

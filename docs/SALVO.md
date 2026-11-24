@@ -1,10 +1,14 @@
 # One decision, many releases: the salvo
 
-> **Spec (bd murmur-4nik), revised 2026-11-20.** The first version planned a replica of the US
-> Army's HIV3 demo with new platforms and a new munition; the owner narrowed the scope to the
-> command and control on weapons Murmur already has ("do what you can, put placeholders where you
-> have to"). Stage 1, the salvo, is paused (section 10); the group control of ordinary tasks
-> (stages 2 and 3, docs/SWARMS.md) is being built as rules 34. Every invented number is marked [E].
+> **Spec (bd murmur-4nik), revised 2026-11-20, built as decision rules 35, policy schema 10.** The
+> first version planned a replica of the US Army's HIV3 demo with new platforms and a new munition;
+> two build attempts on it were stopped by safety safeguards, and the owner narrowed the scope to
+> the command and control on weapons Murmur already has ("do what you can, put placeholders where you
+> have to"). The salvo (stage 1) is built (section 10), behind `RULES_NEWEST` with `RULES_VERSION`
+> unchanged until the flip; the group control of ordinary tasks (stages 2 and 3, docs/SWARMS.md) is
+> rules 34, the default since 2026-11-20. The owner's choices of 2026-11-20 (bd murmur-4nik.2 and .5) replaced
+> the Salvo range situation of the first revision by the HIV3 salvo situation (section 7). Every
+> invented number is marked [E].
 
 On 12 November 2026 the US Army launched about 18 drones from an unmanned ground vehicle in what it
 called an "autonomous strike", and nobody has said whether that was one human decision or eighteen
@@ -16,10 +20,10 @@ several nominations and twice as many signatures, one after another.
 This spec adds the **salvo**: one plan, signed by two people, that releases up to N rounds of a
 weapon the platform already carries, bounded by the target, the effect circle, the window and a
 round ceiling the scenario's policy sets, with a Cease, every release checked at its own time. It
-is shown in a new situation, **Salvo range**, on the armed MQ-9B-class (four missiles and two bombs
-in today's catalog) against five targets. No new weapon or platform is added: the salvo works on
-any catalog weapon with rounds, so a weapon the owner adds later works with it unchanged (the one
-placeholder). docs/SWARMS.md section 6 deferred exactly this ("a salvo ... turn[s] one human
+is shown in a new situation, **HIV3 salvo** (section 7), on the drone-launcher UGV the owner added
+for it (bd murmur-4nik.5: an abstract effect, no figure of what a hit does) against two static
+vessels. The salvo works on any catalog weapon that flies and has rounds, so a weapon added later
+works with it unchanged. docs/SWARMS.md section 6 deferred exactly this ("a salvo ... turn[s] one human
 decision into many effects ... and need[s] its own spec").
 
 ## Decisions
@@ -28,10 +32,13 @@ Decided (the owner, 2026-11-20):
 
 1. **Place: the Golden Gate.** The range is the open-water engagement zone west of the bridge
    (`sim/areas/golden-gate.geojson`), whose areas and links every situation already uses.
-2. **No new weapon, munition or platform.** The HIV3-class replica (its vehicles, its munition and
-   any figures for them) is out of scope; the salvo is shown on the armed MQ-9B-class's existing
-   loadout, with its existing figures. Where the demo would need something Murmur lacks, the
-   situation says so and leaves the slot (the platform and weapon a nomination names).
+2. **The platform and weapon the demo needs.** The salvo is tied to no particular weapon: any
+   catalog weapon that flies and has rounds salvoes the same way, so the situation names the
+   platform and weapon it is shown on, and where the demo needs something Murmur lacks it is added
+   and the situation says so. For this one the owner added (2026-11-20, bd murmur-4nik.5) the
+   drone-launcher UGV (`[ugv_launcher]`) and its HIV3-class launcher, from the rounded kinematic
+   figures of docs/research/hiv3.md, drawn as small quadcopters that pop up, cruise and dive on the
+   console's map, their effect abstract (no hit, kill or damage figures).
 3. **A salvo is one bounded decision.** One nomination and two signatures cover up to N rounds,
    bounded by the target (one declared track), the effect circle, the window, the round ceiling and
    a Cease; the engine judges every round at its own release. **The scenario's policy sets the most
@@ -57,9 +64,11 @@ Adopted as recommended (the owner, 2026-11-20: "do what you can"):
 Chosen in this revision (the owner may change them):
 
 8. **The spacing between releases is the plan's, not a weapon figure.** `[rules.engage]
-   salvo_spacing_s`, a standing minimum of 5 s [E]; a nomination may ask for more. It is how fast
-   one decision releases, a control setting, and it needs no new figure in the catalog.
-9. **The range's targets are declared by an operator**, the existing path (DECISIONS.md: any
+   salvo_spacing_s`, a standing minimum of 5 s [E]; a nomination may ask for more, never less. It is
+   how fast one decision releases, a control setting, and it needs no new figure in the catalog. A
+   file that sets it below the standing 5 s is a loosening too (the owner, 2026-11-20: the HIV3
+   situation asks 2 s), named in `loosened` like the ceiling.
+9. **The targets are declared by an operator**, the existing path (DECISIONS.md: any
    operator may declare any track): the person live, a scripted `declare` step on autoplay, the brief
    saying it is the range's own procedure (there is no hostile act on a range).
 
@@ -68,8 +77,8 @@ Chosen in this revision (the owner may change them):
 The gun's firing window (rules 26, DECISIONS.md "Guns: bursts from a counted magazine") is the
 model: one signed plan, many releases, "no new human step per burst ... and every safeguard per
 burst". The salvo extends it to rounds that fly. Its gate (`SALVO_SINCE`) takes the next free
-rules version when it is built (rules 34 went to the group orders), with `RULES_NEWEST` one ahead
-(CLAUDE.md "A rules version built in stages") and a policy schema for the two new keys.
+rules version when it is built (rules 34 went to the group orders, so it is **rules 35**, policy
+schema 10), with `RULES_NEWEST` one ahead (CLAUDE.md "A rules version built in stages").
 
 - `Task::Engage` gains `rounds` (how many the plan may release; absent is 1, today's). REST and MCP
   `propose_intent` take it; the nomination form asks for it beside the weapon.
@@ -117,7 +126,7 @@ them as rounds that had nothing to strike.
   stays one platform (`spec.uids.first()` everywhere stays right).
 - Tampers: a round after a cease, a round past the plan's count, a ceiling edited in the logged
   policy.
-- Scenarios from 158; runner keys `rounds` on `nominate`, `cease_at_round`, `expect_rounds`,
+- Scenarios 174 to 180; runner keys `rounds` on `nominate`, `cease_at_round`, `expect_rounds`,
   `expect_rounds_held`.
 
 ## 5. Console and MCP
@@ -135,25 +144,40 @@ The chain: a declared target, a nomination, two signatures by operators with eng
 never the proposer, never an agent, a step-up at each signature in a credentials run. One platform
 and one track per engagement, one engagement per platform. Every safeguard per round.
 
-## 7. The situation: Salvo range (`sim/situations/salvo-range.toml`)
+## 7. The situation: HIV3 salvo (`sim/situations/hiv3-salvo.toml`)
 
-- **Fleet:** the armed MQ-9B-class (`mq9b_armed`) on station over the zone, unarmed sensors as the
-  watch policy needs, stand-ins.
-- **Targets:** five static vessels of existing contact kinds, inside the engagement zone and the
-  MQ-9B's reach, far enough apart that no strike's keep-out holds another (the keep-out is the
-  effect radius plus 200 m), no traffic inside the keep-outs; the contacts' seed chosen for the
-  default run's intent numbers.
-- **Policy:** extends `sim/situations/policies/watch.toml`; raises `max_rounds_per_plan` to the
-  loadout's 4 under `loosened`, with its reason. Run with the standing policy it is today's chain.
-- **Timeline:** declarations (scripted on autoplay, the person live); nominations, some with
-  `rounds` above 1; op-2 and op-3 sign; one Cease on autoplay to show it. The person is `op-1`,
-  never a script.
+The owner's choices of 2026-11-20 (bd murmur-4nik.2 and .5) replaced the MQ-9B-class "Salvo range"
+of the first revision:
+
+- **Fleet** (`sim/fleets/hiv3-salvo.toml`): HIVE 1, the drone-launcher UGV (`ugv_launcher`, one
+  weapon, the "HIV3-class launcher": 18 rounds, 300 to 10,000 m, 20 m/s, dive profile, an abstract
+  effect), on the bluff at the bridge's south end where shore-battery's BULL 1 stands; HUNTER 1, a
+  sensor ship, patrolling 900 m or more from either target, whose camera identifies them and covers
+  each strike point for the assessment. An armed platform gets no opening order.
+- **Targets** (`sim/scenarios/hiv3-salvo.toml`): two small fast boats at anchor, static, inside the
+  engagement zone, 1,720 m and 1,170 m from HIVE 1 and 670 m apart (more than either keep-out, the
+  effect radius plus 200 m); the range is closed to shipping, so no neutral can hold a keep-out. A
+  strike is abstract: whatever is inside its radius at the impact leaves play, nothing is drawn.
+- **Policy** (`sim/situations/policies/hiv3-salvo.toml`, extends `watch.toml`): `max_rounds_per_plan`
+  18 and `salvo_spacing_s` 2, each named under `loosened` with its reason. Run with the standing
+  policy it is today's chain: one round a plan, 5 s apart.
+- **Timeline:** a scripted declaration of each target (op-planner, the note saying it is a script: a
+  range has no hostile act, so no rule declares and no person is needed; the situation is therefore
+  autoplay, and a live run refuses a `declare` step); plan 1 asks 6 of the 18 rounds on target A
+  (12 left), op-2 and op-3 sign once, the rounds go 2 s apart, every one in the air before the first
+  strikes (flights of some 85 s), the first strike removes the target and the other five find
+  nothing, the assessment runs from the last impact; plan 2, once HIVE 1 is free (one engagement per
+  platform), asks 6 on target B and a scripted operator ceases it after the third round (9 left):
+  rounds 4 to 6 are never released, the three in flight strike. The step keys are `rounds`,
+  `spacing_s` and `cease_after_rounds` (eval/engage.py `EngageAdapter.cease_after`: a scripted
+  op-planner, never a person, aborts the engagement once that many rounds are out).
 - **The placeholder:** the brief and the file say that the platform and weapon are the scenario's
-  choice, and that any catalog weapon with rounds and a flight salvoes the same way.
+  choice, and that any catalog weapon with rounds and a flight salvoes the same way. Until the flip
+  of `RULES_VERSION` it needs `MURMUR_RULES=35` (the policy is refused under older rules, saying so).
 
 ## 8. What it lets us measure
 
-The same situation at ceiling 1 and at ceiling 4: time from declaration to effect, rounds released
+The same situation at ceiling 1 and at ceiling 18: time from declaration to effect, rounds released
 against what the target needed, rounds that struck nothing, holds and their reasons, whether a Cease
 came and when, and whether the signers could say what they had approved. No paid or scored runs
 until the evaluation's scoring is approved (docs/PLAN.md); this makes the comparison possible, it
@@ -177,13 +201,24 @@ Murmur adds.
 | stage | what | moves decisions | state |
 |---|---|---|---|
 | 0 | spent one-way strikers leave the world live | no | done (58ee062) |
-| 1 | the salvo (sections 1 to 6) and Salvo range (section 7) | a later version | paused (partial work on the local branch `salvo`, not merged) |
+| 1 | the salvo (sections 1 to 6) and the HIV3 salvo situation (section 7) | rules 35 (policy schema 10), behind `RULES_NEWEST`; the flip of `RULES_VERSION` and the MCP digests are the owner's | built on branch `salvo-volley` (brought up to main on 2026-11-24): the engine, replay, scenarios 174-180, REST, MCP, the console card and map, the situation, and the situation headless (`eval/headless/tests/test_salvo.py`); a live run of the situation and the browser are not yet checked |
 | 2 | `transit` (docs/SWARMS.md 3.2): go to a point and hold, for any vehicle | rules 34 | building with stage 3 |
 | 3 | group control of ordinary tasks (docs/SWARMS.md: group orders, member classes, re-forming; bd murmur-3kqi) | rules 34 | building |
 
 ## 11. Not checked
 
-- Which five places in the zone keep each strike's keep-out clear of the others and of the Gate's
-  traffic (stage 1 lays them out and checks them).
-- Whether the MQ-9B-class's two weapons both fit the salvo's flight model as they stand (rules 20's
-  munition flight is per weapon).
+- A live run of the HIV3 salvo situation (stack, launcher, the scripted Cease through the runner) and
+  the console in a browser: the engine, replay and scenarios are checked, the situation loads and
+  its policy is read under rules 35, but the stack was not started where it was built.
+- The headless goldens and the paused digests, which move at the flip (the MCP tool list changes
+  then). The situation itself runs headless (`MURMUR_RULES=35`, world `golden-gate-v3` so that it
+  runs on the physical sensing model under its own policy, as live): the timeline's `rounds`,
+  `spacing_s`, `after_step` and `cease_after_rounds` as the live runner takes them, and on seed 1
+  the director's notes as written (plan 1's six rounds, plan 2 ceased after its third, 9 left), the
+  log replaying with its anchors.
+- Whether the abstract effect's "first strike removes the target, the rest find nothing" is the
+  picture the owner wants of a series; a weapon with `effects` draws each round on its own stream
+  and can leave a target standing.
+- A salvo's `target_gone` end needs the tracker to drop the track (180 s unseen), so with flights of
+  tens of seconds the assessment usually ends the fire first (scenario 178 uses a 9 km flight to
+  reach it).

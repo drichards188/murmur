@@ -4126,8 +4126,15 @@ impl Engine {
             let Some(effect) = eng.effect.clone() else {
                 return Ok(None);
             };
-            // rules 20: a munition strikes at its impact: the observation starts there
-            if eng.munition.as_ref().is_some_and(|m| self.now() < m.impact_t) {
+            // rules 35: a salvo fires on while its rounds fly (each a release of its own)
+            let salvo = eng.fire.as_ref().is_some_and(|f| f.salvo.is_some());
+            // rules 20: a munition strikes at its impact: the observation starts there (rules 35:
+            // a salvo's at its latest round's)
+            if engage::effect_in_flight(&eng, self.now()) {
+                if salvo && engage::firing(&eng) {
+                    inputs.rounds = self.restores.rounds_for(&spec, &self.policy.rules, &inputs.identities);
+                    return self.step_salvo(id, &spec, &eng, &snap, &inputs);
+                }
                 return Ok(None);
             }
             // rules 26: a gun's observation runs from its last burst
@@ -4167,6 +4174,9 @@ impl Engine {
             let Some((result, evidence)) = verdict else {
                 if firing {
                     inputs.rounds = self.restores.rounds_for(&spec, &self.policy.rules, &inputs.identities);
+                    if salvo {
+                        return self.step_salvo(id, &spec, &eng, &snap, &inputs);
+                    }
                     return self.step_fire(id, &spec, &eng, &snap, &inputs);
                 }
                 return Ok(None);
@@ -4280,6 +4290,9 @@ impl Engine {
         // rules 26: a gun's release is its first burst, and opens its firing window
         let gun = engage::gun_of(Some(&uid), p, &inputs, &self.policy.rules.engage_rules()).cloned();
         let burst = gun.as_ref().and(weapon.as_ref()).and_then(|w| w.rounds);
+        // rules 35: a salvo's release is its first round (with a munition and a counted weapon)
+        let salvo = p.salvo.clone().filter(|_| self.policy.rules.salvo() && gun.is_none());
+        let round = salvo.as_ref().and(weapon.as_ref()).and(munition.as_ref()).map(|_| 1);
         {
             let e = self.get_mut(id)?.engagement_mut();
             e.effect = Some(EffectRecord {
@@ -4300,7 +4313,12 @@ impl Engine {
                     left: w.left,
                     every_s: g.burst_every_s(),
                     ended: None,
+                    salvo: None,
                 });
+            }
+            // rules 35: a salvo's release is its first round, and opens its fire
+            if let (Some(sp), Some(w), Some(m)) = (&salvo, &weapon, &munition) {
+                e.fire = Some(engage::salvo_opened(sp, w, m));
             }
         }
         self.transition(
@@ -4339,6 +4357,7 @@ impl Engine {
             weapon: weapon_facts,
             burst: burst.map(|_| 1),
             burst_rounds: burst,
+            round,
         })))
     }
 
@@ -4457,7 +4476,169 @@ impl Engine {
             weapon: facts.map(Box::new),
             burst: Some(burst),
             burst_rounds: Some(n),
+            round: None,
         })))
+    }
+
+    /// Rules 35: a salvo's fire after its release, one step (while its rounds fly, or after its
+    /// observation gave no verdict that ends it): the fire ends when the rounds asked for are out,
+    /// the ledger is empty or the approved window has closed (`engage.fire_ended`); else the next
+    /// round is judged as a release of its own at its own time ([`engage::round_picture`], logged as
+    /// `engage.picture`), and the fire ends when the target has left the picture. A round due (the
+    /// plan's spacing after the last) whose checks all pass goes out (`engage.round`: its flight,
+    /// its round counted in the ledger, its own draw on the truth side); one whose checks fail is
+    /// held, logged with the checks that hold it when they change (`engage.round_held`). Nothing
+    /// here stops the plan: an operator's Cease does ([`Engine::abort_engagement`]), and rounds in
+    /// flight go on.
+    fn step_salvo(
+        &mut self,
+        id: IntentId,
+        spec: &IntentSpec,
+        eng: &engage::Engagement,
+        snap: &engage::EngageSnapshot,
+        inputs: &WorldSnapshot,
+    ) -> Result<Option<EngagementEvent>, EngineError> {
+        let Some(fire) = eng.fire.clone() else {
+            return Ok(None);
+        };
+        let Some(salvo) = fire.salvo.clone() else {
+            return Ok(None);
+        };
+        let Some(uid) = spec.uids.first().cloned() else {
+            return Ok(None);
+        };
+        let now = self.now();
+        let p = &snap.preview;
+        if let Some((why, detail)) = engage::fire_over(&fire, p, now) {
+            return self.end_fire(id, now, why, detail);
+        }
+        let prev_t = eng.watch.as_ref().map_or(snap.t, |w| w.t);
+        let preloaded = eng.preload.as_ref().zip(engage::preload_confirmed_at(eng));
+        let (results, holds, ready) = engage::round_picture(spec, snap, inputs, &self.policy.rules, prev_t, preloaded);
+        let logged = self.log_inputs(inputs)?;
+        let pt = self.emit_at(
+            inputs.t.max(self.last_t),
+            EventBody::EngagePicture {
+                intent: id,
+                inputs: logged,
+                results: results.clone(),
+                holds,
+                ready,
+            },
+        )?;
+        if self.policy.rules.rule_id() {
+            self.last_pictures.insert(id, inputs.clone());
+        }
+        let failed: Vec<CheckResult> = results.iter().filter(|c| c.outcome != Outcome::Pass).cloned().collect();
+        self.get_mut(id)?.engagement_mut().watch = Some(PictureVerdict {
+            t: pt,
+            holds,
+            ready,
+            results,
+        });
+        // the target out of the picture: no round has anything to be released at
+        if !inputs.tracks.contains_key(&snap.track_id) {
+            let (why, detail) = engage::target_gone(&fire, &snap.track_id);
+            return self.end_fire(id, pt, why, detail);
+        }
+        // the next round only the plan's spacing after the last
+        if !fire.due(pt) {
+            return Ok(None);
+        }
+        let round = fire.bursts + 1;
+        if !(holds && ready) {
+            // held (decision 7): logged when it starts and when what holds it changes
+            if let Some(hold) = engage::round_hold(&salvo, round, pt, &failed) {
+                self.emit_at(
+                    pt,
+                    EventBody::EngageRoundHeld {
+                        intent: id,
+                        round,
+                        failed,
+                    },
+                )?;
+                if let Some(s) = self.get_mut(id)?.engagement_mut().fire.as_mut().and_then(|f| f.salvo.as_mut()) {
+                    s.held = Some(hold);
+                    s.holds += 1;
+                }
+            }
+            return Ok(None);
+        }
+        let t = self.now();
+        let (Some(shot), Some(weapon)) = (
+            engage::release_shot(spec, snap, inputs, &self.policy.rules),
+            engage::release_weapon(spec, snap, inputs, &self.policy.rules),
+        ) else {
+            return Ok(None);
+        };
+        let munition = shot.flight(t);
+        let facts = inputs
+            .vehicles
+            .get(&uid)
+            .and_then(|v| v.platform.as_ref())
+            .and_then(|pf| pf.loadout.iter().find(|l| l.name == weapon.name))
+            .cloned();
+        let body = EventBody::EngageRound {
+            intent: id,
+            uid: uid.clone(),
+            round,
+            munition: munition.clone(),
+            weapon: weapon.clone(),
+        };
+        let t = self.emit_at(t, body.clone())?;
+        self.restores.step_at(t, &body);
+        {
+            let e = self.get_mut(id)?.engagement_mut();
+            if let Some(f) = e.fire.as_mut() {
+                f.bursts = round;
+                f.rounds += weapon.spent();
+                f.last_t = t;
+                f.left = weapon.left;
+                if let Some(s) = f.salvo.as_mut() {
+                    s.flights.push(munition.clone());
+                    s.held = None;
+                }
+            }
+            // the assessment runs from this round's impact: its coverage starts again
+            e.covered_s = 0.0;
+            e.last_observe = None;
+            e.weapon = Some(weapon);
+        }
+        Ok(Some(EngagementEvent::Effect(EffectOrder {
+            intent: id,
+            uid,
+            track: snap.track_id.clone(),
+            point: p.effect_point,
+            radius_m: p.effect_radius_m,
+            t,
+            munition: Some(munition),
+            weapon: facts.map(Box::new),
+            burst: None,
+            burst_rounds: None,
+            round: Some(round),
+        })))
+    }
+
+    /// Rules 26 and 35: a gun's or a salvo's fire over on its own (`engage.fire_ended`).
+    fn end_fire(
+        &mut self,
+        id: IntentId,
+        at: Time,
+        why: engage::FireEndKind,
+        detail: String,
+    ) -> Result<Option<EngagementEvent>, EngineError> {
+        let t = self.emit_at(
+            at,
+            EventBody::EngageFireEnded {
+                intent: id,
+                why,
+                detail: detail.clone(),
+            },
+        )?;
+        if let Some(f) = self.get_mut(id)?.engagement_mut().fire.as_mut() {
+            f.ended = Some(engage::FireEnd { t, why, detail });
+        }
+        Ok(None)
     }
 
     /// The engagements in play (pending, approved, dispatched) on `spec`'s vehicles, other
@@ -7713,7 +7894,7 @@ impl Engine {
     /// An engagement without a window gets the default one, written into its spec (so the
     /// log, the deadline and every check read the same window). Other tasks as given.
     /// Rules 24: a weapon named under older rules, which have no loadout, is dropped (no build of
-    /// theirs logged one).
+    /// theirs logged one); rules 35: so are rounds asked for under older rules.
     fn normalized(&self, task: Task, created_t: Time) -> Task {
         match task {
             Task::Engage {
@@ -7722,6 +7903,8 @@ impl Engine {
                 window,
                 fallback,
                 weapon,
+                rounds,
+                spacing_s,
             } => Task::Engage {
                 track,
                 effect_radius_m,
@@ -7735,6 +7918,9 @@ impl Engine {
                 }),
                 fallback,
                 weapon: weapon.filter(|_| self.policy.rules.loadouts()),
+                // rules 35: rounds asked for under older rules, which release one, are dropped
+                rounds: rounds.filter(|_| self.policy.rules.salvo()),
+                spacing_s: spacing_s.filter(|_| self.policy.rules.salvo()),
             },
             t => t,
         }

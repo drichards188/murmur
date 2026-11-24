@@ -209,6 +209,12 @@ pub struct ReplayReport {
     pub assessments: usize,
     /// Rules 26: a gun's bursts after its release (`engage.burst`).
     pub bursts: usize,
+    /// Rules 35: a salvo's rounds after its release (`engage.round`), and the holds logged on a
+    /// round (`engage.round_held`).
+    #[serde(default)]
+    pub rounds: usize,
+    #[serde(default)]
+    pub rounds_held: usize,
     /// Rules 27: mines laid (`mine.laid`).
     #[serde(default)]
     pub mines_laid: usize,
@@ -1189,6 +1195,8 @@ impl Restores {
                 uid, weapon: Some(w), ..
             } => self.release(uid, w),
             EventBody::EngageBurst { uid, weapon, .. } => self.release(uid, weapon),
+            // rules 35: a salvo's round after its release
+            EventBody::EngageRound { uid, weapon, .. } => self.release(uid, weapon),
             EventBody::IntentState { intent, to, .. } if to.is_terminal() => self.intent_ended(*intent),
             // rules 27: a field gone inert (a mine laid is stepped with its time, `step_at`)
             EventBody::MinefieldInert { intent, from: None, .. } => {
@@ -1792,8 +1800,15 @@ struct Tracked {
     /// Engage, rules 26: the gun of the plan on that picture's world (its facts: the interval and
     /// the cyclic rate a burst is bound by), when the plan's weapon is one.
     ready_gun: Option<crate::catalog::WeaponFacts>,
-    /// Engage, rules 26: a gun's firing window, from its release (as the engine keeps it).
+    /// Engage, rules 26: a gun's firing window, from its release (as the engine keeps it). Rules
+    /// 35: a salvo's fire too.
     fire: Option<engage::FireRecord>,
+    /// Engage, rules 35: a salvo's picture that held its due round (its seq and the checks that
+    /// failed), waiting for its `engage.round_held`.
+    hold_due: Option<(u64, Vec<CheckResult>)>,
+    /// Engage, rules 35: a salvo's picture that found its target out of the picture (its time),
+    /// waiting for its `engage.fire_ended`.
+    target_gone_t: Option<Time>,
     /// Engage, rules 20: the munition released with the effect (observation starts at its
     /// impact).
     munition: Option<engage::MunitionFlight>,
@@ -1962,6 +1977,8 @@ impl Tracked {
             ready_weapon: None,
             ready_gun: None,
             fire: None,
+            hold_due: None,
+            target_gone_t: None,
             munition: None,
             stop_fallback: None,
             platform_events: Vec::new(),
@@ -2320,6 +2337,11 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::GROUP_ORDER_SINCE, "\"transition\":\"under\"", "a member order approved under its group's approval"),
     (rules::GROUP_ORDER_SINCE, "\"member\":\"", "a group member's class on its failing check"),
     (rules::GROUP_ORDER_SINCE, "\"kind\":\"transit\"", "a transit order"),
+    (rules::SALVO_SINCE, "\"type\":\"engage.round\"", "a salvo's round after its release"),
+    (rules::SALVO_SINCE, "\"type\":\"engage.round_held\"", "a salvo's round held at its release"),
+    (rules::SALVO_SINCE, "\"salvo\":{", "a salvo's plan (a nomination's preview)"),
+    (rules::SALVO_SINCE, "\"max_rounds_per_plan\":", "the policy's ceiling on the rounds one plan may release"),
+    (rules::SALVO_SINCE, "\"salvo_spacing_s\":", "the policy's spacing between a salvo's releases"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2714,6 +2736,36 @@ impl Pictures {
         }
         Some(out)
     }
+}
+
+/// Rules 35: why a salvo's plan is not what its nomination and the logged policy give (None: it
+/// is): the rounds the nomination asks, the ceiling it is signed under, the spacing, and a release
+/// and a strike for each round.
+fn salvo_plan_mismatch(sp: &engage::SalvoPlan, spec: &IntentSpec, ec: &engage::EngageRules) -> Option<String> {
+    let n = engage::rounds_asked(spec);
+    let spacing = engage::salvo_spacing(spec, ec);
+    if sp.rounds != n || sp.rounds < 2 {
+        return Some(format!("a salvo's plan of {} rounds, but the nomination asks {n}", sp.rounds));
+    }
+    if sp.ceiling != ec.max_rounds() || sp.rounds > ec.max_rounds() {
+        return Some(format!(
+            "a salvo's plan of {} rounds under a ceiling of {}, but the logged policy's is {}",
+            sp.rounds,
+            sp.ceiling,
+            ec.max_rounds()
+        ));
+    }
+    if sp.spacing_s != spacing || spacing < ec.salvo_spacing() {
+        return Some(format!(
+            "a salvo's rounds {} s apart, but the nomination and the logged policy give {spacing} s (at least {})",
+            sp.spacing_s,
+            ec.salvo_spacing()
+        ));
+    }
+    if sp.releases.len() != n as usize || sp.strikes.len() != n as usize {
+        return Some("a salvo's plan without a release and a strike for each round".into());
+    }
+    None
 }
 
 fn replay_inner<S: AsRef<str>>(
@@ -4943,22 +4995,36 @@ fn replay_inner<S: AsRef<str>>(
                         why.as_str().into(),
                     );
                 }
+                // rules 35: a salvo's held round logs its hold before the next picture; its target
+                // gone ends its fire before any
+                if let Some((seq, _)) = tr.hold_due.take() {
+                    bad(&mut r, e, Some(*intent), "a salvo's held round without its engage.round_held", seq.to_string(), "engage.round_held".into());
+                }
+                if let Some(t) = tr.target_gone_t.take() {
+                    bad(&mut r, e, Some(*intent), "a salvo's picture after its target left the picture (no engage.fire_ended)", json(&t), "target_gone".into());
+                }
                 // rules 6: the release needs the platform's preload confirmed
                 let preloaded = tr.preload.as_ref().zip(
                     tr.preload_read
                         .filter(|(_, confirmed)| *confirmed)
                         .map(|(t, _)| t),
                 );
-                let (again, h, rd) = engage::picture(
-                    &tr.spec,
-                    &snap,
-                    &w,
-                    &pol.rules,
-                    dispatched,
-                    prev_t,
-                    preloaded,
-                    tr.fire.as_ref().filter(|_| firing).map(|f| f.last_t),
-                );
+                // rules 35: a salvo's next round is judged as a release of its own
+                let salvo = tr.fire.as_ref().filter(|f| firing && f.salvo.is_some()).cloned();
+                let (again, h, rd) = if salvo.is_some() {
+                    engage::round_picture(&tr.spec, &snap, &w, &pol.rules, prev_t, preloaded)
+                } else {
+                    engage::picture(
+                        &tr.spec,
+                        &snap,
+                        &w,
+                        &pol.rules,
+                        dispatched,
+                        prev_t,
+                        preloaded,
+                        tr.fire.as_ref().filter(|_| firing).map(|f| f.last_t),
+                    )
+                };
                 tr.last_picture_t = Some(e.t);
                 if pol.rules.rule_id() {
                     tr.last_picture_world = Some(w.clone());
@@ -4996,7 +5062,23 @@ fn replay_inner<S: AsRef<str>>(
                 };
                 tr.platform_events.clear();
                 tr.intercept_reports.clear();
-                if !h {
+                if let Some(f) = &salvo {
+                    // rules 35: a salvo's failing round is held, never the plan stopped: its target
+                    // gone ends the fire, a due round not ready is a hold the engine logs (when what
+                    // holds it changes)
+                    tr.ready = h && rd && f.due(e.t);
+                    if !w.tracks.contains_key(&snap.track_id) {
+                        tr.target_gone_t = Some(e.t);
+                        tr.ready = false;
+                    } else if f.due(e.t) && !(h && rd) {
+                        let failed: Vec<CheckResult> = again.iter().filter(|c| c.outcome != crate::Outcome::Pass).cloned().collect();
+                        if let Some(s) = &f.salvo
+                            && engage::round_hold(s, f.bursts + 1, e.t, &failed).is_some()
+                        {
+                            tr.hold_due = Some((e.seq, failed));
+                        }
+                    }
+                } else if !h {
                     r.picture_voids += 1;
                     tr.stop_due = Some(e.seq);
                 }
@@ -5041,7 +5123,8 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 // rules 26: a gun's release is its first burst and opens its firing window
-                if let (Some(g), Some(w)) = (tr.ready_gun.take(), weapon.as_ref()) {
+                let gun = tr.ready_gun.take();
+                if let (Some(g), Some(w)) = (&gun, weapon.as_ref()) {
                     tr.fire = Some(engage::FireRecord {
                         weapon: g.name.clone(),
                         bursts: 1,
@@ -5051,7 +5134,23 @@ fn replay_inner<S: AsRef<str>>(
                         left: w.left,
                         every_s: g.burst_every_s(),
                         ended: None,
+                        salvo: None,
                     });
+                }
+                // rules 35: a salvo's release is its first round and opens its fire (the plan's
+                // rounds within the logged policy's ceiling)
+                let salvo = tr
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.preview.salvo.clone())
+                    .filter(|_| gun.is_none() && policy.as_ref().is_some_and(|p| p.rules.salvo()));
+                if let Some(sp) = &salvo {
+                    if let Some(why) = policy.as_ref().and_then(|p| salvo_plan_mismatch(sp, &tr.spec, &p.rules.engage_rules())) {
+                        bad(&mut r, e, Some(*intent), &why, json(sp), json(&policy.as_ref().map(|p| p.rules.engage_rules().max_rounds())));
+                    }
+                    if let (Some(w), Some(m)) = (weapon.as_ref(), munition.as_ref()) {
+                        tr.fire = Some(engage::salvo_opened(sp, w, m));
+                    }
                 }
                 tr.ready_weapon = None;
                 if let Some(w) = weapon {
@@ -5362,6 +5461,107 @@ fn replay_inner<S: AsRef<str>>(
                     tr.stopped = true;
                 }
             }
+            EventBody::EngageRound {
+                intent,
+                uid,
+                round,
+                munition,
+                weapon,
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let snap = tr.snapshot.clone();
+                let want_weapon = tr.ready_weapon.take();
+                let want_flight = tr.ready_shot.take().map(|s| s.flight(e.t));
+                tr.ready_gun = None;
+                let fire = tr.fire.clone();
+                let salvo = fire.as_ref().and_then(|f| f.salvo.as_ref());
+                let mut why: Vec<&str> = Vec::new();
+                if !policy.as_ref().is_some_and(|p| p.rules.salvo()) {
+                    why.push("a round under rules that take no salvo");
+                }
+                if tr.state != State::Effected || !tr.firing() || salvo.is_none() {
+                    why.push("a round outside a salvo's open fire (none, ended, or ceased)");
+                }
+                if !tr.ready || tr.last_picture_t.is_none_or(|p| e.t.ms_since(p) > 1000) {
+                    why.push("a round without a picture that held, was ready and was due in the same step");
+                }
+                if tr.spec.uids.first() != Some(uid) {
+                    why.push("a round from another vehicle than the engagement's platform");
+                }
+                if let (Some(f), Some(s)) = (&fire, salvo) {
+                    if *round != f.bursts + 1 {
+                        why.push("a round out of order");
+                    }
+                    if *round > s.asked {
+                        why.push("a round past the count the plan asked for");
+                    }
+                    if !f.due(e.t) {
+                        why.push("a round sooner after the last than the plan's spacing");
+                    }
+                }
+                if snap.as_ref().is_some_and(|s| e.t > s.preview.window.until) {
+                    why.push("a round after the approved window closed");
+                }
+                if Some(weapon) != want_weapon.as_ref() {
+                    why.push("the round's weapon (or its rounds left) is not the one the picture gives");
+                }
+                if Some(munition) != want_flight.as_ref() {
+                    why.push("the round's flight is not the one the releasing picture gives");
+                }
+                for w in why {
+                    bad(&mut r, e, Some(*intent), w, json(&(round, weapon, munition)), json(&(&fire, &want_weapon, &want_flight)));
+                }
+                restores.release(uid, weapon);
+                if let Some(f) = tr.fire.as_mut() {
+                    f.bursts = *round;
+                    f.rounds += weapon.spent();
+                    f.last_t = e.t;
+                    f.left = weapon.left;
+                    if let Some(s) = f.salvo.as_mut() {
+                        s.flights.push(munition.clone());
+                        s.held = None;
+                    }
+                }
+                // the assessment runs from this round's impact
+                tr.covered_s = 0.0;
+                tr.last_observe = None;
+                tr.ready = false;
+                tr.ready_t = None;
+                tr.hold_due = None;
+                r.rounds += 1;
+            }
+            EventBody::EngageRoundHeld { intent, round, failed } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let due = tr.hold_due.take();
+                if due.as_ref().map(|(_, f)| f) != Some(failed) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a round held for other checks than the picture before it gives (or without a due round)",
+                        json(&(round, failed)),
+                        json(&due.map(|(_, f)| f)),
+                    );
+                }
+                let t = e.t;
+                let next = tr.fire.as_ref().map(|f| f.bursts + 1);
+                if next != Some(*round) {
+                    bad(&mut r, e, Some(*intent), "a hold on a round that is not the salvo's next", json(round), json(&next));
+                }
+                if let Some(s) = tr.fire.as_mut().and_then(|f| f.salvo.as_mut()) {
+                    if let Some(hold) = engage::round_hold(s, *round, t, failed) {
+                        s.held = Some(hold);
+                    }
+                    s.holds += 1;
+                }
+                r.rounds_held += 1;
+            }
             EventBody::EngageBurst {
                 intent,
                 uid,
@@ -5529,7 +5729,10 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
                 };
+                // rules 35: a salvo's picture that showed its target gone ends its fire
+                let gone = tr.target_gone_t.take();
                 let want = match (&tr.fire, &tr.snapshot) {
+                    (Some(f), Some(s)) if f.open() && f.salvo.is_some() && gone.is_some() => Some(engage::target_gone(f, &s.track_id)),
                     (Some(f), Some(s)) if f.open() => engage::fire_over(f, &s.preview, e.t),
                     _ => None,
                 };
@@ -5583,14 +5786,21 @@ fn replay_inner<S: AsRef<str>>(
                     }
                 };
                 // rules 20: a munition strikes at its impact: nothing is observed before it
-                if let Some(m) = tr.munition.as_ref().filter(|m| e.t < m.impact_t) {
+                // (rules 35: a salvo's, before its latest round's)
+                let impact = tr
+                    .fire
+                    .as_ref()
+                    .and_then(|f| f.salvo.as_ref())
+                    .and_then(engage::SalvoFire::last_impact)
+                    .or(tr.munition.as_ref().map(|m| m.impact_t));
+                if let Some(at) = impact.filter(|at| e.t < *at) {
                     bad(
                         &mut r,
                         e,
                         Some(*intent),
                         "observation before the munition's impact",
                         json(&e.t),
-                        json(&m.impact_t),
+                        json(&at),
                     );
                 }
                 let effect = engage::observed_from(&effect, tr.munition.as_ref(), tr.fire.as_ref());

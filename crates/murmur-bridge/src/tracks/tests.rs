@@ -971,6 +971,7 @@ fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
         weapon: None,
         burst: None,
         burst_rounds: None,
+        round: None,
     };
     let flight = MunitionFlight {
         name: "Hellfire-class missile".into(),

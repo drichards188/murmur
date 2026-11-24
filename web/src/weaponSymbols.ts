@@ -1,18 +1,19 @@
 // The icons of weapons on the map, one source for ours and for an opponent's (bd murmur-ma92):
-// what the weapon is (missile, bomb, torpedo, gun round, or a weapon of a kind not known) in its
-// silhouette, whose it is (friend, hostile, unknown) in the 2525C colours (milsymbol's own: the
-// same blue, red and yellow the vehicles and tracks are drawn in, symbols.ts), and whether its
-// position is observed or only predicted, in the 2525 convention for an anticipated position: a
-// dashed outline and a see-through body. Pure functions (strings and numbers, no DOM), so
-// weaponSymbols.check.ts can check them on their own; munitionLayers.ts draws them.
+// what the weapon is (missile, bomb, torpedo, gun round, strike drone, or a weapon of a kind not
+// known) in its silhouette, whose it is (friend, hostile, unknown) in the 2525C colours
+// (milsymbol's own: the same blue, red and yellow the vehicles and tracks are drawn in,
+// symbols.ts), and whether its position is observed or only predicted, in the 2525 convention
+// for an anticipated position: a dashed outline and a see-through body. Pure functions (strings
+// and numbers, no DOM), so weaponSymbols.check.ts can check them on their own; munitionLayers.ts
+// draws them.
 //
 // Every icon is drawn nose up on a 40 x 88 canvas (turned about the middle of its body, which
-// is what the layers' `getAngle` turns it by), at twice its on-screen size so it stays sharp on
-// HiDPI as symbols.ts does, with a dark outline and a glow in its colour: it reads on the dark
-// map, the water and the terrain alike.
+// is what the layers' `getAngle` turns it by; the drone, seen from above, nose up as well), at
+// twice its on-screen size so it stays sharp on HiDPI as symbols.ts does, with a dark outline
+// and a glow in its colour: it reads on the dark map, the water and the terrain alike.
 
 export type WeaponAffiliation = 'friend' | 'hostile' | 'unknown'
-export type WeaponSymbolKind = 'missile' | 'bomb' | 'torpedo' | 'gun' | 'unknown'
+export type WeaponSymbolKind = 'missile' | 'bomb' | 'torpedo' | 'gun' | 'drone' | 'unknown'
 
 /** an IconLayer icon definition */
 export interface WeaponIcon {
@@ -45,9 +46,11 @@ const MISSILE_LIKE = ['atgm', 'air_missile', 'rocket']
 /** the symbol kind for a catalog weapon kind ("missile", "bomb", "torpedo", "gun", "self",
  *  "mine"...) or a threat-library class's kind ("atgm", "air_missile", "rocket": a missile): the
  *  four that fly as themselves; anything else (and nothing reported) is a weapon of a kind not
- *  known */
-export function weaponSymbolKind(kind: string | null | undefined): WeaponSymbolKind {
+ *  known. A catalog missile flying the "dive" profile (`profile`, bd murmur-4nik.5: the
+ *  drone-launcher UGV's rounds, catalogued as missiles since there is no drone kind) is a drone. */
+export function weaponSymbolKind(kind: string | null | undefined, profile?: string | null): WeaponSymbolKind {
   const k = (kind ?? '').trim().toLowerCase()
+  if (k === 'missile' && (profile ?? '').trim().toLowerCase() === 'dive') return 'drone'
   if (MISSILE_LIKE.includes(k)) return 'missile'
   return k === 'missile' || k === 'bomb' || k === 'torpedo' || k === 'gun' ? k : 'unknown'
 }
@@ -58,6 +61,8 @@ const ANCHOR_X = 20
 const ANCHOR_Y = 38
 
 interface Shape {
+  /** drawn under the body in the deep shade, outlined: the drone's frame */
+  under?: string
   /** the body's outline */
   body: string
   /** fins, tail cages and other parts drawn in the deep shade beside the body */
@@ -66,6 +71,9 @@ interface Shape {
   tail: string
   /** drawn over the body in the dark: marks that tell the kind apart at a glance */
   marks: string
+  /** the anticipated look's dashes (dash, gap), where the body's outline is not the usual
+   *  4.5 and 3: the drone's small rotor discs take four dashes each, not five */
+  dash?: string
 }
 
 const SHAPES: Record<WeaponSymbolKind, Shape> = {
@@ -97,6 +105,22 @@ const SHAPES: Record<WeaponSymbolKind, Shape> = {
     tail: 'M17 52 L20 82 L23 52 Z',
     marks: '',
   },
+  // a small quadcopter seen from above: an X frame under four rotor discs, a body at the middle
+  // with a pointed nose and its camera, the motors at the discs' hubs (bd murmur-4nik.5). Turned
+  // about its body's middle, the anchor, as every icon is.
+  drone: {
+    under: 'M9.7 25.3 L32.7 48.3 L30.3 50.7 L7.3 27.7 Z M30.3 25.3 L32.7 27.7 L9.7 50.7 L7.3 48.3 Z',
+    body:
+      'M2.5 26.5 A6 6 0 1 0 14.5 26.5 A6 6 0 1 0 2.5 26.5 Z M25.5 26.5 A6 6 0 1 0 37.5 26.5 A6 6 0 1 0 25.5 26.5 Z ' +
+      'M2.5 49.5 A6 6 0 1 0 14.5 49.5 A6 6 0 1 0 2.5 49.5 Z M25.5 49.5 A6 6 0 1 0 37.5 49.5 A6 6 0 1 0 25.5 49.5 Z ' +
+      'M20 29 L24 33 L24 44.5 Q24 46.5 22 46.5 L18 46.5 Q16 46.5 16 44.5 L16 33 Z',
+    parts:
+      'M6.6 26.5 A1.9 1.9 0 1 0 10.4 26.5 A1.9 1.9 0 1 0 6.6 26.5 Z M29.6 26.5 A1.9 1.9 0 1 0 33.4 26.5 A1.9 1.9 0 1 0 29.6 26.5 Z ' +
+      'M6.6 49.5 A1.9 1.9 0 1 0 10.4 49.5 A1.9 1.9 0 1 0 6.6 49.5 Z M29.6 49.5 A1.9 1.9 0 1 0 33.4 49.5 A1.9 1.9 0 1 0 29.6 49.5 Z',
+    tail: '',
+    marks: 'M20 32.5 L20 37.5',
+    dash: '6 3.4',
+  },
   // a plain capsule with no fins, flame or bands, and a question mark: a weapon, nothing more known
   unknown: {
     body: 'M20 8 C25.5 8 27.5 12 27.5 17 L27.5 59 C27.5 64 25.5 68 20 68 C14.5 68 12.5 64 12.5 59 L12.5 17 C12.5 12 14.5 8 20 8 Z',
@@ -120,17 +144,18 @@ export function weaponIconSvg(o: WeaponIconOptions): string {
   const s = SHAPES[o.kind]
   const dark = '#0b0f14'
   const parts = s.parts ? `<path d="${s.parts}" fill="${c.deep}" fill-opacity="${o.predicted ? 0.6 : 1}" stroke="${dark}" stroke-width="1.8" stroke-linejoin="round"/>` : ''
+  const under = s.under ? `<path d="${s.under}" fill="${c.deep}" fill-opacity="${o.predicted ? 0.6 : 1}" stroke="${dark}" stroke-width="1.8" stroke-linejoin="round"/>` : ''
   const tail = s.tail ? `<path d="${s.tail}" fill="${c.main}" fill-opacity="${o.predicted ? 0.5 : 0.95}"/>` : ''
   const marks = s.marks ? `<path d="${s.marks}" fill="none" stroke="${dark}" stroke-width="1.6" stroke-linecap="round"/>` : ''
   const question = o.kind === 'unknown' ? `<path d="${QUESTION}" fill="none" stroke="${dark}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>` : ''
   const outline = o.predicted
     ? // anticipated: a solid dark under-line with the colour dashed over it, the body see-through
-      `<path d="${s.body}" fill="${c.main}" fill-opacity="0.32"/><path d="${s.body}" fill="none" stroke="${dark}" stroke-width="4.6" stroke-linejoin="round"/><path d="${s.body}" fill="none" stroke="${c.main}" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="4.5 3"/>`
+      `<path d="${s.body}" fill="${c.main}" fill-opacity="0.32"/><path d="${s.body}" fill="none" stroke="${dark}" stroke-width="4.6" stroke-linejoin="round"/><path d="${s.body}" fill="none" stroke="${c.main}" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="${s.dash ?? '4.5 3'}"/>`
     : `<path d="${s.body}" fill="${c.main}" stroke="${dark}" stroke-width="2.6" stroke-linejoin="round"/>`
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_WIDTH}" height="${ICON_HEIGHT}" viewBox="0 0 ${ICON_WIDTH} ${ICON_HEIGHT}">
 <defs><filter id="g" x="-60%" y="-30%" width="220%" height="160%"><feGaussianBlur stdDeviation="3.2"/></filter></defs>
-<path d="${s.body} ${s.parts}" fill="${c.main}" opacity="${o.predicted ? 0.55 : 0.8}" filter="url(#g)"/>
-${tail}${outline}${parts}${marks}${question}
+<path d="${s.under ? `${s.under} ` : ''}${s.body} ${s.parts}" fill="${c.main}" opacity="${o.predicted ? 0.55 : 0.8}" filter="url(#g)"/>
+${tail}${under}${outline}${parts}${marks}${question}
 </svg>`
 }
 
@@ -156,5 +181,5 @@ export function weaponIcon(o: WeaponIconOptions): WeaponIcon {
   return icon
 }
 
-export const WEAPON_KINDS: WeaponSymbolKind[] = ['missile', 'bomb', 'torpedo', 'gun', 'unknown']
+export const WEAPON_KINDS: WeaponSymbolKind[] = ['missile', 'bomb', 'torpedo', 'gun', 'drone', 'unknown']
 export const WEAPON_AFFILIATIONS: WeaponAffiliation[] = ['friend', 'hostile', 'unknown']

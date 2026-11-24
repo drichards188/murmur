@@ -667,6 +667,25 @@ meaningful.
   comparison; `v3.identity_resolved` version 4 on such a record); the keep-out explanation's memory
   is `TrackerMemory::under(cfg)` (no `Default`); the link predictor gives an identify order its own
   `identify_on_station_s`. The Rust guard's `FOUND_COPIES` is empty: fix a new copy, never list it.
+- Rules 35 (`SALVO_SINCE`, bd murmur-4nik.2, docs/SALVO.md, DECISIONS.md "One decision, many
+  releases"; policy schema 10; staged behind `RULES_NEWEST` = 35 while `RULES_VERSION` is 33, rules 34
+  and schema 9 being the group orders' on another branch): one nomination, two signatures, up to
+  `rounds` of a weapon that flies (`Task::Engage` `rounds`, `spacing_s`; REST, MCP `propose_intent` and
+  `get_nomination_options`, the form's Rounds field). `[rules.engage] max_rounds_per_plan` (standing 1)
+  and `salvo_spacing_s` (standing 5) loosen only under `loosened` (`LOOSENABLE`, four keys). The release
+  is round 1 and opens `FireRecord::salvo`; `Engine::step_salvo` (the bridge's tick, where a gun's
+  `step_fire` runs) judges each next round as a release of its own (`engage::round_picture`), logs
+  `engage.picture`, then `engage.round` or, failing, `engage.round_held` (never the plan voided), and
+  ends the fire on `all_released`, `rounds_out`, the window, `target_gone` (the track dropped) or a
+  Cease (any operator's abort). Every round has its own flight (`FireRecord::salvo.flights`; the
+  console draws each) and its own draw stream (`effect:<intent>:r<n>`, `EffectOrder::round`); the
+  assessment runs from the last impact. `EngagePreview::flight_s` moves the preload's re-reading
+  earlier by a flight (a drone's 90 s). Scenarios 174-180, tampers `round_after_stop`, `extra_round`,
+  `edit_ceiling`; a scenario `[[vehicle]]` may name its `autopilot` (a stand-in rover's heartbeat).
+  The HIV3 salvo situation needs `MURMUR_RULES=35` until the flip; its steps take `rounds`,
+  `spacing_s`, `after_step`, `cease_after_rounds` (`EngageAdapter.cease_after`: op-planner, a script,
+  ceases it), live and headless (`eval/headless/script.py` `_after_fire`, `_cease`; world
+  `golden-gate-v3`, so headless runs it physical under its own policy; `tests/test_salvo.py`).
 - A rules version built in stages before it is the default (as rules 30 and 33 were,
   docs/NODE-LOSS.md section 8): `RULES_NEWEST` (rules.rs) one ahead of `RULES_VERSION` while it is
   built; a run decides under it only when asked (a scenario's `min_rules`, `murmur-scenarios --rules

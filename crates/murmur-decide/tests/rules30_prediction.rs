@@ -159,6 +159,8 @@ fn nomination() -> IntentSpec {
             }),
             fallback: Fallback::Return,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         uids: vec![uid("blade-1")],
         constraints: Constraints::default(),

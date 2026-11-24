@@ -189,6 +189,8 @@ fn dispatched(e: &mut Engine, clock: &ManualClock) -> (IntentId, EngageOrder) {
             window: None,
             fallback: Fallback::Return,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         vec![Uid::new("blade-1")],
     );
@@ -1063,6 +1065,8 @@ fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
                 window: None,
                 fallback: Fallback::Return,
                 weapon: None,
+                rounds: None,
+                spacing_s: None,
             },
             vec![Uid::new("blade-1")],
         )
@@ -1139,6 +1143,8 @@ fn engage_nomination() -> Proposal {
             window: None,
             fallback: Fallback::Return,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         vec![Uid::new("blade-1")],
     )

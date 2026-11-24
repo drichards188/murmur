@@ -276,6 +276,16 @@ pub struct EngageRules {
     /// be for a 3D keep-out to count it, s (older: 2D). Default 10 (schema 4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub track_alt_max_age_s: Option<f64>,
+    /// Rules 35 (policy schema 10): the most rounds one signed plan may release (a salvo,
+    /// docs/SALVO.md). The standing value is 1, today's chain, and the floor; above 1 multiplies
+    /// what one human decision releases, a loosening the file names in `loosened`. Default 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_rounds_per_plan: Option<u32>,
+    /// Rules 35 (policy schema 10): the least time between a salvo's releases, seconds; a
+    /// nomination may not ask for less (it is how fast one decision releases, a control setting,
+    /// not a weapon figure). Default 5 [E].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub salvo_spacing_s: Option<f64>,
 }
 
 fn rules_version_now() -> u32 {
@@ -289,6 +299,14 @@ fn legacy_out_of_view_s() -> f64 {
 /// The effect radius of a nomination that names none, metres, when the policy sets none
 /// (`[rules.engage] default_effect_radius_m`, rules 33).
 pub const DEFAULT_EFFECT_RADIUS_M: f64 = 75.0;
+
+/// The most rounds one signed plan may release when the policy sets none (`[rules.engage]
+/// max_rounds_per_plan`, rules 35): one, today's chain, and the floor.
+pub const STANDING_MAX_ROUNDS: u32 = 1;
+
+/// The least time between a salvo's releases when the policy sets none (`[rules.engage]
+/// salvo_spacing_s`, rules 35), seconds [E].
+pub const STANDING_SALVO_SPACING: f64 = 5.0;
 
 impl EngageRules {
     /// [`EngageRules::token_ttl_s`] (or its old name) or its default.
@@ -462,6 +480,22 @@ impl EngageRules {
         self.rules_version >= crate::rules::MISSILE_STANDOFF_SINCE
     }
 
+    /// The decisions of rules 35 on ([`crate::rules::SALVO_SINCE`]): one signed plan may release
+    /// several rounds of a weapon that flies ([`salvo_check`], [`crate::Engine::step_engagements`]).
+    pub fn salvo(&self) -> bool {
+        self.rules_version >= crate::rules::SALVO_SINCE
+    }
+
+    /// Rules 35: [`EngageRules::max_rounds_per_plan`] or its standing value.
+    pub fn max_rounds(&self) -> u32 {
+        self.max_rounds_per_plan.unwrap_or(STANDING_MAX_ROUNDS)
+    }
+
+    /// Rules 35: [`EngageRules::salvo_spacing_s`] or its standing value.
+    pub fn salvo_spacing(&self) -> f64 {
+        self.salvo_spacing_s.unwrap_or(STANDING_SALVO_SPACING)
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -500,6 +534,13 @@ impl EngageRules {
         }
         if self.default_effect_radius_m.is_some() {
             keys.push((settings, "default_effect_radius_m"));
+        }
+        let salvo = crate::rules::SALVO_SCHEMA_SINCE;
+        if self.max_rounds_per_plan.is_some() {
+            keys.push((salvo, "max_rounds_per_plan"));
+        }
+        if self.salvo_spacing_s.is_some() {
+            keys.push((salvo, "salvo_spacing_s"));
         }
         keys
     }
@@ -545,6 +586,8 @@ impl Default for EngageRules {
             vertical_rate_mps: None,
             keep_out_vertical_m: None,
             track_alt_max_age_s: None,
+            max_rounds_per_plan: None,
+            salvo_spacing_s: None,
         }
     }
 }
@@ -613,6 +656,15 @@ impl EngageRules {
         if let Some(r) = self.default_effect_radius_m {
             within(r, 1.0, self.max_effect_radius_m, "default_effect_radius_m")?;
         }
+        // rules 35: the floor is one round a plan (today's chain); a ceiling above it is a
+        // loosening (named in `loosened`, checked with the policy)
+        if !(1..=64).contains(&self.max_rounds()) {
+            return Err(format!(
+                "rules.engage.max_rounds_per_plan must be within 1..64 (one is the floor, today's chain), got {}",
+                self.max_rounds()
+            ));
+        }
+        within(self.salvo_spacing(), 1.0, 600.0, "salvo_spacing_s")?;
         if self.assess_window_s < self.assess_dwell_s {
             return Err("rules.engage.assess_window_s must be at least assess_dwell_s".into());
         }
@@ -675,6 +727,35 @@ pub struct EngagePreview {
     /// in older logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fire_from: Option<LonLat>,
+    /// Rules 35: a salvo's plan (a nomination asking more than one round of a weapon that flies):
+    /// the rounds, the spacing, the ceiling it is signed under, and each round's predicted release
+    /// and strike, frozen with the plan and shown on the picture token. Absent for a single
+    /// release, and in older logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salvo: Option<SalvoPlan>,
+    /// Rules 35: the weapon's predicted time of flight from over the plan's goal, seconds (a weapon
+    /// that flies; none for any other, and before rules 35). The release comes this long before the
+    /// plan's effect time, so the preload is read again from this much earlier (a drone flying 100 s
+    /// is released 100 s before its strike, long before the effect time is within 30 s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flight_s: Option<f64>,
+}
+
+/// Rules 35 ([`crate::rules::SALVO_SINCE`], docs/SALVO.md): what a signer of a salvo signs beside
+/// the plan's point, radius and window: how many rounds it may release, at least how far apart,
+/// under which ceiling, and when each is predicted to go and to strike (round 1 strikes at the
+/// plan's effect time, each next a spacing later; each release is its strike less the weapon's
+/// flight from over the plan's goal at the platform's height, its slant held within the weapon's
+/// band). The predicted times are what the signers are shown; every round is judged at its own
+/// release, whenever that comes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SalvoPlan {
+    pub rounds: u32,
+    pub spacing_s: f64,
+    pub ceiling: u32,
+    pub releases: Vec<Time>,
+    pub strikes: Vec<Time>,
 }
 
 impl EngagePreview {
@@ -1057,6 +1138,47 @@ pub struct FireRecord {
     pub every_s: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<FireEnd>,
+    /// Rules 35: a salvo's (a weapon that flies, its plan asking more than one round): each of its
+    /// releases is one round (`bursts` and `rounds` both count them, `every_s` is the plan's
+    /// spacing), and this holds what a gun's bursts have no need of. Absent for a gun.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salvo: Option<SalvoFire>,
+}
+
+/// Rules 35: a salvo's fire beyond a gun's: the rounds its plan may release and the ceiling it was
+/// signed under, every round's flight so far (round 1, the release, first), the round held now and
+/// why, and how many holds were logged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SalvoFire {
+    pub asked: u32,
+    pub ceiling: u32,
+    pub flights: Vec<MunitionFlight>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<RoundHold>,
+    pub holds: u32,
+}
+
+/// Rules 35: a salvo's next round held at its release (`engage.round_held`): which round, since
+/// when, and the checks that failed (their rules, and what they said when the hold was logged).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RoundHold {
+    pub round: u32,
+    pub t: Time,
+    pub rules: Vec<RuleId>,
+    pub reasons: Vec<String>,
+}
+
+impl SalvoFire {
+    /// The latest impact of its rounds released so far: the assessment observes from it (decision
+    /// 6 and section 3 of docs/SALVO.md: nothing is judged while a round flies).
+    pub fn last_impact(&self) -> Option<Time> {
+        self.flights.iter().map(|m| m.impact_t).max()
+    }
+
+    /// Its rounds still in flight at `t`.
+    pub fn in_flight(&self, t: Time) -> usize {
+        self.flights.iter().filter(|m| m.impact_t > t).count()
+    }
 }
 
 impl FireRecord {
@@ -1084,8 +1206,13 @@ pub enum FireEndKind {
     /// The approved window closed (`engage.fire_ended`).
     WindowClosed,
     /// Stopped (`engage.stopped`: an operator, the picture, the system, a supersede, a revoked
-    /// declaration).
+    /// declaration). Rules 35: a salvo's Cease is an operator's stop.
     Stopped,
+    /// Rules 35: a salvo's rounds asked for are all released (`engage.fire_ended`).
+    AllReleased,
+    /// Rules 35: a salvo's target left the picture (`engage.fire_ended`): rounds in flight strike
+    /// where it was.
+    TargetGone,
 }
 
 impl FireEndKind {
@@ -1096,6 +1223,8 @@ impl FireEndKind {
             FireEndKind::RoundsOut => "rounds_out",
             FireEndKind::WindowClosed => "window_closed",
             FireEndKind::Stopped => "stopped",
+            FireEndKind::AllReleased => "all_released",
+            FireEndKind::TargetGone => "target_gone",
         }
     }
 }
@@ -1127,9 +1256,13 @@ pub fn play_state(state: crate::intent::State, firing: bool) -> crate::intent::S
 }
 
 /// Rules 20 and 26: the effect as the assessment reads it: a gun's from its last burst (its
-/// verdict is on what that burst left), else [`struck`].
+/// verdict is on what that burst left), else [`struck`]. Rules 35: a salvo's from its last impact.
 pub fn observed_from(effect: &EffectRecord, munition: Option<&MunitionFlight>, fire: Option<&FireRecord>) -> EffectRecord {
     match fire {
+        Some(f) if let Some(s) = &f.salvo => EffectRecord {
+            t: s.last_impact().unwrap_or(f.last_t),
+            ..effect.clone()
+        },
         Some(f) => EffectRecord {
             t: f.last_t,
             ..effect.clone()
@@ -1138,9 +1271,39 @@ pub fn observed_from(effect: &EffectRecord, munition: Option<&MunitionFlight>, f
     }
 }
 
+/// Rules 20 and 34: whether the engagement's effect is still in flight at `now`: its munition
+/// before its impact, a salvo's latest round before its impact (nothing is observed until then).
+pub fn effect_in_flight(e: &Engagement, now: Time) -> bool {
+    match e.fire.as_ref().and_then(|f| f.salvo.as_ref()) {
+        Some(s) => s.last_impact().is_some_and(|t| now < t),
+        None => e.munition.as_ref().is_some_and(|m| now < m.impact_t),
+    }
+}
+
 /// Rules 26: whether a gun's fire is over on its own at `now`, and why: no round left after its
-/// last burst, or the approved window closed (`engage.fire_ended`; replay binds both).
+/// last burst, or the approved window closed (`engage.fire_ended`; replay binds both). Rules 35: a
+/// salvo's too, and first when the rounds its plan asked for are all released.
 pub fn fire_over(fire: &FireRecord, p: &EngagePreview, now: Time) -> Option<(FireEndKind, String)> {
+    if let Some(s) = &fire.salvo {
+        if fire.bursts >= s.asked {
+            return Some((
+                FireEndKind::AllReleased,
+                format!("the plan's {} rounds of the {} released", s.asked, fire.weapon),
+            ));
+        }
+        if fire.left == Some(0) {
+            return Some((
+                FireEndKind::RoundsOut,
+                format!("no round of the {} left: {} of the plan's {} rounds released", fire.weapon, fire.bursts, s.asked),
+            ));
+        }
+        return (now > p.window.until).then(|| {
+            (
+                FireEndKind::WindowClosed,
+                format!("the approved window closed: {} of the plan's {} rounds of the {} released", fire.bursts, s.asked, fire.weapon),
+            )
+        });
+    }
     if fire.left == Some(0) {
         return Some((
             FireEndKind::RoundsOut,
@@ -1159,6 +1322,205 @@ pub fn fire_over(fire: &FireRecord, p: &EngagePreview, now: Time) -> Option<(Fir
             ),
         )
     })
+}
+
+/// Rules 35: the fire a salvo's release (round 1, `engage.effect`) opens: one round released with
+/// its flight, the plan's spacing between releases, the rounds asked and the ceiling signed under.
+pub fn salvo_opened(sp: &SalvoPlan, w: &crate::loadout::WeaponRelease, m: &MunitionFlight) -> FireRecord {
+    FireRecord {
+        weapon: w.name.clone(),
+        bursts: 1,
+        rounds: w.spent(),
+        opened_t: m.launch_t,
+        last_t: m.launch_t,
+        left: w.left,
+        every_s: sp.spacing_s,
+        ended: None,
+        salvo: Some(SalvoFire {
+            asked: sp.rounds,
+            ceiling: sp.ceiling,
+            flights: vec![m.clone()],
+            held: None,
+            holds: 0,
+        }),
+    }
+}
+
+/// Rules 35: whether a salvo's round `round`, due at `t` and failing `failed`, is a hold to log
+/// (`engage.round_held`): the first time it is held, or when the checks that hold it change (by
+/// rule; their words change every second). The hold it is then.
+pub fn round_hold(s: &SalvoFire, round: u32, t: Time, failed: &[CheckResult]) -> Option<RoundHold> {
+    let rules: Vec<RuleId> = failed.iter().map(|c| c.rule).collect();
+    if s.held.as_ref().is_some_and(|h| h.round == round && h.rules == rules) {
+        return None;
+    }
+    Some(RoundHold {
+        round,
+        t,
+        rules,
+        reasons: failed.iter().map(|c| format!("{}: {}", c.rule.as_str(), c.detail)).collect(),
+    })
+}
+
+/// Rules 35: a salvo's fire ends when its target leaves the picture (`engage.fire_ended`, after
+/// the picture that shows it gone; replay binds it to that picture): why, and what it says.
+pub fn target_gone(fire: &FireRecord, track: &str) -> (FireEndKind, String) {
+    let asked = fire.salvo.as_ref().map_or(fire.bursts, |s| s.asked);
+    (
+        FireEndKind::TargetGone,
+        format!("track {track} left the picture: {} of the plan's {asked} rounds of the {} released", fire.bursts, fire.weapon),
+    )
+}
+
+/// Rules 35: the rounds a nomination asks for (absent: one).
+pub fn rounds_asked(spec: &IntentSpec) -> u32 {
+    match &spec.task {
+        Task::Engage { rounds, .. } => rounds.unwrap_or(1),
+        _ => 1,
+    }
+}
+
+/// Rules 35: the spacing between a salvo's releases its plan uses, s: what the nomination asks
+/// for, else the policy's.
+pub fn salvo_spacing(spec: &IntentSpec, ec: &EngageRules) -> f64 {
+    match &spec.task {
+        Task::Engage { spacing_s: Some(s), .. } => *s,
+        _ => ec.salvo_spacing(),
+    }
+}
+
+/// Rules 35: the predicted time of flight, seconds, of the plan's weapon from over the plan's goal
+/// at the platform's height to the effect point, its slant held within the weapon's band (what
+/// [`salvo_plan`] puts the releases before the strikes by, and the preload's re-reading begins
+/// before). None for a weapon that does not fly.
+fn flight_estimate(p: &EngagePreview, v: &crate::world::VehicleFacts, w: &crate::catalog::WeaponFacts) -> Option<f64> {
+    if !w.kind.flies() {
+        return None;
+    }
+    let m = w.munition();
+    if !(m.speed_mps.is_finite() && m.speed_mps > 0.0 && m.range_m.is_finite()) {
+        return None;
+    }
+    let alt = v.alt_msl_m.as_ref().map(|a| a.value).filter(|a| a.is_finite()).unwrap_or(0.0);
+    let slant = haversine_m(p.goal(), p.effect_point).hypot(alt).clamp(w.min_range_m.max(0.0), m.range_m.max(w.min_range_m));
+    Some(slant / m.speed_mps)
+}
+
+/// Rules 35: a salvo's plan for the preview ([`SalvoPlan`]): none unless the rules take salvoes,
+/// the nomination asks for more than one round and the weapon flies.
+fn salvo_plan(spec: &IntentSpec, p: &EngagePreview, ec: &EngageRules) -> Option<SalvoPlan> {
+    let n = rounds_asked(spec);
+    let tof = ms(p.flight_s?);
+    if !ec.salvo() || n <= 1 {
+        return None;
+    }
+    let spacing = salvo_spacing(spec, ec);
+    let strikes: Vec<Time> = (0..n).map(|k| p.effect_t.plus_ms(i64::from(k) * ms(spacing))).collect();
+    Some(SalvoPlan {
+        rounds: n,
+        spacing_s: spacing,
+        ceiling: ec.max_rounds(),
+        releases: strikes.iter().map(|t| t.plus_ms(-tof)).collect(),
+        strikes,
+    })
+}
+
+/// Rules 35: the `salvo` check on a nomination that asks for rounds (none otherwise, and under
+/// older rules): at most the policy's ceiling a plan, at least its spacing apart, a weapon that
+/// flies for more than one (a gun's bursts are its magazine's; a platform that is its own weapon
+/// is one round), and no more than the platform has of it left.
+pub fn salvo_check(
+    spec: &IntentSpec,
+    uid: Option<&Uid>,
+    named: Option<&str>,
+    track: Option<&TrackFacts>,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+) -> Option<CheckResult> {
+    let Task::Engage { rounds: Some(n), .. } = &spec.task else {
+        return None;
+    };
+    if !ec.salvo() {
+        return None;
+    }
+    let n = *n;
+    let r = RuleId::Salvo;
+    let ceiling = ec.max_rounds();
+    let spacing = salvo_spacing(spec, ec);
+    if n > ceiling {
+        return Some(check(
+            r,
+            uid,
+            Outcome::Fail,
+            format!(
+                "{n} rounds asked: above the policy's ceiling of {ceiling} round{} a plan (rules.engage.max_rounds_per_plan)",
+                if ceiling == 1 { "" } else { "s" }
+            ),
+        ));
+    }
+    if n > 1 && spacing < ec.salvo_spacing() {
+        return Some(check(
+            r,
+            uid,
+            Outcome::Fail,
+            format!("rounds {spacing:.0} s apart asked: the policy's least is {:.0} s (rules.engage.salvo_spacing_s)", ec.salvo_spacing()),
+        ));
+    }
+    if n == 1 {
+        return Some(check(r, uid, Outcome::Pass, "1 round asked: a single release"));
+    }
+    let w = match weapon_for(uid, named, track, world, ec) {
+        Some(Ok(c)) => c.weapon,
+        Some(Err(why)) => return Some(check(r, uid, Outcome::Fail, format!("{n} rounds asked, and no weapon to release them: {why}"))),
+        None => return Some(check(r, uid, Outcome::Fail, format!("{n} rounds asked: the platform has no loadout to release them from"))),
+    };
+    if !w.kind.flies() {
+        return Some(check(
+            r,
+            uid,
+            Outcome::Fail,
+            format!(
+                "{n} rounds asked: a salvo needs a weapon that flies (a missile, a bomb or a torpedo), and the {} is {}",
+                w.name,
+                if w.kind == crate::catalog::WeaponKind::Gun {
+                    "a gun, whose bursts its magazine and window bound"
+                } else {
+                    "not one: one round"
+                }
+            ),
+        ));
+    }
+    // rules 35: and a usable flight model, or the preview forms no plan ([`salvo_plan`] via
+    // [`flight_estimate`]) and only the first round would release: a flying weapon whose munition
+    // has no finite speed and range cannot salvo (refused here, not released one round silently)
+    let m = w.munition();
+    if !(m.speed_mps.is_finite() && m.speed_mps > 0.0 && m.range_m.is_finite()) {
+        return Some(check(
+            r,
+            uid,
+            Outcome::Fail,
+            format!("{n} rounds asked: the {} has no flight figures (a munition speed and range) to release a salvo with", w.name),
+        ));
+    }
+    let left = uid.and_then(|u| crate::loadout::left(&w, world.rounds.get(u)));
+    if left.is_some_and(|l| l < n) {
+        return Some(check(
+            r,
+            uid,
+            Outcome::Fail,
+            format!("{n} rounds asked: the {} has {} left", w.name, left.unwrap_or(0)),
+        ));
+    }
+    Some(check(
+        r,
+        uid,
+        Outcome::Pass,
+        format!(
+            "{n} rounds of the {} asked, released at least {spacing:.0} s apart: within the policy's ceiling of {ceiling} a plan{}",
+            w.name,
+            left.map(|l| format!(" and the {l} left")).unwrap_or_default()
+        ),
+    ))
 }
 
 /// Rules 26: how long a burst of `rounds` lasts at the gun's cyclic rate, s, to a hundredth (as
@@ -1965,7 +2327,9 @@ pub fn preload_verify_due(e: &Engagement, now: Time, cfg: &RulesConfig) -> bool 
     let Some(snap) = &e.snapshot else { return false };
     let (from, until) = release_window(&snap.preview, &cfg.engage_rules());
     // rules 26: a gun's every burst reads it, so it is read again all through its firing window
-    if !firing(e) && (now < from.plus_ms(-ms(PRELOAD_VERIFY_LEAD_S)) || now > until) {
+    // (rules 35: a weapon that flies is released its flight before the strike's time)
+    let lead = PRELOAD_VERIFY_LEAD_S + snap.preview.flight_s.unwrap_or(0.0);
+    if !firing(e) && (now < from.plus_ms(-ms(lead)) || now > until) {
         return false;
     }
     let last = e.verified.as_ref().or(e.preloaded.as_ref()).map(|r| r.t);
@@ -2054,6 +2418,10 @@ pub struct EffectOrder {
     pub burst: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst_rounds: Option<u32>,
+    /// Rules 35: a salvo's round number (1: the release): the truth side draws each round on its
+    /// own stream (`effect:<intent>:r<round>`). None for a single release and a gun.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u32>,
 }
 
 impl EffectOrder {
@@ -2500,7 +2868,7 @@ pub fn preview(
     } else {
         (sigma_now + g * dt, sigma_now + g * dt, 0.0)
     };
-    Ok(EngagePreview {
+    let mut p = EngagePreview {
         t: world.t,
         window,
         start,
@@ -2521,9 +2889,19 @@ pub fn preview(
             semi_minor_m: minor,
             bearing_deg: bearing,
         },
-        weapon: weapon.map(|w| w.name),
+        weapon: None,
         fire_from,
-    })
+        salvo: None,
+        flight_s: None,
+    };
+    // rules 35: a salvo's rounds, spacing and ceiling, and each round's predicted release and
+    // strike
+    if ec.salvo() {
+        p.flight_s = weapon.as_ref().and_then(|w| flight_estimate(&p, v, w));
+        p.salvo = salvo_plan(spec, &p, &ec);
+    }
+    p.weapon = weapon.map(|w| w.name);
+    Ok(p)
 }
 
 // ---- the checks ----------------------------------------------------------------------------
@@ -2572,6 +2950,8 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         // rules 24: the plan's weapon still usable, a round of it left
         let named = plan.preview.weapon.as_deref().or(named_weapon(spec));
         out.extend(weapon_check(uid, named, track, world, &ec));
+        // rules 35: and its rounds still within the ceiling and the rounds left
+        out.extend(salvo_check(spec, uid, named, track, world, &ec));
         return out;
     }
     let pv = preview(spec, world, cfg);
@@ -2634,6 +3014,8 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
     out.push(armed_check(uid, world));
     // rules 24: the weapon it uses, named or picked, a round of it left
     out.extend(weapon_check(uid, named_weapon(spec), track, world, &ec));
+    // rules 35: the rounds asked, within the ceiling, the spacing and the rounds left
+    out.extend(salvo_check(spec, uid, named_weapon(spec), track, world, &ec));
     if ec.v2() {
         out.push(free_check(uid, world));
     }
@@ -5089,8 +5471,59 @@ pub fn picture(
     preloaded: Option<(&LostLinkPreload, Time)>,
     last_burst: Option<Time>,
 ) -> (Vec<CheckResult>, bool, bool) {
+    let held = match last_burst {
+        Some(t) => Held::Burst(t),
+        None => Held::Release,
+    };
+    picture_held(spec, snap, world, cfg, dispatched, prev_t, preloaded, held)
+}
+
+/// Rules 35 ([`crate::rules::SALVO_SINCE`]): a salvo's next round after its release, judged as a
+/// release of its own at its own time: every check of the picture (the target declared, its
+/// identity, recency and deviation, the keep-outs at the round's soonest strike, the link,
+/// navigation, a round of the weapon left, the window, with no lateness: only the approved window
+/// bounds its rounds) and every check of the release (the weapon's band, the strike's time, the
+/// plan's circle at the strike, the target's uncertainty, the preload read back). Nothing here
+/// stops the plan: `holds` says whether the picture's own checks pass and `ready` whether the round
+/// may go now; a round that may not is held (`engage.round_held`, decision 7).
+pub fn round_picture(
+    spec: &IntentSpec,
+    snap: &EngageSnapshot,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+    prev_t: Time,
+    preloaded: Option<(&LostLinkPreload, Time)>,
+) -> (Vec<CheckResult>, bool, bool) {
+    picture_held(spec, snap, world, cfg, true, prev_t, preloaded, Held::Round)
+}
+
+/// What a picture after the approval is held for: the release (before it), a gun's next burst
+/// (rules 26, from its last), a salvo's next round (rules 35).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Held {
+    Release,
+    Burst(Time),
+    Round,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn picture_held(
+    spec: &IntentSpec,
+    snap: &EngageSnapshot,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+    dispatched: bool,
+    prev_t: Time,
+    preloaded: Option<(&LostLinkPreload, Time)>,
+    held: Held,
+) -> (Vec<CheckResult>, bool, bool) {
     let ec = cfg.engage_rules();
-    let firing = last_burst.is_some();
+    let last_burst = match held {
+        Held::Burst(t) => Some(t),
+        _ => None,
+    };
+    // after a release (a gun's burst or a salvo's round): no lateness, only the window
+    let firing = held != Held::Release;
     let p = &snap.preview;
     let uid = platform_of(spec);
     let mut picture_checks = Vec::new();
@@ -5154,11 +5587,13 @@ pub fn picture(
     picture_checks.extend(weapon_check(uid, named, track, world, &ec));
     // rules 26: after a gun's release only the approved window bounds its bursts
     picture_checks.push(window_check(snap, world, &ec, dispatched && !firing, flight.as_ref().map(|(m, l)| (m, *l))));
-    let unseen_now = firing && unseen.iter().any(|i| picture_checks[*i].outcome != Outcome::Pass);
+    // (rules 26: a gun's target unseen holds its fire; rules 35: a salvo's round needs every check)
+    let gun = last_burst.is_some();
+    let unseen_now = gun && unseen.iter().any(|i| picture_checks[*i].outcome != Outcome::Pass);
     let holds = picture_checks
         .iter()
         .enumerate()
-        .all(|(i, c)| c.outcome == Outcome::Pass || (firing && unseen.contains(&i)));
+        .all(|(i, c)| c.outcome == Outcome::Pass || (gun && unseen.contains(&i)));
     let mut out = picture_checks;
     let mut ready = false;
     if dispatched && holds && !unseen_now {

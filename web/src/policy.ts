@@ -19,6 +19,11 @@ export interface PolicyAnswer {
 export interface EngageDefaults {
   effect_radius_m: number
   window_s: number
+  /** rules 35: the most rounds one signed plan may release, the salvo's ceiling; present only
+   *  where the policy raised it above one (a loosening, its reason in `policy.loosened`) */
+  max_rounds_per_plan?: number
+  /** rules 35: the least seconds between a salvo's releases (present with the ceiling) */
+  salvo_spacing_s?: number
 }
 
 export async function fetchPolicy(): Promise<PolicyAnswer> {
@@ -64,4 +69,24 @@ export function useGroupOrders(): boolean {
     }
   }, [])
   return on
+}
+
+/** Rules 35: why the policy raised the salvo's ceiling above one round a plan (its `loosened`
+ *  entry for `rules.engage.max_rounds_per_plan`, which the file must give): null until the policy
+ *  is read, or where it did not. Read once; the card states it beside the plan's rounds. */
+export function useCeilingReason(): string | null {
+  const [why, setWhy] = useState<string | null>(null)
+  useEffect(() => {
+    let gone = false
+    fetchPolicy()
+      .then((p) => {
+        const l = (p.policy as { loosened?: Record<string, string> } | null)?.loosened
+        if (!gone) setWhy(l?.['rules.engage.max_rounds_per_plan'] ?? null)
+      })
+      .catch(() => undefined)
+    return () => {
+      gone = true
+    }
+  }, [])
+  return why
 }

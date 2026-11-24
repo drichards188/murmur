@@ -123,6 +123,9 @@ pub enum RuleId {
     /// Rules 34: the layout puts no two members of one domain within both minima on their
     /// shares (more members than its layers or rings hold refuses the group).
     Separation,
+    /// Rules 35: a salvo's rounds: within the policy's ceiling a plan, the platform's rounds of
+    /// the weapon left, and a weapon that flies ([`crate::engage::salvo_check`]).
+    Salvo,
 }
 
 impl RuleId {
@@ -166,6 +169,7 @@ impl RuleId {
             RuleId::Strength => "strength",
             RuleId::Depth => "depth",
             RuleId::Separation => "separation",
+            RuleId::Salvo => "salvo",
         }
     }
 }
@@ -317,7 +321,24 @@ pub const RULES_VERSION: u32 = GROUP_ORDER_SINCE;
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
 /// and this to [`RULES_VERSION`] again. Rules 34, group orders (docs/SWARMS.md), were built so.
-pub const RULES_NEWEST: u32 = RULES_VERSION;
+/// Being built: rules 35 ([`SALVO_SINCE`], docs/SALVO.md).
+pub const RULES_NEWEST: u32 = SALVO_SINCE;
+
+/// The rules version from which one plan that two people sign may release several rounds of a
+/// weapon that flies (a missile, a bomb, a torpedo), a salvo (docs/SALVO.md, bd murmur-4nik, the
+/// owner's decisions of 2026-11-20, DECISIONS.md "One decision, many releases"; built behind
+/// [`RULES_NEWEST`], not yet the default). A nomination asks for `rounds`, at most the policy's
+/// `[rules.engage] max_rounds_per_plan` (standing 1: today's chain; above 1 a loosening named in
+/// `loosened`) and the platform's rounds of the weapon left; the preview gives each round's release
+/// and strike, frozen with the plan and shown on the picture token with the spacing
+/// (`salvo_spacing_s`, standing 5 s) and the ceiling. The release is round 1; then each spacing
+/// the engine judges the next round as a release of its own, at its own time (`engage.round`), and
+/// a round whose checks fail is held, logged with its reasons (`engage.round_held`), never the plan
+/// voided. The fire ends when the rounds asked are out, the ledger is empty, the window closes, the
+/// target leaves the picture, someone ceases (`engage.stopped`, the gun's stop) or the assessment,
+/// from the last impact, says ceased or unknown. Rounds in flight go on. Policy schema 10
+/// ([`SALVO_SCHEMA_SINCE`]). Every gate of that change reads this constant, never a literal.
+pub const SALVO_SINCE: u32 = 35;
 
 /// The rules version from which one order to many of our vehicles is a group order (bd murmur-4nik;
 /// docs/SWARMS.md, the owner's decisions of 2026-11-10, picked up on 2026-11-20 for the ordinary
@@ -782,9 +803,14 @@ pub const OPERATOR_AUTH_SINCE: u32 = 8;
 pub const POLICY_SCHEMA: u32 = GROUP_ORDER_SCHEMA_SINCE;
 
 /// The newest policy schema this build reads and replay accepts: [`POLICY_SCHEMA`], or the one
-/// rules being built behind [`RULES_NEWEST`] add (none now: rules 34's
+/// rules being built behind [`RULES_NEWEST`] add (rules 35's, [`SALVO_SCHEMA_SINCE`]; rules 34's
 /// [`GROUP_ORDER_SCHEMA_SINCE`] is the default).
-pub const POLICY_SCHEMA_NEWEST: u32 = POLICY_SCHEMA;
+pub const POLICY_SCHEMA_NEWEST: u32 = SALVO_SCHEMA_SINCE;
+
+/// The policy schema that adds `[rules.engage] max_rounds_per_plan` and `salvo_spacing_s` (with
+/// [`SALVO_SINCE`]): named so that a branch merging beside another schema bump renumbers it in one
+/// line.
+pub const SALVO_SCHEMA_SINCE: u32 = 10;
 
 /// The policy schema that adds `[group]` (with [`GROUP_ORDER_SINCE`]): named so that a branch
 /// merging beside another schema bump renumbers it in one line.
@@ -1061,12 +1087,21 @@ impl RulesConfig {
         self.rules_version >= IDENTIFY_CRITERIA_SINCE
     }
 
+    /// Rules 35 ([`SALVO_SINCE`]): one signed plan may release several rounds of a weapon that
+    /// flies, up to the policy's ceiling.
+    pub fn salvo(&self) -> bool {
+        self.rules_version >= SALVO_SINCE
+    }
+
     /// The policy schema a run under these rules logs (`run.started`'s `policy_schema`): from
-    /// rules 34 [`GROUP_ORDER_SCHEMA_SINCE`] (its `[group]`), under rules 33
+    /// rules 35 [`SALVO_SCHEMA_SINCE`] (its `[rules.engage]` salvo keys), from rules 34
+    /// [`GROUP_ORDER_SCHEMA_SINCE`] (its `[group]`), under rules 33
     /// [`SCENARIO_SETTINGS_SCHEMA_SINCE`] (their logged policy drops `[group]`), under older rules
     /// [`PASSKEY_SCHEMA_SINCE`] (it drops rules 33's keys too).
     pub fn policy_schema(&self) -> u32 {
-        if self.group_orders() {
+        if self.salvo() {
+            SALVO_SCHEMA_SINCE
+        } else if self.group_orders() {
             GROUP_ORDER_SCHEMA_SINCE
         } else if self.scenario_settings() {
             SCENARIO_SETTINGS_SCHEMA_SINCE

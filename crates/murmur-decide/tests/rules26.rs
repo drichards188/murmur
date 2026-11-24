@@ -222,6 +222,8 @@ fn nomination() -> IntentSpec {
             window: None,
             fallback: Fallback::Abort,
             weapon: Some(GUN.into()),
+            rounds: None,
+            spacing_s: None,
         },
         uids: vec![uid("bull-1")],
         constraints: Default::default(),

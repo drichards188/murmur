@@ -714,6 +714,33 @@ pub enum EventBody {
         detail: String,
     },
 
+    /// Engage, rules 35: one round of a salvo after its release (the release, `engage.effect`, is
+    /// round 1): its number, the platform, its flight (launched now from where the releasing
+    /// picture had the platform, striking at its impact) and the weapon with the rounds of it left
+    /// (the ledger counts the round). It follows, in the same step, an `engage.picture` whose
+    /// round checks all passed ([`crate::engage::round_picture`]); replay recomputes the flight and
+    /// the weapon from that picture and binds the round to the plan's spacing, its count and the
+    /// approved window. The truth side draws it on its own stream (`effect:<intent>:r<round>`).
+    #[serde(rename = "engage.round")]
+    EngageRound {
+        intent: IntentId,
+        uid: Uid,
+        round: u32,
+        munition: crate::engage::MunitionFlight,
+        weapon: crate::loadout::WeaponRelease,
+    },
+
+    /// Engage, rules 35: a salvo's next round held at its release, its checks failing on the
+    /// `engage.picture` just before it (decision 7: held, never the plan voided): the round and the
+    /// checks that failed. Logged when a round is held and again when the checks that hold it
+    /// change; replay recomputes them from that picture.
+    #[serde(rename = "engage.round_held")]
+    EngageRoundHeld {
+        intent: IntentId,
+        round: u32,
+        failed: Vec<CheckResult>,
+    },
+
     /// Rules 27 ([`crate::rules::MINE_SINCE`]): one mine of a dispatched lay order laid, the
     /// record the law asks for (amended CCW Protocol II, Technical Annex; Hague VIII): the field
     /// (its lay order), the layer, its number of the order's count, its place on the line, the

@@ -41,7 +41,7 @@ import {
   windowFor,
 } from './engageSteps'
 import { KeepOutExplain } from './KeepOutExplain'
-import { useEngageDefaults } from './policy'
+import { useCeilingReason, useEngageDefaults } from './policy'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import type { Track, TracksMessage } from './tracks'
@@ -213,6 +213,11 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
   /** a nomination's window, the policy's where it named none */
   const windowIn = (i: Intent) => windowOf(i) ?? defaults?.window_s ?? null
   const [fallback, setFallback] = useState<Fallback>(base ? engageParams(base).fallback : 'return')
+  // rules 35: a salvo's rounds on the one plan, offered only where the policy raised the ceiling
+  const ceiling = defaults?.max_rounds_per_plan ?? 1
+  const ceilingWhy = useCeilingReason()
+  const [roundsSet, setRounds] = useState<number | null>(null)
+  const rounds = ceiling > 1 ? Math.min(ceiling, Math.max(1, roundsSet ?? 1)) : 1
   const [options, setOptions] = useState<EngageOption[] | null>(null)
   const [uid, setUid] = useState<number | null>(base ? Number(base.uids[0]) : (initial.uid ?? null))
   const [rationale, setRationale] = useState(base?.rationale ?? '')
@@ -298,7 +303,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
     }
     let gone = false
     const id = window.setTimeout(() => {
-      engageOptions(track, radius, windowS, fallback, replaces)
+      engageOptions(track, radius, windowS, fallback, replaces, rounds)
         .then((o) => {
           if (gone) return
           setOptions(o)
@@ -313,7 +318,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
       window.clearTimeout(again)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track, radius, windowS, fallback, replaces, tick])
+  }, [track, radius, windowS, fallback, replaces, rounds, tick])
 
   // murmur-8xe: the nomination being replaced ended on its own (expired, rejected or signed by
   // someone else): this is a plain nomination now, said in one line
@@ -460,7 +465,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
         setRejectedHere(replacing)
         rejecting.current = null
       }
-      const i = await nominate({ track, uid, radius, windowS, fallback, rationale, acceptLost: list, acceptBehaving: behavingIds, proof })
+      const i = await nominate({ track, uid, radius, windowS, fallback, rationale, rounds, acceptLost: list, acceptBehaving: behavingIds, proof })
       setStepBad(false)
       onNominated(i.id, replacing ?? undefined)
     } catch (e) {
@@ -654,7 +659,24 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
                 min
               </span>
             </label>
+            {ceiling > 1 && (
+              <label title="How many rounds of the weapon this one plan, signed once by two operators, may release">
+                Rounds
+                <span className="eg-unit">
+                  <input type="number" min={1} max={ceiling} step={1} value={rounds} onChange={(e) => setRounds(Math.max(1, Math.round(Number(e.target.value) || 1)))} />
+                  of {ceiling}
+                </span>
+              </label>
+            )}
           </div>
+          {ceiling > 1 && (
+            <p className="eg-muted">
+              {rounds > 1
+                ? `A salvo: ${rounds} rounds on one plan, at least ${Math.round(defaults?.salvo_spacing_s ?? 0)} s apart, each checked at its own release; any operator may cease it, and rounds in flight cannot be recalled.`
+                : 'One round, as every engagement was.'}
+              {ceilingWhy ? ` The policy raised the ceiling above one: ${ceilingWhy}.` : ''}
+            </p>
+          )}
           {radius == null || windowS == null ? (
             <p className="eg-muted">{defaultsError ? `The policy's defaults could not be read (${defaultsError}): name a radius and a window.` : "Reading the policy's defaults."}</p>
           ) : null}

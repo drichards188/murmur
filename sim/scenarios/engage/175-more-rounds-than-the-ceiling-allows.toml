@@ -1,0 +1,59 @@
+# Rules 35 (docs/SALVO.md): the standing policy lets one plan release one round, today's chain. The
+# same nomination as scenario 174 with two rounds is refused at once by the `salvo` check, which says
+# the ceiling it asked more than (rules.engage.max_rounds_per_plan, 1): raising it takes a
+# policy file that names the loosening (scenario 174), never a nomination.
+title = "More rounds than the policy's ceiling allows"
+invariant = "approval"
+attack = "a nomination that releases more rounds than the policy lets one plan carry"
+expect = "rejected"
+expect_rule = "salvo"
+min_rules = 35
+end_s = 20
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "hive-1"
+platform = "ugv_launcher"   # 18 rounds of the HIV3-class launcher; its sight covers the point
+autopilot = "ugv"           # a stand-in rover: the heartbeat says so, the catalog's stand-in entry does not
+at = [-122.4950, 37.7960]   # on the shore, 1,800 m south of the boat (the runner's land)
+alt_m = 10
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "hive-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 600
+weapon = "HIV3-class launcher"
+rounds = 2
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "rejected"
+rule = "salvo"

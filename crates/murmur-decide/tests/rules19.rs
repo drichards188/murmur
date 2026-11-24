@@ -244,6 +244,8 @@ fn nomination(aircraft: TrackFacts) -> (IntentSpec, WorldSnapshot) {
             window: Some(EngageWindow { from: None, until: T0.plus_ms(600_000) }),
             fallback: Fallback::Return,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         uids: vec![uid("blade-1")],
         constraints: Constraints::default(),

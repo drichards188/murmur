@@ -1,3 +1,4 @@
+import { useCeilingReason } from './policy'
 import { useEffect, useRef, useState } from 'react'
 import type { ApproveExtra, Check, Intent } from './decisions'
 import { fmtDuration, fmtZ, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
@@ -18,6 +19,7 @@ import {
   engageParams,
   FALLBACK_LABEL,
   fireLine,
+  salvoLine,
   firing,
   fmtDist,
   fmtRel,
@@ -544,6 +546,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const nomination = i.engagement?.preview ?? null
   const live = view?.live
   const pv = live?.preview ?? nomination
+  const ceilingWhy = useCeilingReason()
   const platform = nameOf(vehicles, i.uids[0] ?? '?')
   const needed = view?.approvers_needed ?? i.policy?.approvers ?? 1
   const signed = view?.signed ?? []
@@ -724,6 +727,15 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
               {windowUntil != null ? `; window closes ${fmtRel(windowUntil - now())}` : ''}
             </span>
           </li>
+          {pv?.salvo && (
+            <li>
+              <span className="eg-k">Rounds</span>
+              <span>
+                {pv.salvo.rounds} on this one plan, at least {Math.round(pv.salvo.spacing_s)} s apart, the ceiling {pv.salvo.ceiling}
+                {ceilingWhy ? ` (raised: ${ceilingWhy})` : ''}. Each round is checked at its own release, any operator may cease the salvo, and rounds in flight cannot be recalled.
+              </span>
+            </li>
+          )}
           <li>
             <span className="eg-k">Fallback</span>
             <span>{FALLBACK_LABEL[p.fallback]}, if it stops before the effect</span>
@@ -941,7 +953,16 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       {e?.fire && (
         <p className={`eg-fire ${e.fire.ended ? '' : 'firing'}`} title={e.fire.ended?.detail}>
           <b>{fireLine(e.fire)}</b>
-          {!e.fire.ended && ` (last burst ${fmtRel(e.fire.last_t - now())})`}
+          {!e.fire.ended && ` (last ${e.fire.salvo ? 'round' : 'burst'} ${fmtRel(e.fire.last_t - now())})`}
+        </p>
+      )}
+      {e?.fire?.salvo && (
+        <p className="eg-salvo" title="One plan, two signatures, up to the ceiling's rounds: each round is checked at its own release, and rounds in flight cannot be recalled">
+          {salvoLine(e.fire, now())}
+          {e.fire.salvo.held && !e.fire.ended && (
+            <span className="eg-alarm"> Round {e.fire.salvo.held.round} is held: {e.fire.salvo.held.reasons.join('; ')}</span>
+          )}
+          {e.fire.salvo.holds > 0 && !e.fire.salvo.held && ` (${e.fire.salvo.holds} hold${e.fire.salvo.holds === 1 ? '' : 's'} met, each cleared)`}
         </p>
       )}
       {i.state === 'effected' && !(e?.munition && now() < e.munition.impact_t) && (
@@ -965,10 +986,14 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       {abortable && (
         <footer className="ix-actions" onClick={(ev) => ev.stopPropagation()}>
           <span className="muted">
-            {gunFiring ? 'Any operator may stop the fire; the assessment goes on.' : 'Any operator may abort until the effect.'}
+            {gunFiring
+              ? e?.fire?.salvo
+                ? 'Any operator may cease the salvo: no further round is released; rounds in flight go on and are assessed.'
+                : 'Any operator may stop the fire; the assessment goes on.'
+              : 'Any operator may abort until the effect.'}
           </span>
           <button className="eg-abort" disabled={busy} onClick={abort}>
-            {gunFiring ? 'Cease fire' : 'Abort'}
+            {gunFiring ? (e?.fire?.salvo ? 'Cease salvo' : 'Cease fire') : 'Abort'}
           </button>
           {error && <p className="error ix-error">{error}</p>}
         </footer>

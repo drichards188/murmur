@@ -176,6 +176,15 @@ pub enum Task {
         /// and in older logs).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weapon: Option<String>,
+        /// Rules 35: how many rounds of the weapon the plan may release, a salvo (at most the
+        /// policy's `[rules.engage] max_rounds_per_plan` and the rounds left; absent: one, as
+        /// before, and in older logs).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rounds: Option<u32>,
+        /// Rules 35: the seconds between a salvo's releases the nomination asks for, at least the
+        /// policy's `[rules.engage] salvo_spacing_s` (absent: the policy's).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spacing_s: Option<f64>,
     },
     /// Rules 21: have the one vehicle in `uids` identify the track `track` (a perception
     /// track id): the engine lays out an orbit around the track's position at a standoff from
@@ -373,6 +382,8 @@ impl Task {
                 effect_radius_m,
                 window,
                 weapon,
+                rounds,
+                spacing_s,
                 ..
             } => {
                 if track.trim().is_empty() {
@@ -380,6 +391,12 @@ impl Task {
                 }
                 if weapon.as_ref().is_some_and(|w| w.trim().is_empty()) {
                     return bad("engage's weapon is a loadout weapon's name, or left out for the engine to pick");
+                }
+                if rounds.is_some_and(|n| n == 0) {
+                    return bad("engage's rounds is how many the plan may release: at least one, or left out for one");
+                }
+                if spacing_s.is_some_and(|s| !(s.is_finite() && s > 0.0)) {
+                    return bad("engage's spacing_s is the seconds between a salvo's releases: a positive number, or left out for the policy's");
                 }
                 if !(effect_radius_m.is_finite() && *effect_radius_m > 0.0) {
                     return bad("effect_radius_m must be a positive number of metres");

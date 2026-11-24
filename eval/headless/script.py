@@ -33,7 +33,13 @@ Each item is `{"at_s": t, "kind": ...}` or waits for a trigger:
   its track and vehicles resolved as a proposal's; with `unless_nominated`, skipped while a
   nomination on the track stands, whoever made it; with `wait_s`, the nomination form's dry run
   (`get_nomination_options`) asked every 3 s until the platform passes every check, skipped with
-  the failing checks if it never does; then `agent-scripted` nominates it over MCP. Who signs it
+  the failing checks if it never does; then `agent-scripted` nominates it over MCP. A salvo's
+  (rules 35) `rounds` and `spacing_s` go with the dry run and the nomination; with `after_step`
+  the step waits for the salvo that step nominated to release its last round, then `after_s` more
+  (from the engine's time of it), skipped if it ends without firing or none fires within
+  `after_wait_s`; with `cease_after_rounds` op-planner (a script, saying so in its note) ceases the
+  salvo once that many rounds are out, giving up after `cease_wait_s` (eval/engage.py
+  `after_fire`, `cease_after`, as live). Who signs it
   is the episode's (`Options.signers`, signers.py, docs/HEADLESS.md section 16); without signers
   the nomination waits and expires, as live with no one at the console. A `red` step (an order
   to one of the contacts, docs/AUTONOMOUS-NODES.md 2.5) goes, as the live runner posts it to the
@@ -110,6 +116,9 @@ class Script:
         self.queue: list[tuple[float, int, dict[str, Any]]] = []
         self.watch: list[dict[str, Any]] = []
         self.n = 0
+        # rules 35: the intent each `engage` step's nomination made, by step id (a later step's
+        # `after_step` waits for its fire to end)
+        self._intent_of: dict[str, int] = {}
         for it in self.items:
             if it.get("kind") in TRIGGERED and it.get("after_first_look"):
                 self.watch.append(it)
@@ -245,6 +254,9 @@ class Script:
             elif kind == "step":
                 if self._step(now, it, rec) is False:
                     return  # tried again later (`retry_s`): logged when it is done
+            elif kind == "cease":
+                if self._cease(now, it, rec) is False:
+                    return  # looked at again in 1 s: logged when it ceases or gives up
             else:
                 rec["error"] = f"unknown kind {kind!r}"
         except Exception as e:  # noqa: BLE001 (recorded; the episode goes on)
@@ -390,6 +402,11 @@ class Script:
         if it.get("proposer", "agent") != "agent":
             rec["error"] = "the operator proposer (op-planner) is not in the headless simulator: [storyline] proposer = agent"
             return None
+        if p.get("after_step") and not it.get("after_done"):
+            waited = self._after_fire(now, it, rec)
+            if waited is not True:
+                return waited  # False: looked at again later; None: skipped, said in `rec`
+            it = {**it, "after_done": True, "first_t": now}
         first = float(it.get("first_t", now))
         try:
             status, state = sim.api("GET", "/api/state")
@@ -418,6 +435,8 @@ class Script:
             s = HeadlessSession(sim, STORYLINE_AGENT, "0.1")
             x = req["extra"]
             named = {"weapon": x["weapon"]} if x.get("weapon") else {}
+            # rules 35: a salvo's rounds and spacing, judged as the nomination will be
+            named.update({k: x[k] for k in ("rounds", "spacing_s") if x.get(k) is not None})
             form = self.ep.run_async(s.call("get_nomination_options", track_id=x["track"],
                                             effect_radius_m=x["effect_radius_m"], window_s=x["window_s"],
                                             fallback=x["fallback"], uids=uids, **named))
@@ -437,7 +456,78 @@ class Script:
         out = self.ep.run_async(s.propose(labelled(SCRIPTED_TIMELINE, rationale), **_mcp_args(req)))
         rec.update(intent=out.get("id"), state=out.get("state"), refused=out.get("refused"), request=req,
                    waited_s=round(now - float(it.get("wait_from", now)), 3))
+        if out.get("id") is not None:
+            self._intent_of[str(it["id"])] = int(out["id"])
+            # rules 35: a scripted Cease partway through the salvo (eval/engage.py `cease_after`)
+            if p.get("cease_after_rounds"):
+                self._push(now + 1.0, {"kind": "cease", "step": it["id"], "intent": int(out["id"]),
+                                       "rounds": int(p["cease_after_rounds"]),
+                                       "until": now + float(p.get("cease_wait_s", 1200))})
         return None
+
+    def _after_fire(self, now: float, it: dict[str, Any], rec: dict[str, Any]) -> bool | None:
+        """Rules 35, eval/engage.py `EngageAdapter.after_fire` on the simulated clock: an `engage`
+        step with `after_step` waits until the salvo that step nominated has released its last
+        round, then `after_s` more seconds from that release (the engine's time of it). False: not
+        yet, looked at again (every second, or at the release plus `after_s`); None: skipped (the
+        other plan never fired within `after_wait_s`, or ended without firing), said in `rec`;
+        True: go on now."""
+        p = it["params"]
+        after, after_s = str(p["after_step"]), float(p.get("after_s", 5))
+        since = float(it.get("after_from", now))
+        give_up = since + float(p.get("after_wait_s", 1200))
+        iid = self._intent_of.get(after)
+        if iid is not None:
+            status, out = self.ep.sim.api("GET", "/api/intents")
+            i = next((x for x in ((out or {}).get("intents", []) if status == 200 else [])
+                      if int(x.get("id", -1)) == iid), None)
+            if i is None or i.get("state") in ("aborted", "voided", "rejected", "failed", "expired"):
+                rec.update(skipped=f"{after}'s nomination (intent {iid}) ended "
+                                   f"{i.get('state') if i else 'unknown'} without firing", after=after)
+                return None
+            fire = (i.get("engagement") or {}).get("fire") or {}
+            if fire.get("ended") is not None or i.get("state") == "done":
+                last = fire.get("last_t")
+                go = (float(last) / 1000.0 - self.ep.sim_epoch + after_s) if last is not None else now + after_s
+                if go > now + 1e-6 and not it.get("after_at"):
+                    self._push(go, {**it, "after_from": since, "after_at": go})
+                    return False
+                rec.update(after=after, after_intent=iid, after_s=after_s,
+                           after_waited_s=round(now - since, 3))
+                return True
+        if now + 1.0 > give_up:
+            rec.update(skipped=f"{after} did not fire within {give_up - since:g} s", after=after)
+            return None
+        self._push(now + 1.0, {**it, "after_from": since})
+        return False
+
+    def _cease(self, now: float, it: dict[str, Any], rec: dict[str, Any]) -> bool | None:
+        """Rules 35, eval/engage.py `EngageAdapter.cease_after` on the simulated clock: once the
+        salvo of intent `intent` has released `rounds` rounds and still fires, the situation's
+        scripted operator (op-planner, never a person) ceases it (`POST /api/intents/{id}/abort`:
+        any operator may), saying so in its note. Gives up when the intent ends or `until` passes.
+        False: looked at again in 1 s."""
+        iid, rounds = int(it["intent"]), int(it["rounds"])
+        rec.update(step=it.get("step"), intent=iid)
+        status, out = self.ep.sim.api("GET", "/api/intents")
+        i = next((x for x in ((out or {}).get("intents", []) if status == 200 else [])
+                  if int(x.get("id", -1)) == iid), None)
+        if i is None or i.get("state") in ("done", "aborted", "voided", "rejected", "failed", "expired"):
+            rec["skipped"] = f"intent {iid} ended {i.get('state') if i else 'unknown'} before {rounds} rounds"
+            return None
+        fire = (i.get("engagement") or {}).get("fire") or {}
+        if i.get("state") == "effected" and fire.get("ended") is None and int(fire.get("bursts") or 0) >= rounds:
+            note = (f"situation timeline (scripted, not a person): ceases the salvo after {fire.get('bursts')} "
+                    f"of {(fire.get('salvo') or {}).get('asked')} rounds")
+            status, ans = self.ep.sim.api("POST", f"/api/intents/{iid}/abort", {"note": note}, STORYLINE_OPERATOR)
+            rec.update(operator=STORYLINE_OPERATOR, rounds=fire.get("bursts"), note=note, status=status,
+                       **({"answer": ans} if status != 200 else {}))
+            return None
+        if now + 1.0 > float(it["until"]):
+            rec["skipped"] = f"intent {iid} had not released {rounds} rounds by {float(it['until']):g} s"
+            return None
+        self._push(now + 1.0, it)
+        return False
 
     def _center(self, c: Any, lead: dict[str, Any], now: float) -> tuple[list[float], dict[str, Any]]:
         """eval/storyline.py `resolve_center` without truth: a place, a track as the C2 shows it,

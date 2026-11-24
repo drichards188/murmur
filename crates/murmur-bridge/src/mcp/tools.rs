@@ -287,6 +287,14 @@ pub struct IntentParams {
     /// platform.loadout lists each weapon and its rounds left); omitted, the engine picks the
     /// first of the loadout usable against the target with a round left and says why.
     pub weapon: Option<String>,
+    /// engage: how many rounds of the weapon this one plan may release, a salvo (default 1; at
+    /// most the policy's max_rounds_per_plan, which a refusal names, and the rounds the platform has
+    /// left). Two operators sign the plan once, for all of them: each round is still
+    /// checked at its own release, and any operator may cease it.
+    pub rounds: Option<u32>,
+    /// engage: the seconds between a salvo's releases (default and least: the policy's
+    /// salvo_spacing_s).
+    pub spacing_s: Option<f64>,
     /// lay: the number of mines, spaced evenly along route (its line, driven once).
     pub count: Option<u32>,
     /// lay: the hours each mine stays live before it goes inert (mandatory).
@@ -396,6 +404,10 @@ pub struct NominationOptionsParams {
     /// The loadout weapon to judge each platform with, by name (default: the engine picks one
     /// per platform and says why in its weapon check).
     pub weapon: Option<String>,
+    /// The rounds a salvo asks for, judged as the nomination would be (default 1).
+    pub rounds: Option<u32>,
+    /// The seconds between a salvo's releases (default: the policy's).
+    pub spacing_s: Option<f64>,
     /// Only whether each passes (uid, callsign, passed), without the checks, preview and
     /// keep-out explanation: small and quick, for watching whether one passes. Default false.
     pub passed_only: Option<bool>,
@@ -470,6 +482,8 @@ impl IntentParams {
         put("window_s", self.window_s.map(|v| json!(v)));
         put("fallback", self.fallback.map(Value::String));
         put("weapon", self.weapon.map(Value::String));
+        put("rounds", self.rounds.map(|v| json!(v)));
+        put("spacing_s", self.spacing_s.map(|v| json!(v)));
         put("count", self.count.map(|v| json!(v)));
         put("live_h", self.live_h.map(|v| json!(v)));
         // rules 34: refused under older rules, as the operator's would be
@@ -992,6 +1006,8 @@ pub async fn call(
                     // murmur-8xe: agents cannot reject, so they are never offered a replace
                     replaces: None,
                     weapon: p.weapon,
+                    rounds: p.rounds,
+                    spacing_s: p.spacing_s,
                 })
                 .await
         }

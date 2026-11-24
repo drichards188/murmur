@@ -13,6 +13,8 @@ export interface ImpactEvent {
   munition?: Munition
   /** the weapon's catalog kind (missile, bomb, torpedo...), for its symbol */
   kind?: string
+  /** the weapon's catalog profile (munition.ts loadoutProfile), for the path it is drawn on */
+  profile?: string
   radius_m: number
   platform?: string
   track?: string

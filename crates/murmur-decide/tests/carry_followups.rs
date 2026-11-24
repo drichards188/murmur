@@ -829,6 +829,8 @@ fn a_nomination_is_refused_while_a_failed_carry_may_owe_its_platform() {
             window: None,
             fallback: Fallback::Return,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         uids: vec![uid("blade-1")],
         constraints: Default::default(),

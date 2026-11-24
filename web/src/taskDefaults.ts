@@ -20,6 +20,9 @@ export interface PlatformLimits {
   space_class?: string
   /** one-way: spent by its own effect (a loitering munition), so it is its own munition */
   expended_by_effect?: boolean
+  /** its weapons as the catalog lists them (rules 24): what the intent record does not carry of
+   *  them, such as the flight profile a munition is drawn by (munition.ts loadoutProfile) */
+  loadout?: { name: string; kind: string; profile?: string }[]
 }
 
 // Must match sim/policy.toml [rules]: the decision core rejects an orbit tighter than this.

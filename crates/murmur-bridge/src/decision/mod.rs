@@ -2996,6 +2996,8 @@ impl Decision {
             alerts.extend(self.carry_alert(&core, clock::wall()));
             alerts.extend(self.pending_carry_alerts(&core, clock::wall()));
             alerts.extend(self.spent_alerts(&core, clock::wall()));
+            // rules 35: a salvo that released fewer rounds than the one plan was signed for
+            alerts.extend(self.salvo_alerts(&core, clock::wall()));
             alerts.extend(self.space_alerts(&core, clock::wall()));
             // rules 17: an rtl that went as ordered though its way home crosses land
             alerts.extend(self.route_alerts(&core, &ops, &fleet, clock::wall()));

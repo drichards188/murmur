@@ -1,0 +1,97 @@
+# Rules 35 (docs/SALVO.md, decision 7): a round whose checks fail at its release is held, never the
+# plan voided. As scenario 174 with four rounds. The release (26 s) and round 2 (31 s) go out. The
+# launcher stops reporting at 28 s (round 2 still goes at 31 s, on a position 3 s old): when round
+# 3 falls due (36 s) its link check fails on a stale position, the round is held and logged with the checks that hold it (`engage.round_held`), logged
+# again at 39 s when a second check (navigation) joins them, and the fire waits; the plan is not
+# voided. At 42 s it is heard again, the checks pass and the fire goes on: rounds 3 and 4 follow
+# (43 and 48 s), and all four are out. A gun's unseen target holds its fire the same way
+# (rules 26).
+title = "A failing round is held, not the plan voided"
+invariant = "abort"
+attack = "a plan voided or a round released on a picture that did not hold"
+expect = "done"
+expect_assessment = "ceased"
+expect_rounds = 4
+expect_fire_end = "all_released"
+expect_rounds_held = 2
+expect_rounds_left = 14
+cease_at_round = 4
+policy = "sim/scenarios/engage/policies/salvo-ceiling-6.toml"
+min_rules = 35
+end_s = 300
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "hive-1"
+platform = "ugv_launcher"   # 18 rounds of the HIV3-class launcher; its sight covers the point
+autopilot = "ugv"           # a stand-in rover: the heartbeat says so, the catalog's stand-in entry does not
+at = [-122.4950, 37.7960]   # on the shore, 1,800 m south of the boat (the runner's land)
+alt_m = 10
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "hive-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 600
+weapon = "HIV3-class launcher"
+rounds = 4
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+# the launcher goes quiet after round 2: round 3, due at 36 s, is held, the plan stands; it is heard
+# again and the round goes
+[[step]]
+at_s = 28
+action = "vehicle"
+uid = "hive-1"
+silent = true
+
+[[step]]
+at_s = 42
+action = "vehicle"
+uid = "hive-1"
+silent = false

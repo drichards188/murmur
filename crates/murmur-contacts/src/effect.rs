@@ -137,6 +137,10 @@ pub struct EffectNotice {
     /// (`effect:<intent>:<burst>`). None for any other weapon (`effect:<intent>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst: Option<u32>,
+    /// Rules 35: a salvo's round number (1: its release): each round is drawn on its own stream
+    /// (`effect:<intent>:r<round>` [E]). None for a single release and a gun.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u32>,
     /// The engaging platform is spent by its own effect (its catalog's `expended_by_effect`, as
     /// the bridge's release picture has it: an FPV, a Switchblade, a Magura): it is the weapon,
     /// and the live vehicle simulation takes it out of the world at the effect
@@ -148,9 +152,10 @@ pub struct EffectNotice {
 impl EffectNotice {
     /// The stream its draws are named by: the intent's, and a gun's burst's (rules 26).
     pub fn stream(&self) -> String {
-        match self.burst {
-            Some(b) => format!("effect:{}:{b}", self.intent),
-            None => format!("effect:{}", self.intent),
+        match (self.burst, self.round) {
+            (Some(b), _) => format!("effect:{}:{b}", self.intent),
+            (None, Some(r)) => format!("effect:{}:r{r}", self.intent),
+            (None, None) => format!("effect:{}", self.intent),
         }
     }
 }
@@ -234,6 +239,9 @@ pub struct EffectApplied {
     /// Rules 26: a gun's burst it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst: Option<u32>,
+    /// Rules 35: a salvo's round it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u32>,
 }
 
 /// The engaging platform of `e`, when it is spent by its own effect
@@ -328,6 +336,7 @@ pub fn apply_with(e: &EffectNotice, movers: &mut [Mover], now: f64, ctx: Option<
         damage: Vec::new(),
         ours_damaged: Vec::new(),
         burst: e.burst,
+        round: e.round,
     }
 }
 
@@ -472,9 +481,10 @@ fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ct
             ours_damaged.push(OursDamaged {
                 uid: o.uid.clone(),
                 state: r.state,
-                cause: match e.burst {
-                    Some(b) => format!("caught in burst {b} of intent {} ({})", e.intent, w.name),
-                    None => format!("caught in the effect of intent {} ({})", e.intent, w.name),
+                cause: match (e.burst, e.round) {
+                    (Some(b), _) => format!("caught in burst {b} of intent {} ({})", e.intent, w.name),
+                    (None, Some(r)) => format!("caught in round {r} of intent {} ({})", e.intent, w.name),
+                    (None, None) => format!("caught in the effect of intent {} ({})", e.intent, w.name),
                 },
             });
         }
@@ -503,6 +513,7 @@ fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ct
         damage: records,
         ours_damaged,
         burst: e.burst,
+        round: e.round,
     }
 }
 
@@ -574,6 +585,7 @@ mod tests {
             munition: None,
             weapon: None,
             burst: None,
+            round: None,
             expended_by_effect: false,
         };
         let r = apply(&e, &mut movers, 101.0);
@@ -607,6 +619,7 @@ mod tests {
             munition: None,
             weapon: None,
             burst: None,
+            round: None,
             expended_by_effect: false,
         }
     }

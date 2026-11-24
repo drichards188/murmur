@@ -271,7 +271,7 @@ async fn saturation_scale() {
             id: murmur_decide::IntentId(0),
             created_t: world.t,
             source: murmur_decide::Source::Human { id: OperatorId::new("dry-run") },
-            task: murmur_decide::Task::Engage { track: "T-0001".into(), effect_radius_m: 75.0, window: None, fallback: murmur_decide::Fallback::Return, weapon: None },
+            task: murmur_decide::Task::Engage { track: "T-0001".into(), effect_radius_m: 75.0, window: None, fallback: murmur_decide::Fallback::Return, weapon: None, rounds: None, spacing_s: None },
             uids: vec![murmur_decide::Uid::new("1")],
             constraints: Constraints::default(),
             rationale: None,

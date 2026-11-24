@@ -36,7 +36,8 @@
 #        count is rounds per load (each release spends one; a gun's rounds, not bursts); ranges
 #        are the slant distance from launch to the effect point, speed an average. A missile,
 #        bomb or torpedo flies rules 20's straight slant line at that speed (the profile is
-#        recorded, not modelled yet); `self` is the platform itself (a one-way strike, spent by
+#        recorded, not modelled; the console draws a "dive" missile's climb, cruise and descent
+#        over the line's ends and times, web/src/munition.ts); `self` is the platform itself (a one-way strike, spent by
 #        its own effect). Guns and mines are listed but inert until bd murmur-lbw8.3 and .4: no
 #        nomination may use one. effects = { <target kind> = { p_hit, p_kill, p_mobility,
 #        p_firepower } } (bd murmur-lbw8.2): the chance of a hit on one shot in good conditions,
@@ -590,6 +591,56 @@ endurance_h = 15
 loadout = [
   { name = "M2 .50 HMG", kind = "gun", count = 500, min_range_m = 0, max_range_m = 1800, speed_mps = 910, profile = "ballistic", guidance = "stabilised_sight", warhead = { class = "ball_ap_12_7mm", mass_kg = 0.043 }, targets = ["ground", "surface", "air"], burst_rounds = 6, rate_rpm = 525, burst_interval_s = 5, effects = { small_fast_boat = { p_hit = 0.20, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.15 }, fishing_vessel = { p_hit = 0.50, p_kill = 0.03, p_mobility = 0.17 }, sailboat = { p_hit = 0.50, p_kill = 0.02, p_mobility = 0.13 }, cargo_ship = { p_hit = 0.90, p_mobility = 0.01 }, vehicle = { p_hit = 0.40, p_kill = 0.20, p_mobility = 0.40 }, truck = { p_hit = 0.50, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.10 }, small_drone = { p_hit = 0.03, p_kill = 0.90 }, light_aircraft = { p_hit = 0.05, p_kill = 0.30, p_mobility = 0.40 }, person = { p_hit = 0.30, p_kill = 0.80 } } },
   { name = "FGM-148 Javelin", kind = "missile", count = 1, min_range_m = 65, max_range_m = 4750, speed_mps = 150, profile = "lofted", guidance = "imaging_infrared", warhead = { class = "tandem_heat", mass_kg = 8.4 }, targets = ["ground", "surface"], effects = { small_fast_boat = { p_hit = 0.75, p_kill = 0.85, p_mobility = 0.10, p_firepower = 0.05 }, fishing_vessel = { p_hit = 0.90, p_kill = 0.55, p_mobility = 0.40 }, sailboat = { p_hit = 0.85, p_kill = 0.65, p_mobility = 0.30 }, cargo_ship = { p_hit = 0.95, p_mobility = 0.45 }, vehicle = { p_hit = 0.85, p_kill = 0.90, p_mobility = 0.10 }, truck = { p_hit = 0.90, p_kill = 0.80, p_mobility = 0.15, p_firepower = 0.05 }, person = { p_hit = 0.80, p_kill = 1.0 } } },
+]
+# The UGV with a tube launcher of small strike drones that the US Army showed at Grafenwoehr on
+# 12 Nov 2026 (bd murmur-4nik.5; the owner, 2026-11-20: docs/SALVO.md decision 2's one exception).
+# Modelled to look and move right on the map, at a game's fidelity: rounded public figures and
+# estimates from docs/research/hiv3.md (its "Summary of picks", parts 2, 3.1 and 4.1, the
+# kinematic and physical ones only), nothing of a real system's engineering. Its effect stays
+# abstract: the loadout has no `effects`, so a strike puts everything inside the effect radius out
+# of play, as every effect did before the damage model.
+[ugv_launcher]
+name = "Drone-launcher UGV (R3NEGADE-class)"
+short = "UGV-D"
+role = "Drone-launcher UGV"
+armed = true
+domain = "ground"
+sim = "standin"
+behavior = "ugv"
+callsign = "HIVE"
+# mobility (hiv3.md 4.1, no figure published for the R3NEGADE; a THeMIS-class vehicle of about
+# 1.5 t [E]): 3 m/s off road, its cruise [E: the THeMIS's 5.6 m/s halved], 6 m/s on a road
+# [THeMIS-class, hiv3.md [19]], its most. A stand-in, as the fleets run the armed UGV: no SITL
+# vehicle, so no ArduPilot params.
+cruise_mps = 3
+max_mps = 6
+link = "mesh"
+sidc = "SFGPEV---------"
+# physical model: the armed UGV's sight (hiv3.md 4.1: a launcher variant changes the loadout,
+# not the vehicle), the EOS Guardian 2.0-class station's MWIR and day cameras as [ugv_armed]'s,
+# every figure and its source there.
+sensors = [{ type = "eo_ir", range_m = 2000, guess = true, slew_dps = 60, channels = [{ band = "mwir", wide_deg = 17.6, narrow_deg = 2.2, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 38, narrow_deg = 1.9, px = 1920, blur_urad = 20 }] }]
+physical_reach_m = { eo_ir = { air = 20120, ground = 12030, surface = 13310, size_class = { small_air = 10920, large_air = 24130, small_surface = 12100, large_surface = 15800, small_ground = 11120, large_ground = 12030 } } }
+protocol = "jaus"
+protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
+authenticity = "Same as the logistics UGV"
+authenticity_blocker = "SAE JAUS documents are paid"
+typical_alt_m = 0
+# endurance: [E] the THeMIS's 15 h hybrid ([62]), as the armed UGV's.
+endurance_h = 15
+# rules 24: the launcher as one weapon, its drones its rounds. kind "missile" is a stated
+# shortcut: there is no drone kind, and a missile on a ground platform gets rules 28's firing
+# position, judged at the strike as any missile. The figures (hiv3.md "Summary of picks"):
+# 18 drones, 6 tubes of 3 [E, part 2]; out to 10,000 m [E, 3.1: a launcher-borne short-range
+# drone]; 20 m/s, the drone's cruise [E, 3.1], which rules 20's straight line flies at (the
+# console draws the dive profile's climb, cruise and descent over the same ends and times:
+# web/src/munition.ts); a minimum of 300 m [E: room to climb out of the tube and come round into
+# its dive]; profile "dive", a loitering munition's terminal dive; guidance "operator_video_day"
+# [E: a small fixed day camera, 3.1], a generic string, no guidance modelled; warhead a
+# placeholder (no figure used: the effect is abstract, the owner's decision of 2026-11-20);
+# ground and surface targets. No effects: no hit, kill or damage figures.
+loadout = [
+  { name = "HIV3-class launcher", kind = "missile", count = 18, min_range_m = 300, max_range_m = 10000, speed_mps = 20, profile = "dive", guidance = "operator_video_day", warhead = { class = "placeholder", mass_kg = 0 }, targets = ["ground", "surface"] },
 ]
 [ugv_mines]
 name = "Mine-laying UGV"

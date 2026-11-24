@@ -122,16 +122,25 @@ fn the_weapon_check_shows_the_figures_and_reads_the_damage_report() {
 }
 
 /// Every weapon a nomination may use lists its figures, each kind one the truth side knows (a
-/// contact kind or one an alias maps to), and a table that can't stand is refused.
+/// contact kind or one an alias maps to), and a table that can't stand is refused. The one
+/// exception lists none on purpose: the drone-launcher UGV's HIV3-class launcher, modelled for
+/// look and motion only, its effect abstract (the owner, 2026-11-20, bd murmur-4nik.5).
 #[test]
 fn every_usable_weapon_lists_its_figures() {
     let kinds = [
         "small_fast_boat", "fishing_vessel", "sailboat", "cargo_ship", "vehicle", "truck", "small_drone", "light_aircraft", "uuv", "person",
     ];
+    let abstract_on_purpose = [("ugv_launcher", "HIV3-class launcher")];
     let c = catalog();
     let mut n = 0;
+    let mut abstracts = 0;
     for (id, p) in &c.platforms {
         for w in p.loadout.iter().filter(|w| w.kind.usable()) {
+            if abstract_on_purpose.contains(&(id.as_str(), w.name.as_str())) {
+                assert!(w.effects.is_empty(), "{id}: {} is abstract on purpose: no figures", w.name);
+                abstracts += 1;
+                continue;
+            }
             assert!(!w.effects.is_empty(), "{id}: {} lists no figures", w.name);
             for k in w.effects.keys() {
                 assert!(kinds.contains(&k.as_str()), "{id}: {}: {k}", w.name);
@@ -143,6 +152,7 @@ fn every_usable_weapon_lists_its_figures() {
         n, 10,
         "the Hellfire, the GBU-12, the AMRAAM, the Javelin, the three one-way platforms, (rules 26) the M2 and (rules 27) the TM-62M and the Hammerhead"
     );
+    assert_eq!(abstracts, abstract_on_purpose.len(), "each weapon abstract on purpose is in the catalog");
     let base = "[x]\ndomain = \"air\"\nsim = \"standin\"\narmed = true\n";
     let w = |effects: &str| {
         format!("{base}loadout = [{{ name = \"m\", kind = \"missile\", count = 2, min_range_m = 0, max_range_m = 1000, speed_mps = 100, profile = \"direct\", guidance = \"laser\", warhead = {{ class = \"heat\", mass_kg = 9 }}, targets = [\"surface\"], effects = {effects} }}]\n")

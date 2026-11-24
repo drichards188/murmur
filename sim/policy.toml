@@ -157,6 +157,11 @@ max_track_age_s = 5                         # last detection no older than this
 max_sigma_fraction = 0.5                    # track 1-sigma now <= this x effect radius
 max_effect_radius_m = 250                   # largest effect radius a nomination may ask for
 default_effect_radius_m = 75                # rules 33: a nomination that names no radius
+max_rounds_per_plan = 1                     # rules 35 (schema 10): the most rounds one signed plan may release, a
+                                            # salvo (docs/SALVO.md); one is today's chain and the floor, more is a
+                                            # loosening a file names in `loosened`
+salvo_spacing_s = 5                         # rules 35: the least seconds between a salvo's releases; shorter is a
+                                            # loosening too (a nomination may ask for more, never less)
 keep_out_m = 200                            # keep-out = effect radius + this: none of our vehicles and
                                             # no protected track (anything but the target and tracks an
                                             # operator declared hostile) predicted inside it at the effect time

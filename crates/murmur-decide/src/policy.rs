@@ -66,6 +66,12 @@
 //! `identification.nominate_unconfirmed = true`, or `rules.engage.min_identity_confidence` below
 //! what it extends gives (a file that extends none: below the code's 0.6), says so in `loosened =
 //! { "<key>" = "<why>" }`, and an entry that names nothing this file loosens is refused.
+//!
+//! **A salvo's ceiling** (rules 35, [`crate::rules::SALVO_SINCE`], policy schema 10, docs/SALVO.md).
+//! `[rules.engage] max_rounds_per_plan` (standing 1, the floor) and `salvo_spacing_s` (standing 5)
+//! are written out with the engagement's other keys and logged from rules 35; a ceiling above
+//! what a file extends is a loosening it names (`rules.engage.max_rounds_per_plan`), and a run of
+//! older rules refuses either set to another value ([`Policy::fits_rules`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -387,8 +393,15 @@ pub struct Policy {
 
 /// The keys a policy file may set looser than the file it extends (a file that extends none:
 /// than the code's defaults) only by naming them in `loosened` with a reason: a rule-declared
-/// track nominated before an operator confirms it, and a lower engagement identity bar.
-pub const LOOSENABLE: [&str; 2] = ["identification.nominate_unconfirmed", "rules.engage.min_identity_confidence"];
+/// track nominated before an operator confirms it, a lower engagement identity bar, and (rules 35)
+/// a higher ceiling on the rounds one signed plan may release and a shorter least spacing between
+/// them (how fast one decision releases).
+pub const LOOSENABLE: [&str; 4] = [
+    "identification.nominate_unconfirmed",
+    "rules.engage.min_identity_confidence",
+    "rules.engage.max_rounds_per_plan",
+    "rules.engage.salvo_spacing_s",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyError {
@@ -461,6 +474,9 @@ impl Policy {
         if let Some(e) = p.rules.engage.as_mut() {
             e.min_identity_level.get_or_insert(crate::identify::Level::Identify);
             e.default_effect_radius_m.get_or_insert(crate::engage::DEFAULT_EFFECT_RADIUS_M);
+            // rules 35: the salvo's ceiling and spacing (as_logged drops them under older rules)
+            e.max_rounds_per_plan.get_or_insert(crate::engage::STANDING_MAX_ROUNDS);
+            e.salvo_spacing_s.get_or_insert(crate::engage::STANDING_SALVO_SPACING);
         }
         p.validate()?;
         p.sync();
@@ -506,6 +522,13 @@ impl Policy {
                 e.default_effect_radius_m = None;
             }
         }
+        // rules 35: the salvo's ceiling and spacing, logged from rules 35 only
+        if !self.rules.salvo()
+            && let Some(e) = self.rules.engage.as_mut()
+        {
+            e.max_rounds_per_plan = None;
+            e.salvo_spacing_s = None;
+        }
         self.sync();
         self
     }
@@ -541,6 +564,7 @@ impl Policy {
     /// than run on values it would not use. [`crate::Engine::start`] asks it before it logs
     /// anything.
     pub fn fits_rules(&self) -> Result<(), PolicyError> {
+        self.fits_salvo()?;
         // rules 34: a group order's figures are read from rules 34 only
         if !self.rules.group_orders()
             && self.group.as_ref().is_some_and(|g| *g != crate::group::GroupPolicy::default())
@@ -581,6 +605,36 @@ impl Policy {
             self.rules.rules_version,
             crate::rules::SCENARIO_SETTINGS_SINCE,
             crate::rules::SCENARIO_SETTINGS_SINCE,
+        )))
+    }
+
+    /// Rules 35: under rules below 35 nothing reads the salvo's ceiling or spacing, so a policy
+    /// that sets either to another value than the standing one is refused, saying which (as
+    /// [`Policy::fits_rules`] refuses rules 33's settings under older rules).
+    fn fits_salvo(&self) -> Result<(), PolicyError> {
+        if self.rules.salvo() {
+            return Ok(());
+        }
+        let Some(e) = &self.rules.engage else {
+            return Ok(());
+        };
+        let mut differ = Vec::new();
+        if e.max_rounds() != crate::engage::STANDING_MAX_ROUNDS {
+            differ.push("rules.engage.max_rounds_per_plan");
+        }
+        if e.salvo_spacing() != crate::engage::STANDING_SALVO_SPACING {
+            differ.push("rules.engage.salvo_spacing_s");
+        }
+        if differ.is_empty() {
+            return Ok(());
+        }
+        let (one, it) = if differ.len() == 1 { ("differs", "it") } else { ("differ", "them") };
+        Err(PolicyError::Invalid(format!(
+            "{} {one} from the standing values (sim/policy.toml), and decision rules {} do not read a salvo's settings (rules {} do): run under rules {} (MURMUR_RULES), or leave {it} as sim/policy.toml has {it}",
+            differ.join(", "),
+            self.rules.rules_version,
+            crate::rules::SALVO_SINCE,
+            crate::rules::SALVO_SINCE,
         )))
     }
 
@@ -730,7 +784,7 @@ impl Policy {
     /// makes and its children inherit the names, so a merged policy names every loosening it
     /// holds; replay holds a log of rules 33 to it (the logged copy is checked, not the files).
     pub fn unnamed_loosenings(&self) -> Vec<&'static str> {
-        let [nominate, confidence] = LOOSENABLE;
+        let [nominate, confidence, rounds, spacing] = LOOSENABLE;
         let named = |k: &str| self.loosened.as_ref().is_some_and(|l| l.get(k).is_some_and(|why| !why.trim().is_empty()));
         let mut out = Vec::new();
         if self.identification.as_ref().is_some_and(crate::ident::IdentConfig::nominate_unconfirmed) && !named(nominate) {
@@ -739,6 +793,14 @@ impl Policy {
         let safe = crate::engage::EngageRules::default().min_identity_confidence;
         if self.rules.engage.as_ref().is_some_and(|e| e.min_identity_confidence < safe) && !named(confidence) {
             out.push(confidence);
+        }
+        // rules 35: a ceiling above one round a plan
+        if self.rules.engage.as_ref().is_some_and(|e| e.max_rounds() > crate::engage::STANDING_MAX_ROUNDS) && !named(rounds) {
+            out.push(rounds);
+        }
+        // ... and rounds released closer together than the standing 5 s
+        if self.rules.engage.as_ref().is_some_and(|e| e.salvo_spacing() < crate::engage::STANDING_SALVO_SPACING) && !named(spacing) {
+            out.push(spacing);
         }
         out
     }
@@ -904,7 +966,7 @@ fn loosenings(policy: &toml::Table, parent: Option<&toml::Table>) -> Vec<(&'stat
             .unwrap_or(default)
     };
     let mut out = Vec::new();
-    let [nominate, confidence] = LOOSENABLE;
+    let [nominate, confidence, rounds, spacing] = LOOSENABLE;
     if flag(Some(policy), nominate) && !flag(parent, nominate) {
         out.push((nominate, "true".to_string(), "false".to_string()));
     }
@@ -912,6 +974,18 @@ fn loosenings(policy: &toml::Table, parent: Option<&toml::Table>) -> Vec<(&'stat
     let (own, theirs) = (number(Some(policy), confidence, safe), number(parent, confidence, safe));
     if own < theirs {
         out.push((confidence, own.to_string(), theirs.to_string()));
+    }
+    // rules 35: more rounds one signed plan may release than what it extends allows
+    let one = f64::from(crate::engage::STANDING_MAX_ROUNDS);
+    let (own, theirs) = (number(Some(policy), rounds, one), number(parent, rounds, one));
+    if own > theirs {
+        out.push((rounds, own.to_string(), theirs.to_string()));
+    }
+    // ... and rounds released closer together
+    let five = crate::engage::STANDING_SALVO_SPACING;
+    let (own, theirs) = (number(Some(policy), spacing, five), number(parent, spacing, five));
+    if own < theirs {
+        out.push((spacing, own.to_string(), theirs.to_string()));
     }
     out
 }

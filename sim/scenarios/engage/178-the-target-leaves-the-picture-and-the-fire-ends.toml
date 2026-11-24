@@ -1,0 +1,90 @@
+# Rules 35 (docs/SALVO.md, section 2): a salvo's fire ends when its target leaves the picture.
+# The launcher stands 9,000 m from the boat, inside its 10,000 m: each round flies 450 s. Three
+# rounds 300 s apart. The release (28 s) and round 2 (328 s) go out; the boat leaves play at the
+# first round's strike (478 s), so round 3 (due 628 s) is held, the boat unseen; the tracker drops
+# the track 180 s after it was last seen (a `drop_track` step), and the picture that no longer has it
+# ends the fire (`engage.fire_ended`, target_gone): round 3 is never released, and round 2, still
+# in flight, strikes where the boat was. The assessment runs from that impact (778 s): nothing of
+# ours covers the point 9 km out, so it is unknown.
+title = "The target leaves the picture and the fire ends"
+invariant = "approval"
+attack = "a round released at a target no longer in the picture"
+expect = "done"
+expect_assessment = "unknown"
+expect_rounds = 2
+expect_fire_end = "target_gone"
+expect_rounds_left = 16
+cease_at_round = 1
+policy = "sim/scenarios/engage/policies/salvo-ceiling-6.toml"
+min_rules = 35
+end_s = 900
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "hive-1"
+platform = "ugv_launcher"   # 18 rounds of the HIV3-class launcher; its sight covers the point
+autopilot = "ugv"           # a stand-in rover: the heartbeat says so, the catalog's stand-in entry does not
+at = [-122.4950, 37.7310]   # inland, 9,000 m south of the boat (the runner's land)
+alt_m = 10
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "hive-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 1500
+weapon = "HIV3-class launcher"
+rounds = 3
+spacing_s = 300
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+# the boat left play at the first round's strike; the tracker drops it once it has gone unseen 180 s
+[[step]]
+at_s = 665
+action = "drop_track"
+track = "T-0001"

@@ -254,6 +254,8 @@ fn nomination() -> Proposal {
             window: None,
             fallback: Fallback::Return,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         vec![uid("blade-1")],
     )

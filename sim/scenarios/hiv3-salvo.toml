@@ -1,0 +1,37 @@
+# HIV3 salvo range traffic (sim/situations/hiv3-salvo.toml): two static vessels inside the
+# engagement zone west of the bridge and nothing else. Run by crates/murmur-contacts; format in
+# crates/murmur-contacts/src/scenario.rs. Points are [lon, lat].
+#
+# The range is closed to shipping for the exercise: no ferries, no fishing boats, no yachts, so no
+# strike's keep-out (its effect radius plus 200 m) can hold a neutral track. The two targets are
+# 670 m apart (more than either keep-out), inside the engagement zone (sim/areas: ez-gate-west)
+# and inside HIVE 1's band (300 to 10,000 m): the first 1,720 m from it, the second 1,170 m. Neither
+# moves. They are small fast boats at anchor, unarmed (truth label: not hostile: a range has no
+# hostile act, so an operator declares them, the situation's brief says).
+#
+# The seed: the launcher's rounds have a placeholder warhead and no hit or damage figures (the
+# owner's decision of 2026-11-20, docs/SALVO.md decision 2), so a strike is abstract: whatever is
+# inside its radius at the impact leaves play, and nothing is drawn. The seed is not read.
+title = "HIV3 salvo range traffic"
+seed = 1
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities: the situation is about the salvo
+
+[[contact]]
+id = "range-target-a"
+name = "Range target A: a small fast boat at anchor west of the bridge (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "small_fast_boat"
+motion = "station"
+at = [-122.4950, 37.8120]
+
+[[contact]]
+id = "range-target-b"
+name = "Range target B: a small fast boat at anchor, south-west of the first (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "small_fast_boat"
+motion = "station"
+at = [-122.4900, 37.8075]

@@ -240,6 +240,8 @@ pub fn nomination(s: &Situation, now: Time) -> IntentSpec {
             window: None,
             fallback: s.fallback,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         },
         uids: vec![Uid::new(STRIKE)],
         constraints: Constraints::default(),

@@ -39,7 +39,10 @@ pub struct Alert {
     /// (one of ours reports damage of its own after a strike: its propulsion lost, its weapons
     /// out of action; rules 25) | node_lost (rules 30: one of ours confirmed lost, for
     /// information; its lost_link, restore_pending and may_be_running alerts close behind it) |
-    /// node_reported_again (rules 30: one confirmed lost reported again, the loss revoked)
+    /// node_reported_again (rules 30: one confirmed lost reported again, the loss revoked) |
+    /// salvo_partial (rules 35: a salvo released fewer rounds than the one plan two operators
+    /// signed for, its fire having ended on the window, the rounds, the target leaving, a cease
+    /// or the assessment)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,

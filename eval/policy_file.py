@@ -74,13 +74,11 @@ def show(path: str | Path, rules: int | None = None) -> dict[str, Any]:
     return json.loads(p.stdout)
 
 
-def default_rules() -> int:
-    """The build's default decision rules: `RULES_VERSION` in crates/murmur-decide/src/rules.rs,
-    followed through the named constants it is defined by (`pub const RULES_VERSION: u32 =
-    REACH_NOW_SINCE;`, `pub const REACH_NOW_SINCE: u32 = 32;`)."""
+def _rules_const(name: str) -> int:
+    """The numeric value of a rules.rs constant, followed through the named constants it is defined
+    by (`pub const RULES_VERSION: u32 = REACH_NOW_SINCE;`, `pub const REACH_NOW_SINCE: u32 = 32;`)."""
     text = RULES_RS.read_text()
     consts = dict(re.findall(r"(?m)^pub const ([A-Z0-9_]+): u32 = ([A-Z0-9_]+);", text))
-    name = "RULES_VERSION"
     for _ in range(8):
         v = consts.get(name)
         if v is None:
@@ -88,7 +86,18 @@ def default_rules() -> int:
         if v.isdigit():
             return int(v)
         name = v
-    raise PolicyError(f"{RULES_RS}: no numeric RULES_VERSION (stopped at {name})")
+    raise PolicyError(f"{RULES_RS}: no numeric constant (stopped at {name})")
+
+
+def default_rules() -> int:
+    """The build's default decision rules: `RULES_VERSION` in crates/murmur-decide/src/rules.rs."""
+    return _rules_const("RULES_VERSION")
+
+
+def newest_rules() -> int:
+    """The newest decision rules this build knows: `RULES_NEWEST`, one ahead of `default_rules`
+    while a rules version is being built in stages (what `MURMUR_RULES` may ask for)."""
+    return _rules_const("RULES_NEWEST")
 
 
 def rules_in_force() -> int:

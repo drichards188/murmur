@@ -135,6 +135,7 @@ fn missed(e: &EffectNotice, movers: &[Mover], now: f64) -> EffectApplied {
         damage: Vec::new(),
         ours_damaged: Vec::new(),
         burst: e.burst,
+        round: e.round,
     }
 }
 

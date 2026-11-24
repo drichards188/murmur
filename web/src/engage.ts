@@ -41,6 +41,9 @@ export interface EngagePreview {
   keep_out_m: number
   track_sigma_m: number
   ellipse: Ellipse
+  /** rules 35: a salvo's plan, signed once for all its rounds: how many, at least how far apart,
+   *  the ceiling it is signed under, and each round's predicted release and strike (engine ms) */
+  salvo?: { rounds: number; spacing_s: number; ceiling: number; releases: number[]; strikes: number[] }
 }
 
 export interface TrackFactsSnap {
@@ -107,7 +110,32 @@ export interface Fire {
   last_t: number
   left?: number
   every_s: number
-  ended?: { t: number; why: 'ceased' | 'unknown' | 'rounds_out' | 'window_closed' | 'stopped'; detail: string }
+  ended?: { t: number; why: 'ceased' | 'unknown' | 'rounds_out' | 'window_closed' | 'stopped' | 'all_released' | 'target_gone'; detail: string }
+  /** rules 35: a salvo's (a weapon that flies, its plan asking more than one round): each
+   *  release is one round (`bursts` counts them), and this holds what a gun's bursts need not */
+  salvo?: Salvo
+}
+
+/** Rules 35: a salvo's fire beyond a gun's (the engine's `SalvoFire`): the rounds the plan asked
+ *  for, the ceiling it was signed under, every round's flight so far (the release first), the round
+ *  held now and why, and how many holds were logged. */
+export interface Salvo {
+  asked: number
+  ceiling: number
+  flights: Munition[]
+  held?: { round: number; t: number; rules: string[]; reasons: string[] }
+  holds: number
+}
+
+/** Rules 35: a salvo's rounds in a line for its card: asked, released, in flight, struck, held. */
+export function salvoLine(f: Fire, nowMs: number): string {
+  const s = f.salvo
+  if (!s) return ''
+  const flying = s.flights.filter((m) => m.impact_t > nowMs).length
+  const struck = s.flights.length - flying
+  const parts = [`${s.asked} asked`, `${f.bursts} released`, `${flying} in flight`, `${struck} struck`]
+  if (s.held) parts.push(`round ${s.held.round} held`)
+  return `Salvo: ${parts.join(', ')} (ceiling ${s.ceiling} a plan)`
 }
 
 /** Rules 26: whether a gun still fires after its release (an operator may stop it then). */
@@ -120,6 +148,20 @@ export function firing(e: Engagement | undefined): boolean {
 export function fireLine(f: Fire): string {
   const left = f.left == null ? '' : `, ${f.left} left`
   const what = `${f.weapon}: ${f.bursts} burst${f.bursts === 1 ? '' : 's'}, ${f.rounds} rounds fired${left}`
+  if (f.salvo) {
+    const rounds = `${f.weapon}: ${f.bursts} of ${f.salvo.asked} rounds released${f.left == null ? '' : `, ${f.left} left`}`
+    if (!f.ended) return `Firing ${rounds}; a round every ${Math.round(f.every_s)} s while each round's checks pass`
+    const why2: Record<string, string> = {
+      ceased: 'the target ceased',
+      unknown: 'the assessment could not tell',
+      rounds_out: 'no round left',
+      window_closed: 'the approved window closed',
+      stopped: 'ceased by an operator',
+      all_released: 'all the rounds asked for are released',
+      target_gone: 'the target left the picture',
+    }
+    return `Fire ended (${why2[f.ended.why] ?? f.ended.why}): ${rounds}`
+  }
   if (!f.ended) return `Firing ${what}; a burst every ${Math.round(f.every_s)} s while the picture holds`
   const why: Record<string, string> = {
     ceased: 'the target ceased',
@@ -127,6 +169,8 @@ export function fireLine(f: Fire): string {
     rounds_out: 'no round left',
     window_closed: 'the approved window closed',
     stopped: 'stopped',
+    all_released: 'all the rounds asked for are released',
+    target_gone: 'the target left the picture',
   }
   return `Fire ended (${why[f.ended.why] ?? f.ended.why}): ${what}`
 }
@@ -552,8 +596,8 @@ export function fmtDist(m: number) {
 /** The nomination form's dry run. murmur-8xe: `replaces`, a pending nomination the operator is
  *  replacing (rejected, then this one nominated): judged as if it were gone, its platform free of
  *  it (the bridge answers as without it once it no longer waits for signatures). */
-export async function engageOptions(track: string, radius: number, windowS: number, fallback: Fallback, replaces?: number | null): Promise<EngageOption[]> {
-  const b = await post('/api/engage/options', { track, effect_radius_m: radius, window_s: windowS, fallback, ...(replaces != null ? { replaces } : {}) })
+export async function engageOptions(track: string, radius: number, windowS: number, fallback: Fallback, replaces?: number | null, rounds?: number | null): Promise<EngageOption[]> {
+  const b = await post('/api/engage/options', { track, effect_radius_m: radius, window_s: windowS, fallback, ...(replaces != null ? { replaces } : {}), ...(rounds != null && rounds > 1 ? { rounds } : {}) })
   return b.options ?? []
 }
 
@@ -569,6 +613,8 @@ export async function nominate(req: {
   windowS: number
   fallback: Fallback
   rationale: string
+  /** rules 35: the rounds the one plan may release, a salvo (absent or 1: a single release) */
+  rounds?: number | null
   acceptLost?: KeepOutLost[]
   /** rules 19: the live tracks the operator accepts as behaving now with it (track ids) */
   acceptBehaving?: string[]
@@ -583,6 +629,7 @@ export async function nominate(req: {
     effect_radius_m: req.radius,
     window_s: req.windowS,
     fallback: req.fallback,
+    ...(req.rounds != null && req.rounds > 1 ? { rounds: req.rounds } : {}),
     rationale: req.rationale.trim() || null,
     ...(accept_lost.length ? { accept_lost } : {}),
     ...(accept_behaving.length ? { accept_behaving } : {}),

@@ -1,0 +1,11 @@
+# sim/policy.toml with a salvo's ceiling raised to six rounds a plan (scenarios 174 to 180, decision
+# rules 35, docs/SALVO.md): one nomination, signed once by two operators, may release up to six
+# rounds of a weapon that flies. The standing value is one round, today's chain, and the floor;
+# raising it multiplies what one human decision releases, so the file names the loosening with its
+# reason (`loosened`), which is logged with the policy and stated on the card and the record.
+
+extends = "../../../policy.toml"
+loosened = { "rules.engage.max_rounds_per_plan" = "a range drill of a launcher whose rounds are released in a series on one plan; never for a live watch" }
+
+[rules.engage]
+max_rounds_per_plan = 6

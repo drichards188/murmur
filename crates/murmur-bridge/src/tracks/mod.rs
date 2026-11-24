@@ -1877,6 +1877,10 @@ impl Tracks {
         if let Some(b) = e.burst {
             effect["burst"] = json!(b);
         }
+        // rules 35: a salvo's round, drawn on its own stream
+        if let Some(r) = e.round {
+            effect["round"] = json!(r);
+        }
         // a one-way platform is the weapon: the truth side takes it out of the world at the
         // effect, as the headless simulator does (crates/murmur-contacts `effect::spent_platform`)
         if expended_by_effect {

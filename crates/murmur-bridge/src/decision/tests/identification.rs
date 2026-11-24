@@ -471,6 +471,8 @@ async fn no_armed_platform_or_another_failing_check_holds_nothing_up() {
             passed_only: false,
             replaces: None,
             weapon: None,
+            rounds: None,
+            spacing_s: None,
         })
         .await
         .expect("options");

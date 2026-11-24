@@ -1,0 +1,89 @@
+# Rules 35 (docs/SALVO.md, decisions 6): an operator ceases a salvo. As scenario 174, but five
+# rounds and the boat persists. The release (26 s) and round 2 (31 s) go out; at 33 s op-1, who
+# nominated and holds no engagement authority, ceases it (any operator may, as a gun's). The fire
+# ends at once (`engage.stopped`, cause operator, the recorded fallback commanded: hold), no round
+# follows, and the two in flight go on to strike: the engagement stays effected and is assessed from
+# the last impact (121 s), the boat is seen again, persists. 16 of 18 rounds left. Then the log is
+# forged so that a third round goes out after the cease: replay finds no open fire for it.
+title = "A cease stops the rounds, not those in flight"
+invariant = "abort"
+attack = "a round released after the salvo was ceased"
+expect = "done"
+expect_assessment = "persists"
+expect_stop = "operator"
+expect_rounds = 2
+expect_fire_end = "stopped"
+expect_rounds_left = 16
+after_effect = "persists"
+tamper = "round_after_stop"
+policy = "sim/scenarios/engage/policies/salvo-ceiling-6.toml"
+min_rules = 35
+end_s = 320
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "hive-1"
+platform = "ugv_launcher"   # 18 rounds of the HIV3-class launcher; its sight covers the point
+autopilot = "ugv"           # a stand-in rover: the heartbeat says so, the catalog's stand-in entry does not
+at = [-122.4950, 37.7960]   # on the shore, 1,800 m south of the boat (the runner's land)
+alt_m = 10
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "hive-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 600
+weapon = "HIV3-class launcher"
+rounds = 5
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+# any operator ceases the salvo after round 2 (31 s); round 3 is due at 36 s and never goes
+[[step]]
+at_s = 33
+action = "abort"
+by = "op-1"

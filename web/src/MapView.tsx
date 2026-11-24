@@ -13,7 +13,7 @@ import { BRIDGE_FILTER, bridgeLifter, type LiftedBridge } from './bridges'
 import { bridgeDeckLayer, build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION, z } from './map3d'
 import { ALL_FULL, planLabels, type LabelCandidate, type LabelLevel, type LabelPlan, type LabelStats, type Priority } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
-import { burstShown, LAUNCH_FLASH_MS, munitionShown, type BurstFire, type MunitionFlight } from './munition'
+import { burstShown, LAUNCH_FLASH_MS, munitionShown, type BurstFire, type GroundAt, type MunitionFlight } from './munition'
 import { buildMunitionLayers, buildTracerLayers, type Tracer } from './munitionLayers'
 import { buildActLayers } from './actLayers'
 import { buildWeaponLayers, weaponsAnimating } from './weaponLayers'
@@ -485,6 +485,14 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     hoverRef.current = onHoverProp
   }, [onMapClick, onToggle, onDeselect, onView, onHoverProp])
 
+  /** the ground's height where the terrain is drawn now, metres above mean sea level (the sea's
+   *  0 over the water): what a drone's drawn path keeps above (munition.ts divePath) */
+  const groundNow = (): GroundAt | undefined => {
+    const m = map.current
+    if (!m || !ready.current || !m.terrain) return undefined
+    const surface = surfaceScale(m).surfaceZ
+    return (lon, lat) => surface([lon, lat]) / HEIGHT_EXAGGERATION
+  }
   /** what this camera cannot show at its height (aloft.ts): from deck.gl's viewport, what it
    *  draws with */
   const screenNow = (): MapScreen => {
@@ -717,7 +725,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
 
   /** the munitions in flight, or flashing at their launch, at `t` (the bridge's clock) */
   const munitionsAt = (t: number): MunitionFlight[] =>
-    impactsRef.current.flatMap((i) => (i.munition && munitionShown(i.munition, t) ? [{ m: i.munition, kind: i.kind, launcher: i.platform, target: i.track }] : []))
+    impactsRef.current.flatMap((i) => (i.munition && munitionShown(i.munition, t) ? [{ m: i.munition, kind: i.kind, profile: i.profile, launcher: i.platform, target: i.track }] : []))
   /** the gun bursts to draw at `t`, with the platform's drawn place and the target's fix */
   const tracersAt = (t: number): Tracer[] =>
     tracersRef.current.flatMap((s) => {
@@ -739,7 +747,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const live = t == null ? [] : munitionsAt(t)
     const bursts = t == null ? [] : tracersAt(t)
     munitionsDrawn.current = live.length > 0 || bursts.length > 0
-    return [...(live.length ? buildMunitionLayers(live, t!, screenNow(), reducedNow) : []), ...(bursts.length ? buildTracerLayers(bursts, t!, reducedNow) : [])]
+    return [...(live.length ? buildMunitionLayers(live, t!, screenNow(), reducedNow, groundNow()) : []), ...(bursts.length ? buildTracerLayers(bursts, t!, reducedNow) : [])]
   }
   /** the observed acts drawn at `t` (hostileAct.ts visibleActs) */
   const actsAt = (t: number) => visibleActs(actsRef.current, t, actsDismissed.current)
