@@ -502,7 +502,13 @@ same decisions: its 54 opening orders each name one vehicle, so none is a group 
 `run.started`'s rules version (33), policy schema (8) and the two policy files' sha256 put back, the
 logged policy's `[group]` and its agent tier's `transit` dropped, and each decision's platform facts
 without their `formation` figures, it hashes to `8dca43c0...` and `7f073943...` byte for byte; each
-of those causes alone moves both. Compare with this pair.
+of those causes alone moves both. Decision rules 35 (the salvo, docs/SALVO.md) give record
+`ab3b7393...` and audit `6d00d507...` (6,099 events), the same twice, the same events at the same
+times and the same decisions: the standing policy keeps one round a plan and nothing here is
+nominated. With `run.started`'s rules version (34), policy schema (9) and the standing policy's
+sha256 put back and the logged policy's `max_rounds_per_plan` and `salvo_spacing_s` dropped, it
+hashes to `8190f4f5...` and `5312d1f9...` byte for byte; each of those causes alone moves both.
+Compare with this pair.
 
 **Saturation's size, synthetic** (`tracks::tests::sense_par::sense_par_bench`, release: 3,602 of
 ours in Saturation's mix, 1,700 X10s at 100 m, 1,300 Pumas at 800 m, 200 Saildrones, 300

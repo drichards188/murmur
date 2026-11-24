@@ -2617,7 +2617,16 @@ Rules versions:
   `max_rounds_per_plan`, `salvo_spacing_s`. Scenarios 174-180 (the scenario's `[[vehicle]]`
   `autopilot` names a stand-in rover's, which the catalog's stand-in entry does not), runner keys
   `cease_at_round`, `expect_rounds`, `expect_rounds_held`, tampers `round_after_stop`, `extra_round`,
-  `edit_ceiling`; `tests/rules35.rs`.
+  `edit_ceiling`; `tests/rules35.rs`. No scenario but the salvo's changes design (each other
+  scenario's log differs by the logged policy's ceiling and spacing and, for a weapon that flies,
+  the preview's `flight_s`; 107, 119 and 133 read the preload back earlier, their outcomes the
+  same), so none carries a `[since.35]`. Fixtures (a clean build of `ac87c09`, committed before
+  it landed as `fa6b13b`, the same tree byte for byte):
+  `tests/data/audit/v35-engagement-scenario-01.jsonl` (no salvo: as rules 34 decided it, the logged
+  ceiling and spacing aside), `v35-one-plan-three-rounds-scenario-174.jsonl` and
+  `v35-a-cease-stops-the-rounds-scenario-177.jsonl` (relabelled rules 34, the salvo's plan, its
+  rounds and the policy's ceiling and spacing are caught; with the policy's keys taken out as rules
+  34 logged it, the plan and the rounds still are).
 
 - **34** (`GROUP_ORDER_SINCE`, the owner's decisions of 2026-11-10 and the go-ahead of 2026-11-20,
   DECISIONS.md "Group orders for the ordinary tasks" and its stages; docs/SWARMS.md; bd

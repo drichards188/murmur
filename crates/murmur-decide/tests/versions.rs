@@ -24,7 +24,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 96] = [
+const LOGS: [(&str, u32); 99] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -268,13 +268,21 @@ const LOGS: [(&str, u32); 96] = [
     ("v34-engagement-scenario-01.jsonl", GROUP_ORDER_SINCE),
     ("v34-group-reforms-after-three-drop-scenario-166.jsonl", GROUP_ORDER_SINCE),
     ("v34-group-transit-to-stations-scenario-172.jsonl", GROUP_ORDER_SINCE),
+    // rules 35 (the salvo; a clean build of ac87c09, landed as fa6b13b with the same tree;
+    // docs/SALVO.md): scenario 01 (no salvo: the decisions rules 34 made, the logged policy's ceiling
+    // and spacing aside), 174 (the launcher's one plan for 3 of its 18 rounds, the release and rounds
+    // 2 and 3 five seconds apart) and 177 (5 rounds, ceased after round 2, the two in flight struck
+    // and assessed)
+    ("v35-engagement-scenario-01.jsonl", SALVO_SINCE),
+    ("v35-one-plan-three-rounds-scenario-174.jsonl", SALVO_SINCE),
+    ("v35-a-cease-stops-the-rounds-scenario-177.jsonl", SALVO_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v34-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v35-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2389,10 +2397,54 @@ fn a_group_order_is_caught_under_older_rules() {
         let r = with(&rechain(&ls), RulesAccepted::Exactly(GROUP_ORDER_SINCE));
         assert!(r.ok(), "{name}: {:?}", r.mismatches);
     }
-    let ls = lines(&fixture(CURRENT));
+    let ls = lines(&fixture("v34-engagement-scenario-01.jsonl"));
     assert!(!ls.iter().any(|l| l.contains("\"parent\":") || l.contains("\"type\":\"group.")), "scenario 01 has no group order");
     let mut old = ls.clone();
     old[0] = old[0].replacen(&v34, &format!("\"rules_version\":{SCENARIO_SETTINGS_SINCE},"), 1);
     let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(SCENARIO_SETTINGS_SINCE))).iter().map(|s| s.to_string()).collect();
     assert!(w.iter().any(|m| m.starts_with("a type's group-order figures")), "{w:?}");
+}
+
+/// Rules 35: scenario 174's and 177's logs relabelled rules 34 carry what no build of rules 34 logged
+/// (a salvo's plan in the preview, its rounds after the release, the policy's ceiling and spacing)
+/// and are caught; with the policy's markers taken out as a rules 34 build logged a policy
+/// (`common::claim_older_rules`), the salvo itself still gives them away; under their own rules
+/// they replay. Scenario 01's log, which has no salvo, relabelled rules 34 is caught for the
+/// policy's ceiling alone.
+#[test]
+fn a_salvo_is_caught_under_older_rules() {
+    let v35 = format!("\"rules_version\":{SALVO_SINCE},");
+    let v34 = format!("\"rules_version\":{GROUP_ORDER_SINCE},");
+    for name in ["v35-one-plan-three-rounds-scenario-174.jsonl", "v35-a-cease-stops-the-rounds-scenario-177.jsonl"] {
+        let ls = lines(&fixture(name));
+        assert!(ls[0].contains(&v35), "{name}");
+        assert!(ls.iter().any(|l| l.contains("\"type\":\"engage.round\"")), "{name} releases a second round");
+        let mut old = ls.clone();
+        old[0] = old[0].replacen(&v35, &v34, 1);
+        let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(GROUP_ORDER_SINCE))).iter().map(|s| s.to_string()).collect();
+        for what in [
+            "a salvo's round after its release",
+            "a salvo's plan (a nomination's preview)",
+            "the policy's ceiling on the rounds one plan may release",
+            "the policy's spacing between a salvo's releases",
+        ] {
+            assert!(w.iter().any(|m| m.starts_with(what)), "{name} {what}: {w:?}");
+        }
+        let mut events = parse_log(&ls.join("\n")).unwrap();
+        common::claim_older_rules(&mut events[0].body, GROUP_ORDER_SINCE);
+        let stripped: Vec<String> = events.iter().map(|e| serde_json::to_string(e).unwrap()).collect();
+        assert!(!stripped[0].contains("\"max_rounds_per_plan\":"), "{}", stripped[0]);
+        let w: Vec<String> = whats(&with(&rechain(&stripped), RulesAccepted::Exactly(GROUP_ORDER_SINCE))).iter().map(|s| s.to_string()).collect();
+        for what in ["a salvo's round after its release", "a salvo's plan (a nomination's preview)"] {
+            assert!(w.iter().any(|m| m.starts_with(what)), "{name} {what}: {w:?}");
+        }
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(SALVO_SINCE));
+        assert!(r.ok(), "{name}: {:?}", r.mismatches);
+    }
+    let ls = lines(&fixture(CURRENT));
+    assert!(!ls.iter().any(|l| l.contains("\"type\":\"engage.round\"") || l.contains("\"salvo\":{")), "scenario 01 has no salvo");
+    let mut old = ls.clone();
+    old[0] = old[0].replacen(&v35, &v34, 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(GROUP_ORDER_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.starts_with("the policy's ceiling on the rounds one plan may release")), "{w:?}");
 }

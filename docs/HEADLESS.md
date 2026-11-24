@@ -1490,7 +1490,13 @@ more than one vehicle, so none is a group order. With `run.started`'s `rules_ver
 without their `formation` figures (the group-order figures every decision logs from rules 34), the
 new audit log hashes to `d9f2a2b3...` and the record to `47df670d...` byte for byte; each of
 those causes alone moves both. The paused digests moved by the same causes alone
-(test_charged_clock.py).
+(test_charged_clock.py). Rules 35 (the salvo, docs/SALVO.md) re-took it to record `61160540...`,
+audit `bcfca21f...`, 152 events, with no event, decision or proposal moved: the standing policy
+keeps one round a plan and Harbor watch nominates nothing. With `run.started`'s `rules_version`
+put back to 34 and its `policy_schema` to 9, the logged policy's `max_rounds_per_plan` and
+`salvo_spacing_s` dropped, and the standing policy's sha256 in `policy_layers` put back (its text
+writes the two keys out now), the new record and audit log hash to `86cab038...` and
+`01e65e54...` byte for byte; each of those causes alone moves both.
 
 ### 17.3 The bake tool
 

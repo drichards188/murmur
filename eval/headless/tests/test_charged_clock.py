@@ -520,10 +520,21 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: transit and `[group]`), and each decision's platform facts without their `formation` figures, this
 #: code gives the digests before (d6e6c3d9..., 7ce2d321..., e0b1e5bd...) byte for byte. No order
 #: here names more than one vehicle, so no group order moved anything.
+#: Re-taken when decision rules 35 became the default (the salvo, docs/SALVO.md), with no event,
+#: decision or proposal moved in any of the three: in each audit log `run.started`'s
+#: `rules_version` and `policy_schema` (35 and 10, were 34 and 9), the logged policy's
+#: `max_rounds_per_plan` and `salvo_spacing_s`, and the standing policy's sha256 in
+#: `policy_layers` (its text writes those two keys out); in the two model records also the tool
+#: list (`preview_intent`, `propose_intent` and `get_nomination_options` take `rounds` and
+#: `spacing_s`: Harbor watch's 51 162 to 52 666 characters) and with it the prompt sizes, token
+#: estimates and dollars. With mcp/tools.rs and mcp/world.rs put back to main's before the salvo
+#: (the options request given no rounds) and those audit log causes put back, this code gives the
+#: digests before (74c9c2f8..., a0cb88ba..., 53360362...) byte for byte, and each cause alone
+#: moves them.
 PAUSED = {
-    "model harbor-watch s1": "74c9c2f822cffa1aed8639d588115d3b526ea4b2aebaece6dbf32bfdb55ff3de",
-    "playbook v2 fast-unknown 1000": "a0cb88ba5d67a85728560ee80a354c3f8d8b9bb386799a132591bc6bc759ba02",
-    "model v2 fast-unknown 1000": "533603626817f163520fa91f4b312eeccbb7a681630ff9a62182de67a3d16533",
+    "model harbor-watch s1": "9e9644ed43016413b33ee545cbcfc9c9a568cc0e194b805a9274660a263f761e",
+    "playbook v2 fast-unknown 1000": "0e457f188ce1953f878522c1c2cc0f5d3fdd40303a22e29096d92b8c8ca5c8e0",
+    "model v2 fast-unknown 1000": "b1d512d3bbc4e51a827d28a94bafdbabffb73ca1de4220848337fce02868f8b7",
 }
 
 
