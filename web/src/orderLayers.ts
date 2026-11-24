@@ -2,10 +2,10 @@ import { PathLayer, TextLayer } from '@deck.gl/layers'
 import type { MapScreen } from './aloft'
 import { ALL_FULL, centred, textWidth, type LabelCandidate, type LabelPlan, type Priority } from './declutter'
 import type { Intent } from './decisions'
-import { fmtDuration } from './decisions'
 import { leadingAt } from './estimate'
 import { drawnPositionOf, drawnTick } from './drawn'
 import { circle, distanceM } from './geo'
+import { mayBeRunningWords, queuedWords, resumedWords } from './mapWords'
 import type { LngLat, Tasking, Vehicle } from './types'
 import { isStale } from './types'
 
@@ -13,24 +13,25 @@ import { isStale } from './types'
  *  prop:
  *
  *  - an order held in the queue (approved, its vehicle unreachable now): its path dashed in
- *    amber, "QUEUED" with why and how long it may still wait, and a QUEUED badge under the
- *    vehicle (under its dead-reckoning estimate while it is silent and has one);
- *  - an order sent but not yet confirmed by the vehicle's own telemetry (its op not active
- *    yet: waiting for a fix, sent, accepted): "ORDERED ... not yet confirmed" at its path,
- *    or at the vehicle for a mode (hold, rtl). The path itself is MapView's tasking line:
- *    dashed until the vehicle is seen executing it, solid after;
+ *    amber, "queued orbit: link down, 2 min left", and a QUEUED badge under the vehicle (under
+ *    its dead-reckoning estimate while it is silent and has one);
  *  - an order carried over a bridge restart that a vehicle had started, waiting for its
- *    vehicles to connect: "RESUMED ... waiting for the vehicle; followed, not sent again";
+ *    vehicles to connect: "resumed patrol: waiting for the vehicle";
  *  - an order whose start went out before the link was lost, unconfirmed, and no longer in
- *    force (voided, queued, in the inbox): "MAY BE RUNNING", its tasking line kept.
+ *    force (voided, queued, in the inbox): "MAY BE RUNNING orbit: ...", its tasking line kept.
+ *
+ *  An order sent and not yet confirmed has no label: MapView's tasking line is dashed until the
+ *  vehicle is seen executing it, solid after, and says so (ledger 1: a normal transition). No
+ *  label carries the order's raw id (mapWords.ts).
  *
  *  Drawn at sea level, over the terrain and the water (never hidden by either). Their labels go
- *  through the one label budget (declutter.ts, R2): "ORDERED i16" short, the full line where it
- *  fits; a MAY BE RUNNING (a human decides) first, the rest as our vehicles with an alert. */
+ *  through the one label budget (declutter.ts, R2): the kind short ("queued orbit"), the full line
+ *  where it fits; a MAY BE RUNNING (a human decides) first, the rest as our vehicles with an
+ *  alert. */
 
 type RGBA = [number, number, number, number]
 const QUEUED: RGBA = [242, 193, 78, 235]
-const ORDERED: RGBA = [127, 184, 255, 235]
+const RESUMED: RGBA = [127, 184, 255, 235]
 const MAYBE: RGBA = [255, 128, 96, 240]
 const TEXT: RGBA = [235, 239, 244, 255]
 const OUTLINE: RGBA = [11, 15, 20, 255]
@@ -46,7 +47,7 @@ interface Label {
   key: string
   at: LngLat
   text: string
-  /** the short form ("ORDERED i16") */
+  /** the short form ("queued orbit") */
   short: string
   priority: Priority
   color: RGBA
@@ -133,15 +134,6 @@ function shownAt(v: Vehicle, nowMs: number): { at: LngLat; uid?: number } | null
   return v.position ? { at: v.position, uid: v.uid } : null
 }
 
-/** An op state in words for a label (the op's own "queued" is a wait for a position fix,
- *  not the decision queue). */
-const OP_WORDS: Record<string, string> = {
-  queued: 'waiting for a fix',
-  sent: 'sent',
-  starting: 'start sent',
-  acked: 'accepted',
-}
-
 function shortReason(i: Intent): string {
   const r = (i.reach_now ?? i.queue?.reach ?? []).find((x) => !x.reachable)
   if (!r) return 'reachable: re-checking'
@@ -166,9 +158,9 @@ function orderShapes(input: OrderInput): { dashed: Dash[]; labels: Label[] } {
   for (const i of input.queued) {
     const path = pathOf(i)
     if (path) for (const d of dashes(path)) dashed.push({ path: d, color: QUEUED })
-    const left = i.queue ? fmtDuration((i.queue.expires_t - input.nowMs) / 1000) : '?'
+    const left = i.queue ? (i.queue.expires_t - input.nowMs) / 1000 : null
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ ...at, key: `o:q:${i.id}`, text: `QUEUED i${i.id} ${i.kind} · ${shortReason(i)} · ${left} left`, short: `QUEUED i${i.id}`, priority: 3, color: QUEUED })
+    if (at) labels.push({ ...at, key: `o:q:${i.id}`, text: queuedWords(i.kind, shortReason(i), left), short: `queued ${i.kind}`, priority: 3, color: QUEUED })
     for (const u of i.uids) badged.add(u)
   }
   for (const v of input.vehicles) {
@@ -179,29 +171,9 @@ function orderShapes(input: OrderInput): { dashed: Dash[]; labels: Label[] } {
   for (const i of input.intents) {
     if (!i.follow_pending) continue
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ ...at, key: `o:r:${i.id}`, text: `RESUMED i${i.id} ${i.kind} · waiting for the vehicle; followed, not sent again`, short: `RESUMED i${i.id}`, priority: 3, color: ORDERED })
+    if (at) labels.push({ ...at, key: `o:r:${i.id}`, text: resumedWords(i.kind), short: `resumed ${i.kind}`, priority: 3, color: RESUMED })
   }
-  // sent, not yet confirmed by telemetry: the tasking's ops still sent or acked
   const byId = new Map(input.taskings.map((t) => [t.id, t]))
-  for (const i of input.intents) {
-    if (i.state !== 'dispatched' || i.tasking_id == null) continue
-    const t = byId.get(i.tasking_id)
-    if (!t) continue
-    const waiting = t.ops.filter((o) => ['queued', 'sent', 'starting', 'acked'].includes(o.state))
-    if (waiting.length === 0) continue
-    const at = anchorOf(i, input.vehicles)
-    if (!at) continue
-    const states = [...new Set(waiting.map((o) => OP_WORDS[o.state] ?? o.state))].join(', ')
-    const lost = waiting.some((o) => o.detail.startsWith('link lost'))
-    labels.push({
-      ...at,
-      key: `o:o:${i.id}`,
-      text: `ORDERED i${i.id} ${i.kind} · not yet confirmed (${lost ? 'link lost, waiting' : states})`,
-      short: `ORDERED i${i.id}`,
-      priority: 3,
-      color: ORDERED,
-    })
-  }
   // its start went out and nothing confirmed it, and its intent is no longer dispatched
   // (voided, back to the queue or the inbox): it may be running all the same
   for (const i of input.intents) {
@@ -209,7 +181,7 @@ function orderShapes(input: OrderInput): { dashed: Dash[]; labels: Label[] } {
     const t = byId.get(i.tasking_id)
     if (!t || !t.ops.some((o) => o.state === 'unconfirmed' && !o.detail.includes('does not run it now'))) continue
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ ...at, key: `o:m:${i.id}`, text: `MAY BE RUNNING i${i.id} ${i.kind} · its start went out unconfirmed (${i.state})`, short: `MAY BE RUNNING i${i.id}`, priority: 1, color: MAYBE })
+    if (at) labels.push({ ...at, key: `o:m:${i.id}`, text: mayBeRunningWords(i.kind, i.state), short: `MAY BE RUNNING ${i.kind}`, priority: 1, color: MAYBE })
   }
   return { dashed, labels }
 }

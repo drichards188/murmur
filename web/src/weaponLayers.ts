@@ -2,30 +2,30 @@
 // weaponSymbols.ts, from the bridge's weapon picture only (never the simulator's truth), each drawn
 // only as far as its identity has come (bd murmur-ju1h):
 //
-//   weapon-bearing    a seen launch's bearing line, from the observer that saw it to the launch
-//   weapon-estimate   the estimated flight, dashed, only on a basis (a derived target and strike
-//                     time), or a measured line's heading a few seconds ahead with no target
-//   weapon-flash      the launch flash at the launch fix, and the strike's at the victim
-//   weapon-fix-line   the weapon's own fixes joined (from the launch fix), solid
-//   weapon-fixes      each fix (and the launch fix) with its 1-sigma circle, solid
+//   weapon-estimate   the one line a weapon has, from its launch: the estimated flight, dashed,
+//                     only on a basis (a derived target and strike time), or a measured line's
+//                     heading a few seconds ahead with no target
+//   weapon-flash      the launch flash at the launch fix, and the strike's at the victim, once each
+//   weapon-fix-line   the weapon's own fixes joined (from the launch fix), solid, and
+//   weapon-fixes      each fix (and the launch fix) with its 1-sigma circle: the evidence behind
+//                     the attribution, drawn only for the act the person viewed (its banner's View)
 //   weapon            the hostile weapon symbol: kind unknown at the weapon stage, the class's at the
 //                     class stage; dashed (predicted) where its place is an estimate, solid at a fix
-//   weapon-struck     a ring on the victim once it reports the strike (one a vehicle, at the newest)
-//   weapon-labels     what each stage says: "LAUNCH · 270° from HUNTER 1", "WEAPON? · 243 m/s",
-//                     "ATGM-class: 250 m/s, from T-0004 · 2.1 s", the strikes on each vehicle once
-//                     ("GUN STRUCK HUNTER 1 ×3": a gun's every burst is a weapon), a launch once;
-//                     the launches' and the strikes' placed by the one label budget (declutter.ts)
-//                     against the other layers', a flying weapon's moving with it as drawn
+//   weapon-labels     one short line a weapon, as far as its stage has come (weapon.ts weaponLine):
+//                     "missile launch", "ATGM at HUNTER 1, 2 s", "weapon, 243 m/s"; a launch's
+//                     placed by the one label budget (declutter.ts) against the other layers', a
+//                     flying weapon's moving with it as drawn
 //
-// MapView builds these on every animation frame while a weapon is in flight or a flash is on, and
-// at the console's tick otherwise; under reduced motion nothing moves or flashes: the lines, the
-// fixes, the rings and the labels, static.
+// The strike on one of ours has no ring or label here: its exception slot and the banner say it
+// (ledger 1, the map's weapons). MapView builds these on every animation frame while a weapon is in
+// flight or a flash is on, and at the console's tick otherwise; under reduced motion nothing moves
+// or flashes: the lines, the fixes and the labels, static.
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { MapScreen } from './aloft'
 import { type LabelCandidate, type LabelLevel, textBox } from './declutter'
 import { z } from './map3d'
 import { dashesAhead, inFlight, LAUNCH_FLASH_MS, munitionAt, screenAngle, type Munition, type Pt3 } from './munition'
-import { classText, countdownS, estimate, FLY_ALT_M, heading, stageText, strikeFlash, struckGroups, weaponShort, type WeaponTrack } from './weapon'
+import { estimate, FLY_ALT_M, heading, strikeFlash, weaponLine, type WeaponTrack } from './weapon'
 import { weaponIcon, weaponSymbolKind, WEAPON_COLORS, type WeaponSymbolKind } from './weaponSymbols'
 
 type RGBA = [number, number, number, number]
@@ -66,8 +66,8 @@ interface Label {
   at: Pt3
   label: string
   a: number
-  /** a launch's or a strike's label: placed by the label budget (`w:launch:...`, `w:struck:...`);
-   *  a flying weapon's moves with it every frame and is drawn as it is */
+  /** a launch's label: placed by the label budget (`w:launch:...`); a flying weapon's moves with
+   *  it every frame and is drawn as it is */
   key?: string
   /** its short form, where the budget has room for no more */
   short?: string
@@ -79,32 +79,24 @@ const LABEL_PAD: [number, number] = [5, 3]
 
 const alphaAt = (w: WeaponTrack, nowMs: number) => (w.ended_t == null ? 1 : Math.max(0.15, 1 - (nowMs - w.ended_t) / 60_000))
 
-/** The labels that stay where they are: a launch's, once a report ("LAUNCH · 270° from HUNTER 1"),
- *  while its weapon is at the launch stage and in flight; the strikes on each vehicle, once, where
- *  the newest struck it ("GUN STRUCK HUNTER 1 ×3"). */
-function keyedLabels(ws: WeaponTrack[], nowMs: number, victimOf: (w: WeaponTrack) => [number, number] | null, nameOf: (uid: string) => string): Label[] {
+/** The labels that stay where they are: a launch's, once a report ("missile launch"), while its
+ *  weapon is at the launch stage and in flight. */
+function keyedLabels(ws: WeaponTrack[], nowMs: number, nameOf: (uid: string) => string): Label[] {
   const launches = new Map<string, Label>()
   for (const w of ws) {
-    if (w.stage === 'plot' && !w.struck) continue
     const l = w.launch
     if (l && w.stage === 'launch' && w.status === 'in_flight' && !w.struck) {
       const report = w.report ?? w.id
-      launches.set(report, { at: low(l.point), label: `LAUNCH · ${stageText(w, nameOf).replace(/^launch, /, '')}`, a: alphaAt(w, nowMs), key: `w:launch:${report}`, short: 'LAUNCH' })
+      launches.set(report, { at: low(l.point), label: weaponLine(w, null, nowMs, nameOf), a: alphaAt(w, nowMs), key: `w:launch:${report}`, short: 'launch' })
     }
   }
-  const struck: Label[] = []
-  for (const g of struckGroups(ws, nameOf)) {
-    const victim = victimOf(g.newest)
-    if (victim) struck.push({ at: low(victim), label: g.label, a: alphaAt(g.newest, nowMs), key: `w:struck:${g.uid}`, short: 'STRUCK' })
-  }
-  return [...launches.values(), ...struck]
+  return [...launches.values()]
 }
 
-/** The launch and strike labels for the one label budget (declutter.ts, bd murmur-iobd.3): placed
- *  or dropped against our vehicles' and the tracks' labels (a damage slot under the vehicle struck
- *  first), never over them; with what waits on the person. */
-export function weaponLabelCandidates(ws: WeaponTrack[], nowMs: number, screen: MapScreen, victimOf: (w: WeaponTrack) => [number, number] | null, nameOf: (uid: string) => string): LabelCandidate[] {
-  return keyedLabels(ws, nowMs, victimOf, nameOf).map((l) => ({
+/** The launch labels for the one label budget (declutter.ts, bd murmur-iobd.3): placed or dropped
+ *  against our vehicles' and the tracks' labels, never over them; with what waits on the person. */
+export function weaponLabelCandidates(ws: WeaponTrack[], nowMs: number, screen: MapScreen, nameOf: (uid: string) => string): LabelCandidate[] {
+  return keyedLabels(ws, nowMs, nameOf).map((l) => ({
     key: l.key!,
     at: screen.at(l.at[0], l.at[1], l.at[2]),
     full: textBox([l.label], 12, 'start', 'top', LABEL_AT, LABEL_PAD, 4),
@@ -115,7 +107,8 @@ export function weaponLabelCandidates(ws: WeaponTrack[], nowMs: number, screen: 
 
 /** The weapons `ws` (weapon.ts shownWeapons) at `nowMs`. `victimOf`: where the vehicle a weapon
  *  heads for was when this console first had its target (the estimate's end), and the struck
- *  vehicle's position; `nameOf`: a vehicle's callsign. */
+ *  vehicle's position; `nameOf`: a vehicle's callsign; `viewed`: the act the person viewed, whose
+ *  weapon's fixes are drawn. */
 export function buildWeaponLayers(
   ws: WeaponTrack[],
   nowMs: number,
@@ -123,14 +116,14 @@ export function buildWeaponLayers(
   reduced: boolean,
   victimOf: (w: WeaponTrack) => [number, number] | null,
   nameOf: (uid: string) => string,
-  // the label budget's level for a launch's or a strike's label; undefined for one the last plan
-  // did not weigh (drawn in full until the next)
+  viewed: string | null,
+  // the label budget's level for a launch's label; undefined for one the last plan did not weigh
+  // (drawn in full until the next)
   level: (key: string) => LabelLevel | undefined = () => undefined,
 ) {
   if (!ws.length) return []
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const dashed: { path: Pt3[]; a: number }[] = []
-  const bearings: { path: Pt3[]; a: number }[] = []
   const flashes: Flash[] = []
   const flying: Flying[] = []
   const fixLines: { path: Pt3[]; a: number }[] = []
@@ -155,13 +148,10 @@ export function buildWeaponLayers(
     const flyingNow = w.status === 'in_flight' && !w.struck
     const kind: WeaponSymbolKind = w.stage === 'class' ? weaponSymbolKind(w.class_symbol) : 'unknown'
     const l = w.launch
-    // the launch: its fix, the bearing from the observer, its flash
-    if (l) {
-      if (l.observer) dashLine(low(l.observer.point), low(l.point), a, 20, bearings)
-      if (!reduced) {
-        const p = (nowMs - l.flash_t) / LAUNCH_FLASH_MS
-        if (p >= 0 && p < 1) flashes.push({ at: low(l.point), p, ring: true }, { at: low(l.point), p, ring: false })
-      }
+    // the launch's flash, once
+    if (l && !reduced) {
+      const p = (nowMs - l.flash_t) / LAUNCH_FLASH_MS
+      if (p >= 0 && p < 1) flashes.push({ at: low(l.point), p, ring: true }, { at: low(l.point), p, ring: false })
     }
     // the estimate, only on a basis
     const victim = victimOf(w)
@@ -173,9 +163,7 @@ export function buildWeaponLayers(
       dashLine(from, to, (inFlight(est, nowMs) ? 0.9 : 0.45) * a)
       if (inFlight(est, nowMs) && !w.struck) {
         const at = drawn(munitionAt(est, reduced ? est.launch_t : nowMs))
-        const c = countdownS(est, w, nowMs)
-        const what = w.stage === 'class' ? (classText(w) ?? weaponShort(w.class)) : 'WEAPON?'
-        flying.push({ at: reduced ? from : at, angle: angleTo(at, to), kind, predicted: true, label: `EST. ${what} · ${c == null ? '' : c > 0 ? `${c.toFixed(1)} s` : 'due'}` })
+        flying.push({ at: reduced ? from : at, angle: angleTo(at, to), kind, predicted: true, label: weaponLine(w, est, nowMs, nameOf) })
         if (!reduced) for (const [d0, d1] of dashesAhead(est, nowMs)) dashed.push({ path: [drawn(d0), drawn(d1)], a })
         placed = true
       }
@@ -187,7 +175,7 @@ export function buildWeaponLayers(
       const at = low(h.at)
       dashLine(from, at, 0.8 * a, 4)
       const fresh = w.kin_t != null && nowMs - w.kin_t < 500
-      flying.push({ at: reduced ? from : at, angle: angleTo(from, at), kind, predicted: !fresh, label: labelOf(w, nameOf) })
+      flying.push({ at: reduced ? from : at, angle: angleTo(from, at), kind, predicted: !fresh, label: weaponLine(w, null, nowMs, nameOf) })
       placed = true
     }
     // otherwise at its last fix, while recent
@@ -195,40 +183,30 @@ export function buildWeaponLayers(
     if (!placed && flyingNow && last && nowMs - last.t < FIX_HOLD_MS && w.stage !== 'launch') {
       const prev = w.fixes.length > 1 ? w.fixes[w.fixes.length - 2].point : l?.point
       const at = low(last.point)
-      flying.push({ at, angle: prev ? angleTo(low(prev), at) : 180, kind, predicted: false, label: labelOf(w, nameOf) })
+      flying.push({ at, angle: prev ? angleTo(low(prev), at) : 180, kind, predicted: false, label: weaponLine(w, null, nowMs, nameOf) })
     }
-    // the weapon's own fixes, solid: what our radars and cameras actually had
-    const pts = w.fixes.map((f) => low(f.point))
-    if (l && pts.length) pts.unshift(low(l.point))
-    if (pts.length > 1) fixLines.push({ path: pts, a })
-    for (const f of w.fixes) fixes.push({ at: low(f.point), sigma: f.sigma_m, a })
-    if (l) fixes.push({ at: low(l.point), sigma: l.sigma_m, a })
+    // the weapon's own fixes, solid: what our radars and cameras actually had, the evidence behind
+    // the attribution, for the act the person viewed
+    if (viewed != null && w.report === viewed) {
+      const pts = w.fixes.map((f) => low(f.point))
+      if (l && pts.length) pts.unshift(low(l.point))
+      if (pts.length > 1) fixLines.push({ path: pts, a })
+      for (const f of w.fixes) fixes.push({ at: low(f.point), sigma: f.sigma_m, a })
+      if (l) fixes.push({ at: low(l.point), sigma: l.sigma_m, a })
+    }
     if (w.struck && victim) {
       const at = low(victim)
       const p = strikeFlash(w, nowMs)
       if (p != null && !reduced) flashes.push({ at, p, ring: true }, { at, p, ring: false })
     }
   }
-  // the launches' labels, and the strikes on each vehicle once (its ring and label where the newest
-  // struck): each label where the label budget placed it, in its short form or none; a strike's
-  // ring whatever its label
-  const struckRings: Label[] = []
-  for (const k of keyedLabels(ws, nowMs, victimOf, nameOf)) {
-    if (k.key?.startsWith('w:struck:')) struckRings.push(k)
+  // the launches' labels, each where the label budget placed it, in its short form or none
+  for (const k of keyedLabels(ws, nowMs, nameOf)) {
     const lv = k.key ? level(k.key) : undefined
     if (lv === 'none') continue
     labels.push(lv === 'short' ? { ...k, label: k.short ?? k.label } : k)
   }
   return [
-    new PathLayer<{ path: Pt3[]; a: number }>({
-      id: 'weapon-bearing',
-      data: bearings,
-      getPath: (d) => d.path,
-      getColor: (d) => rgba(PALE, 150 * d.a),
-      getWidth: 1.5,
-      widthUnits: 'pixels',
-      parameters: onTop,
-    }),
     new PathLayer<{ path: Pt3[]; a: number }>({
       id: 'weapon-estimate',
       data: dashed,
@@ -277,20 +255,6 @@ export function buildWeaponLayers(
       lineWidthUnits: 'pixels',
       parameters: onTop,
     }),
-    new ScatterplotLayer<Label>({
-      id: 'weapon-struck',
-      data: struckRings,
-      getPosition: (s) => s.at,
-      getRadius: 11,
-      radiusUnits: 'pixels',
-      stroked: true,
-      filled: false,
-      getLineColor: (s) => rgba(RED, 240 * s.a),
-      getLineWidth: 2.5,
-      lineWidthUnits: 'pixels',
-      updateTriggers: { getLineColor: nowMs },
-      parameters: onTop,
-    }),
     new IconLayer<Flying>({
       id: 'weapon',
       data: flying,
@@ -324,12 +288,6 @@ export function buildWeaponLayers(
       parameters: onTop,
     }),
   ]
-}
-
-/** the symbol's label without an estimate: "WEAPON? · 243 m/s", "ATGM-class: 250 m/s, from T-0004" */
-function labelOf(w: WeaponTrack, nameOf: (uid: string) => string): string {
-  if (w.stage === 'class') return classText(w) ?? stageText(w, nameOf)
-  return `WEAPON?${w.speed_mps != null ? ` · ${Math.round(w.speed_mps)} m/s` : ''}${w.track ? ` · ${w.track}` : ''}`
 }
 
 /** Whether animation frames are wanted: a weapon flying on its estimate or its heading, or a flash on. */

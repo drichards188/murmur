@@ -26,7 +26,6 @@
 .tko-out.ok { color: var(--ok); }
 .tko-out.warn { color: var(--warn); }
 .tko-out.bad { color: var(--bad); }
-.tko-rwho { font: 11px var(--mono); color: var(--muted); }
 .tko-reply .bluf { font-size: 12.5px; }
 .tko-links { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .tko-link { font: 11px var(--mono); padding: 1px 6px; }
@@ -36,3 +35,4 @@
 .tko-noreply { margin: 6px 0 0; font: 11.5px var(--mono); color: var(--warn); }
 .tko-turn { align-items: center; }
 .tko-turn-label { font: 10.5px var(--mono); color: var(--muted); }
+.tko-why { margin-left: auto; margin-right: 6px; }

@@ -1,7 +1,7 @@
 import { LayerExtension } from '@deck.gl/core'
-import { LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers'
+import { LineLayer, PathLayer } from '@deck.gl/layers'
 import type { LiftedBridge } from './bridges'
-import { drawnTick, drawnXYZ, shownAlt, smoothing } from './drawn'
+import { drawnTick, drawnXYZ, shownAlt } from './drawn'
 import { seenThroughWater, underWater } from './sea'
 import type { Vehicle } from './types'
 import { domainOf } from './types'
@@ -55,7 +55,7 @@ export function drawnHeight(v: Vehicle) {
 }
 
 /** The scene around the vehicles is built in two parts: build3dStatic (trails, bridge decks)
- *  and build3dGlide (height stems and sea-level shadows). The vehicles themselves are in
+ *  and build3dGlide (height stems). The vehicles themselves are in
  *  vehicleLayers.ts. Every vehicle with a position is placed: one without an altitude now at
  *  the last one it reported, else at the surface (drawn.ts shownAlt).
  *
@@ -64,7 +64,7 @@ export function drawnHeight(v: Vehicle) {
  *  0 m to fight it for depth. What is under water (sea.ts underWater: a submarine's trail and
  *  stem, anything more than a metre down) is drawn in its colour seen through that tint (sea.ts
  *  seenThroughWater), the rest in its own: bridge decks, the trails and stems of surface vessels
- *  and aircraft, sea-level shadows and the screen-space overlays. A stem runs from sea level to
+ *  and aircraft, and the screen-space overlays. A stem runs from sea level to
  *  its vehicle, so it lies wholly on one side of the surface. */
 
 /** The bridge decks at their estimated height (see bridges.ts), over the water: never tinted.
@@ -83,52 +83,30 @@ export function bridgeDeckLayer(bridges: LiftedBridge[]) {
   })
 }
 
-/** Trails and bridge decks: nothing here moves with a glide (display smoothing, drawn.ts), so
- *  MapView builds them when the data changes and reuses them between frames. `under`: the
- *  trails of what is under water, seen through it; `over` the rest. */
-export function build3dStatic(vehicles: Vehicle[], bridges: LiftedBridge[] = []) {
-  const placed = vehicles.filter((v) => v.position)
-  const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], drawnHeight(v)]
-  // with smoothing on, trailLayers.ts draws the trails (they end at the drawn position)
-  const trailed = smoothing() ? [] : placed.filter((v) => v.trail.length > 1)
-  const trails = (id: string, data: Vehicle[], seen = false) =>
-    new PathLayer<Vehicle>({
-      id,
-      data,
-      getPath: (v) => [...v.trail.map(([lon, lat, alt]): XYZ => [lon, lat, z(alt)]), at(v)],
-      getColor: seen ? (v) => seenThroughWater(colour(v, 140)) : (v) => colour(v, 140),
-      getWidth: 2,
-      widthUnits: 'pixels',
-      updateTriggers: { getPath: data.map((v) => v.trail.length).join() },
-    })
-  return {
-    under: [trails('trails-3d-under', trailed.filter(underWater), true)],
-    decks: [bridgeDeckLayer(bridges)],
-    over: [trails('trails-3d', trailed.filter((v) => !underWater(v)))],
-  }
+/** The bridge decks: nothing here moves with a glide (display smoothing, drawn.ts), so MapView
+ *  builds them when the data changes and reuses them between frames. (The trails are
+ *  trailLayers.ts's: they end at the drawn position.) */
+export function build3dStatic(bridges: LiftedBridge[] = []) {
+  return { decks: [bridgeDeckLayer(bridges)] }
 }
 
 // the vehicles placed, kept while the vehicles are the same (animation frames of a glide)
-let memo: { vehicles: Vehicle[]; placed: Vehicle[]; under: Vehicle[]; over: Vehicle[] } | null = null
+let memo: { vehicles: Vehicle[]; under: Vehicle[]; over: Vehicle[] } | null = null
 
-/** Stems and sea-level shadows: they follow a vehicle's drawn position (display smoothing,
- *  drawn.ts), so MapView rebuilds just these on an animation frame. The stems of what is under
+/** Stems, from sea level to the vehicle (the stem's foot marks the point under it): they follow a
+ *  vehicle's drawn position (display smoothing, drawn.ts), so MapView rebuilds just these on an
+ *  animation frame. The stems of what is under
  *  water are drawn seen through it, the other stems in their own colour: a group member's in its
  *  group's (`stemColor`, bd murmur-4nik; `stemKey` changes when those colours do), fainter. */
 export function build3dGlide(vehicles: Vehicle[], stemColor?: (v: Vehicle) => RGBA | null, stemKey?: unknown) {
   if (!memo || memo.vehicles !== vehicles) {
     const placed = vehicles.filter((v) => v.position)
-    memo = { vehicles, placed, under: placed.filter(underWater), over: placed.filter((v) => !underWater(v)) }
+    memo = { vehicles, under: placed.filter(underWater), over: placed.filter((v) => !underWater(v)) }
   }
-  const { placed, under, over } = memo
-  const smooth = smoothing()
-  const at = smooth
-    ? (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, HEIGHT_EXAGGERATION) as XYZ
-    : (v: Vehicle): XYZ => [v.position![0], v.position![1], drawnHeight(v)]
-  const ground = smooth
-    ? (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, 0) as XYZ
-    : (v: Vehicle): XYZ => [v.position![0], v.position![1], 0]
-  const triggers = smooth ? { getSourcePosition: drawnTick(), getTargetPosition: drawnTick(), getPosition: drawnTick() } : {}
+  const { under, over } = memo
+  const at = (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, HEIGHT_EXAGGERATION) as XYZ
+  const ground = (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, 0) as XYZ
+  const triggers = { getSourcePosition: drawnTick(), getTargetPosition: drawnTick() }
   const stemOf = (v: Vehicle) => stemColor?.(v) ?? colour(v, 160)
   // stem from sea level to the vehicle: shows height (or depth) at a glance
   const stems = (id: string, data: Vehicle[], seen = false) =>
@@ -145,14 +123,5 @@ export function build3dGlide(vehicles: Vehicle[], stemColor?: (v: Vehicle) => RG
   return {
     stemsUnder: stems('stems-under', under, true),
     stems: stems('stems', over),
-    shadows: new ScatterplotLayer<Vehicle>({
-      id: 'sea-level-shadow',
-      data: placed,
-      getPosition: ground,
-      getRadius: 4,
-      radiusUnits: 'pixels',
-      getFillColor: [0, 0, 0, 110],
-      updateTriggers: triggers,
-    }),
   }
 }

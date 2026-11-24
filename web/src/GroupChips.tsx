@@ -1,6 +1,7 @@
-// The groups' chips over the map (bd murmur-4nik): one per group over its members, naming it, what
-// it does and its strength against its minimum, or one per cluster tile far out naming the groups
-// in it. HTML over the map's canvas, so over every layer (never under a symbol or crossed by a
+// The groups' chips over the map (bd murmur-4nik): one per group over its members, naming it, and
+// under its name only what is wrong with it (under its minimum, suspended, drops, lost links: its
+// order and strength are the group strip's, ledger 1), or one per cluster tile far out naming the
+// groups in it. HTML over the map's canvas, so over every layer (never under a symbol or crossed by a
 // stem) and crisp; laid out (which chips, where) with the label budget when the camera stops or the
 // data changes (MapView planNow, groupScreen.ts), moved with the camera on every frame the map draws
 // (`place`, a few dozen projections). A chip is a label, not a handle: a click selects the group's
@@ -9,7 +10,7 @@
 import { type CSSProperties, type RefObject, useImperativeHandle, useLayoutEffect, useRef } from 'react'
 import type { MapScreen } from './aloft'
 import { cellChipText, chipName, type CellChip } from './groupScreen'
-import type { GroupMarks } from './swarmsModel'
+import { chipExceptions, type GroupMarks } from './swarmsModel'
 import './swarms.css'
 
 /** The groups as the map shows them, and what a chip does. */
@@ -22,8 +23,6 @@ export interface GroupsOnMap {
   onHover: (id: string | null) => void
   /** select the group's members (client side) and open its card */
   onSelect: (id: string) => void
-  /** who is missing and why, for a chip's hover (missingLines) */
-  detail: (id: string) => string[]
 }
 
 export interface ChipSpot {
@@ -121,8 +120,8 @@ export function GroupChips({ spots, live, groups, placer, screen }: Props) {
             </button>
           )
         }
+        const wrong = chipExceptions(m.parts)
         const status = [m.doing, ...m.parts.map((p) => p.text)].join(', ')
-        const missing = hov ? groups.detail(m.id) : []
         return (
           <button
             key={spot.key}
@@ -141,23 +140,14 @@ export function GroupChips({ spots, live, groups, placer, screen }: Props) {
               <b>{m.id}</b>
               {m.name && <span className="gchip-name">{chipName(m.name)}</span>}
             </span>
-            <span className="gchip-status">
-              <span className="gchip-doing">{m.doing}</span>
-              {m.parts.map((p, i) => (
-                <span key={i} className={p.tone ?? ''}>
-                  <i aria-hidden> · </i>
-                  {p.text}
-                </span>
-              ))}
-            </span>
-            {hov && (
-              <span className="gchip-tip" role="tooltip">
-                <b>
-                  {m.id} · {m.name}
-                </b>
-                <span>{m.members.length} members · {status}</span>
-                {missing.length ? missing.map((l) => <span key={l} className="warn">{l}</span>) : <span className="dim">None missing.</span>}
-                <span className="dim">Click: select its {m.members.length} members and open its card.</span>
+            {wrong.length > 0 && (
+              <span className="gchip-status">
+                {wrong.map((p, i) => (
+                  <span key={i} className={p.tone ?? ''}>
+                    {i > 0 && <i aria-hidden> · </i>}
+                    {p.text}
+                  </span>
+                ))}
               </span>
             )}
           </button>

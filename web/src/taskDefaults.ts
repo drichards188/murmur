@@ -68,7 +68,7 @@ export interface OrbitRange {
   value: number
   max: number
   step: number
-  /** which vehicle sets the minimum, and why */
+  /** the vehicle whose turning circle sets the minimum (its callsign) */
   limitedBy: string | null
 }
 
@@ -92,7 +92,7 @@ export function orbitRange(vs: Vehicle[], limits: Map<string, PlatformLimits> | 
       const need = Math.ceil(turn * ORBIT_MARGIN)
       if (need > min) {
         min = need
-        limitedBy = `${v.identity?.callsign ?? v.uid}: turn radius ${Math.round(turn)} m`
+        limitedBy = v.identity?.callsign ?? `vehicle ${v.uid}`
       }
     }
     typical = Math.max(typical, p?.loiter_radius_m ?? (v.kind ? KIND_ORBIT_M[v.kind] ?? 0 : 0))

@@ -1,5 +1,6 @@
 import type { Authorization, Intent } from './decisions'
 import { tierLabel } from './decisions'
+import { ruleName } from './commandModel'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 import { RefusalFold } from './RefusalFold'
@@ -19,6 +20,8 @@ function name(vehicles: Vehicle[], uid: string | null) {
   return v ? callsign(v) : `vehicle ${uid}`
 }
 
+/** One line for each outcome (R12, change 27), its why in a clause, and where to follow it; the
+ *  order's number only on the buttons that open it. */
 export function TaskResult({
   outcome,
   vehicles,
@@ -33,21 +36,21 @@ export function TaskResult({
   onInbox: (intentId: number) => void
   onDismiss: () => void
 }) {
+  const dismiss = (
+    <button className="ghost" onClick={onDismiss}>
+      Dismiss
+    </button>
+  )
   if (outcome.kind === 'authorized') {
     const a = outcome.authorization
     return (
       <div className="tr" role="status">
-        <strong>Sent: authorized by you ({tierLabel(a.tier)})</strong>
-        <span>
-          This task needs a human decision ({a.reason}); sending it was yours, so it was dispatched (intent i{outcome.intentId}).
-        </span>
+        <strong>Sent on your authority ({tierLabel(a.tier)}): {a.reason}.</strong>
         <div className="row">
           <button className="ghost" onClick={() => onInbox(outcome.intentId)}>
             See i{outcome.intentId} in Decisions
           </button>
-          <button className="ghost" onClick={onDismiss}>
-            Dismiss
-          </button>
+          {dismiss}
         </div>
       </div>
     )
@@ -55,38 +58,21 @@ export function TaskResult({
   if (outcome.kind === 'queued') {
     return (
       <div className="tr wait" role="status">
-        <strong>Approved, held: a vehicle can't be reached now</strong>
-        <span>
-          Intent i{outcome.intentId} is queued, not sent into a dead link. It goes when the link can carry it, after its checks run
-          again on the picture then; it comes back to the inbox if that picture changed, and expires if the vehicle stays out of
-          reach. See it in the Queue.
-        </span>
-        <span className="muted">{outcome.detail}</span>
-        <div className="row">
-          <button className="ghost" onClick={onDismiss}>
-            Dismiss
-          </button>
-        </div>
+        <strong>Approved, held until the link can carry it{outcome.detail ? `: ${outcome.detail}` : ''}.</strong>
+        <div className="row">{dismiss}</div>
       </div>
     )
   }
   if (outcome.kind === 'wait') {
     return (
       <div className="tr wait" role="status">
-        <strong>Not sent yet: waiting for approval</strong>
-        <span>
-          This task needs a human to approve it (intent i{outcome.intentId}). Nothing has been dispatched to the vehicles.
-          {outcome.expires_t != null && ' It expires if nobody decides in time.'}
-        </span>
+        <strong>{stillPending ? `Not sent: waiting for approval in the Inbox${outcome.expires_t != null ? ', until it expires' : ''}.` : 'No longer waiting: see how it ended in Decisions.'}</strong>
         <div className="row">
           <button className="ghost" onClick={() => onInbox(outcome.intentId)}>
             {stillPending ? `Open i${outcome.intentId} in the Inbox` : `See i${outcome.intentId} in Decisions`}
           </button>
-          <button className="ghost" onClick={onDismiss}>
-            Dismiss
-          </button>
+          {dismiss}
         </div>
-        <span className="muted">{stillPending ? 'Still pending.' : 'No longer pending: see its final state in Decisions.'}</span>
       </div>
     )
   }
@@ -95,14 +81,14 @@ export function TaskResult({
   const last = i.history[i.history.length - 1]
   return (
     <div className="tr refused" role="alert">
-      <strong>Refused by the rules (intent i{i.id}). Nothing was sent.</strong>
+      <strong>Refused by the rules: nothing was sent.</strong>
       {i.uids.length > 1 && i.checks.some((c) => c.uid == null) ? (
         <RefusalFold checks={i.checks} uids={i.uids} vehicles={vehicles} />
       ) : failed.length > 0 ? (
         <ul>
           {failed.map((c, k) => (
             <li key={k} className="fail">
-              <b>{c.rule}</b>
+              <b>{ruleName(c.rule)}</b>
               {c.uid != null && <> ({name(vehicles, c.uid)})</>}: {c.detail}
               {c.fix && <> Suggested radius: {Math.ceil(c.fix.radius_m)} m.</>}
             </li>
@@ -112,9 +98,7 @@ export function TaskResult({
         <span>{last?.reason ?? outcome.detail}</span>
       )}
       <div className="row">
-        <button className="ghost" onClick={onDismiss}>
-          Dismiss
-        </button>
+        {dismiss}
         <button className="ghost" onClick={() => onInbox(i.id)}>
           See i{i.id} in Decisions
         </button>

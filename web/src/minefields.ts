@@ -2,8 +2,9 @@
 // of ours not yet inert (the engine's record: each mine's place, when it arms and goes inert, the
 // trigger reach, the danger area round its mines, the domains that set it off). Each live field is
 // drawn as its danger area's outline (a capsule round each run of mines, the no-go area the
-// planner and the geofence keep our vehicles of those domains out of) and a small ring on each
-// mine, on the surface with the sensor reach rings (reachLayers.ts, kinds `minefield` and `mine`).
+// planner and the geofence keep our vehicles of those domains out of), and a small ring on each
+// mine (its trigger reach) only while the vehicle that laid it is selected, on the surface with the
+// sensor reach rings (reachLayers.ts, kinds `minefield` and `mine`).
 import type { LngLat } from './types'
 
 export interface MineView {
@@ -34,6 +35,7 @@ export interface MinefieldsAnswer {
 }
 
 const M_PER_DEG = 111_320
+const NO_UIDS: ReadonlySet<number> = new Set()
 
 /** `p` moved `e` metres east and `n` north (a flat earth over a field's few hundred metres). */
 function offset(p: LngLat, e: number, n: number): LngLat {
@@ -71,9 +73,10 @@ export function capsule(a: LngLat, b: LngLat, r: number, arc = 12): LngLat[] {
   return out
 }
 
-/** The live fields as LineString features: each run's danger outline (`minefield`) and a ring on
- *  each mine (`mine`), each with the field's words for a tooltip. */
-export function minefieldFeatures(answer: MinefieldsAnswer | null): GeoJSON.Feature[] {
+/** The live fields as LineString features: each run's danger outline (`minefield`), and a ring on
+ *  each mine (`mine`) of a field whose layer is among `selected`, each with the field's words for a
+ *  tooltip. */
+export function minefieldFeatures(answer: MinefieldsAnswer | null, selected: ReadonlySet<number> = NO_UIDS): GeoJSON.Feature[] {
   const out: GeoJSON.Feature[] = []
   for (const f of answer?.minefields ?? []) {
     if (!f.live || !f.mines.length) continue
@@ -83,6 +86,7 @@ export function minefieldFeatures(answer: MinefieldsAnswer | null): GeoJSON.Feat
     for (const [a, b] of runs) {
       out.push({ type: 'Feature', properties: { kind: 'minefield', sensor: 'minefield', field: f.id, words }, geometry: { type: 'LineString', coordinates: capsule(a, b, f.danger_m) } })
     }
+    if (f.layer == null || !selected.has(f.layer)) continue
     for (const m of f.mines) {
       out.push({ type: 'Feature', properties: { kind: 'mine', sensor: 'minefield', field: f.id, words }, geometry: { type: 'LineString', coordinates: ring(m.at, Math.max(f.reach_m, 3), 12) } })
     }

@@ -1,11 +1,10 @@
 // Checks for hostileAct.ts (no test runner in web/): node web/src/hostileAct.check.ts, as make
 // check does. The claims: an observed act's burst plays once, from when the console first saw it
 // (never replayed for an act seen late); an abstract act is drawn as a report (a dashed arrow, no
-// streak), a weapon act without an arrow (its weapon is drawn); its label fades after some seconds
-// and its line and marker after a minute or a dismissal; at most a few are drawn and labelled at
-// once; the author is drawn where our sensors placed it and named only when the engine attributed
-// the act; the victim stays where it was when the act came in. Throws on the first failure,
-// prints "hostileAct: ok" otherwise.
+// streak), a weapon act without an arrow (its weapon is drawn); its line and marker fade after a
+// minute or go on a dismissal; at most a few are drawn at once; the author is drawn where our
+// sensors placed it, attributed only as the engine attributed the act; the victim stays where it
+// was when the act came in. Throws on the first failure, prints "hostileAct: ok" otherwise.
 import type { ObservedAct } from './ident'
 import {
   actDrawings,
@@ -13,23 +12,16 @@ import {
   animStart,
   arrowHead,
   attributionOf,
-  bannerAct,
-  bannerLine,
-  BANNER_MS,
   dashes,
   FRESH_MS,
-  headline,
   LABEL_FADE_MS,
   LABEL_HOLD_MS,
   labelAlpha,
-  labelledKeys,
   LINGER_FADE_MS,
   LINGER_MS,
   lingerAlpha,
   MAX_DRAWN,
-  MAX_LABELS,
   muzzleFlash,
-  subline,
   visibleActs,
   type ActDrawing,
   type Pt3,
@@ -87,56 +79,44 @@ check(attributionOf(flagged).track === null && attributionOf(flagged).note === '
 check(attributionOf(recorded).track === 'T-0006', 'recorded against a track already declared: that track')
 check(attributionOf(act(5, 0, { verdict: 'recorded', why: 'rule off' }, { candidates: [] })).track === null, 'recorded with no candidate: unattributed')
 
-const names: Record<string, string> = { '1': 'HUNTER 1', '3': 'REAPER 1' }
-const nameOf = (uid: string) => names[uid] ?? `vehicle ${uid}`
 let hunter: Victim | null = { at: [-122.47, 37.81], alt: 0 }
 const victimAt = () => hunter
 const seen = new Map<string, Seen>()
 // the console first sees act A-1 a second after it was observed
-let ds = actDrawings([declared], seen, 101_000, victimAt, nameOf)
+let ds = actDrawings([declared], seen, 101_000, victimAt)
 check(ds.length === 1 && ds[0].start === 101_000, 'it plays from when it is first seen')
 check(ds[0].author[0] === -122.495 && ds[0].sigma_m === 42, 'the author where our sensors placed it, with its error')
 check(ds[0].victim?.at[0] === -122.47, 'the victim where it was')
-check(headline(ds[0]) === 'Act A-1: reported fire on HUNTER 1' && !ds[0].weapon, headline(ds[0]))
-const shot = actDrawings([declared], new Map(), 101_000, victimAt, nameOf, new Set(['A-1']))[0]
-check(shot.weapon && headline(shot) === 'Act A-1: launch at HUNTER 1', 'a weapon act: its launch, drawn as its weapon')
-check(subline(ds[0]) === 'from T-0006 (0.97) · seen by HUNTER 1 EO/IR and sonar; REAPER 1 EO/IR', subline(ds[0]))
-check(bannerLine(ds[0]) === 'T-0006 fired on HUNTER 1', bannerLine(ds[0]))
+check(!ds[0].weapon, 'an abstract act: a report, drawn as an arrow')
+const shot = actDrawings([declared], new Map(), 101_000, victimAt, new Set(['A-1']))[0]
+check(shot.weapon, 'a weapon act: drawn as its weapon')
 // the victim moves on: the act still ends where it was hit, and does not start again
 hunter = { at: [-122.46, 37.80], alt: 0 }
-ds = actDrawings([declared], seen, 105_000, victimAt, nameOf)
+ds = actDrawings([declared], seen, 105_000, victimAt)
 check(ds[0].victim?.at[0] === -122.47 && ds[0].start === 101_000, 'the victim and the start are kept from the first sight')
 // a victim not found at first is looked for again while the act is fresh
 hunter = null
 const seen2 = new Map<string, Seen>()
-check(actDrawings([declared], seen2, 101_000, victimAt, nameOf)[0].victim === null, 'no victim yet')
+check(actDrawings([declared], seen2, 101_000, victimAt)[0].victim === null, 'no victim yet')
 hunter = { at: [-122.45, 37.8], alt: 7600 }
-check(actDrawings([declared], seen2, 102_000, victimAt, nameOf)[0].victim?.alt === 7600, 'found a moment later')
+check(actDrawings([declared], seen2, 102_000, victimAt)[0].victim?.alt === 7600, 'found a moment later')
 // a console opened two minutes after an act does not replay it
-const late = actDrawings([declared], new Map(), 220_000, victimAt, nameOf)[0]
+const late = actDrawings([declared], new Map(), 220_000, victimAt)[0]
 check(late.start === 100_000 && visibleActs([late], 220_000, null).length === 0, 'an old act is not drawn')
 
-const fl = actDrawings([flagged], new Map(), 160_500, victimAt, nameOf)[0]
-check(fl.authorTrack === null && subline(fl).startsWith('author unattributed (flag F-2) · seen by'), subline(fl))
-check(bannerLine(fl) === 'Unattributed fire on HUNTER 1', bannerLine(fl))
-const no = actDrawings([nobody], new Map(), 280_500, () => null, nameOf)[0]
-check(no.victim === null && no.authorTrack === null, 'no victim position, unattributed: still drawn at the author')
-const onTrack = actDrawings([act(6, 0, { verdict: 'recorded', why: '' }, { act: { ...declared.act, act: 'A-6', against: { kind: 'track', track: 'T-0003' } } })], new Map(), 0, victimAt, nameOf)[0]
-check(headline(onTrack) === 'Act A-6: reported fire on protected track T-0003', headline(onTrack))
+const fl = actDrawings([flagged], new Map(), 160_500, victimAt)[0]
+check(fl.act === 'A-2' && fl.author[0] === -122.495, 'a flagged act is drawn where our sensors placed it')
+const no = actDrawings([nobody], new Map(), 280_500, () => null)[0]
+check(no.victim === null && no.author[0] === -122.495, 'no victim position, unattributed: still drawn at the author')
+const onTrack = actDrawings([act(6, 0, { verdict: 'recorded', why: '' }, { act: { ...declared.act, act: 'A-6', against: { kind: 'track', track: 'T-0003' } } })], new Map(), 0, victimAt)[0]
+check(onTrack.act === 'A-6' && onTrack.victim != null, 'an act against a protected track is drawn too')
 
 // ---- many acts: legible ----------------------------------------------------------------------
 const many: ActDrawing[] = Array.from({ length: 12 }, (_, k) => ({ ...ds[0], key: `A-${k}`, act: `A-${k}`, start: 1_000_000 + k * 5000 }))
 const now = 1_000_000 + 11 * 5000 + 500
 const vis = visibleActs(many, now, null)
 check(vis.length === MAX_DRAWN && vis[0].act === 'A-11', `the newest ${MAX_DRAWN}, newest first`)
-const lab = labelledKeys(vis, now)
-check(lab.size === MAX_LABELS && lab.has('A-11') && lab.has('A-10'), `full labels on the newest only: ${[...lab]}`)
-check(!labelledKeys(vis, now + 20_000).size, 'none once every label has faded')
 check(visibleActs(many, now, 1_000_000 + 10 * 5000).map((x) => x.act).join() === 'A-11', 'a dismissal takes off what started by then')
 check(visibleActs(many, 1_000_000 - 1, null).length === 0, 'nothing before it starts')
-const ban = bannerAct(many, now, null)!
-check(ban.d.act === 'A-11' && ban.others === MAX_DRAWN - 1, 'the banner: the newest, and how many more are drawn')
-check(bannerAct(many, now + BANNER_MS, null) === null && bannerAct(many, now + BANNER_MS - 1000, null) != null, 'the banner goes after BANNER_MS')
-check(bannerAct(many, now, now) === null, 'and on a dismissal')
 
 console.log('hostileAct: ok')

@@ -1,6 +1,6 @@
 // Checks for sitrep.ts: node web/src/sitrep.check.ts (prints "sitrep: ok").
 import assert from 'node:assert/strict'
-import { ANY, contactSummary, filterNodes, groupRows, headline, linkHealth, nearest, nodeRows, sitrepText, strengthWords, tally, windowOf, worstFirst, type SitrepContext } from './sitrep.ts'
+import { ANY, filterNodes, groupRows, headline, linkHealth, nodeRows, strengthWords, tally, windowOf, worstFirst, type SitrepContext } from './sitrep.ts'
 import type { Swarm } from './swarmsModel.ts'
 import type { Vehicle } from './types.ts'
 
@@ -36,7 +36,7 @@ const rows = groupRows([swarm], [{ id: 'og-1', name: 'Mine', color: '#c49bff', m
 assert.deepEqual(rows.map((r) => r.key), ['g:og-1', 's:PICKET-1'], 'the operator\'s groups first')
 assert.equal(rows[0].tone, 'bad', 'a damaged member')
 assert.equal(rows[1].tone, 'bad', 'a quarter lost: the bridge\'s own tone')
-assert.equal(rows[1].task, 'orbit i12')
+assert.equal(rows[1].task, 'orbit')
 assert.equal(strengthWords(rows[1]), '3 of 4: 1 on station, 1 returning, 1 idle; 1 lost link')
 assert.equal(rows[1].name, 'PICKET-1 · Gate', 'a swarm named as the fleet list and the strip name it')
 const officers = groupRows([], [{ id: 'og-2', name: 'West', color: null, members: [5], created_t: 1, updated_t: 1, by: 'agent-watch', agent: true, tasking: 'tk-1' }], by, ctx, (k, i) => `${k}${i}`)
@@ -55,8 +55,6 @@ assert.equal(nodes.length, 6)
 assert.equal(nodes.find((n) => n.uid === 4)!.lowBattery, true)
 assert.equal(nodes.find((n) => n.uid === 1)!.order, 'orbit active')
 assert.deepEqual(filterNodes(nodes, { ...ANY, unheard: true }).map((n) => n.uid), [2])
-assert.deepEqual(filterNodes(nodes, { ...ANY, domain: 'surface' }).map((n) => n.uid), [5])
-assert.deepEqual(filterNodes(nodes, { ...ANY, model: 'USV' }).map((n) => n.uid), [5])
 assert.deepEqual(filterNodes(nodes, { ...ANY, low: true }).map((n) => n.uid), [4])
 assert.deepEqual(filterNodes(nodes, { ...ANY, text: 'v3' }).map((n) => n.uid), [3])
 assert.deepEqual(filterNodes(nodes, { ...ANY, within: new Set([1, 2]) }).map((n) => n.uid), [1, 2])
@@ -69,15 +67,4 @@ assert.deepEqual(windowOf(1000, 3000, 300, 30), { from: 94, to: 116 })
 assert.deepEqual(windowOf(10, 0, 300, 30), { from: 0, to: 10 })
 assert.deepEqual(windowOf(0, 0, 300, 30), { from: 0, to: 0 })
 
-// contacts
-const c = contactSummary([tr('unknown'), tr('unknown', 'hostile'), tr('neutral', undefined, 'stale')])
-assert.deepEqual(c.byAffiliation, { unknown: 1, hostile: 1, neutral: 1 }, 'a declaration over the tracker\'s call')
-assert.equal(c.declared, 1)
-assert.equal(c.stale, 1)
-const near = nearest([{ position: [-122.4, 37.8] as [number, number], id: 'far' }, { position: [-122.5, 37.81] as [number, number], id: 'near' }], [-122.5, 37.8], 1)
-assert.equal(near[0].track.id, 'near')
-
-// the export reads the same numbers
-const text = sitrepText(h, rows, c, '10:00Z')
-assert.ok(text.includes('5 of 6 vehicles heard') && text.includes('3 waiting for a person') && text.includes('(yours) **Mine**'))
 console.log('sitrep: ok')

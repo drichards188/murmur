@@ -1,5 +1,5 @@
-/* The banner of a hostile act our sensors observed (hostileAct.ts): the strike banner's shape
-   (impact.css) in the hostile red; below it when a strike's banner is up. */
+/* The banner of an attacker's run against ours (attackEvents.ts: its acts, its weapons' strikes and
+   the victims' damage as one alarm): the strike banner's shape (impact.css) in the hostile red. */
 .act-status {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
   z-index: 8; display: flex; align-items: center; gap: 10px;
@@ -16,26 +16,23 @@
 .act-status button:hover { background: #6d2328; }
 .act-status button.act-dismiss { border-color: #7a3a3a; background: transparent; color: #ffc4c4; }
 .act-status button.act-dismiss:hover { background: #2a1416; }
-/* a short glow as it comes up, so a banner that replaces another is noticed */
+/* a short glow as it comes up, once */
 @keyframes act-status-in {
   0% { box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 34px rgba(255, 93, 93, .95); }
   100% { box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(255, 93, 93, .35); }
 }
-/* an opponent weapon (weapon.ts): INCOMING while one of ours is under a detected attack, then its
-   strike; the same red, a stronger edge while it flies */
-.act-status.weapon-status.incoming { border-width: 2px; background: rgba(58, 10, 14, .97); }
-.act-status.weapon-status.incoming strong { color: #ffd0d0; letter-spacing: .06em; }
 /* with a right drawer open (Inbox, Queue, Swarms) the banners head it, under its own header, in
    its column (App.tsx `banners`): centred on the map they sat over its top (bd murmur-76gv) */
 .ix-banners { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 0; }
 .ix-banners > .act-status, .ix-banners > .impact-status { position: static; transform: none; width: auto; max-width: none; }
+/* at a drawer's head (430 px) the sentence takes the full width and the buttons go under it, not
+   beside it in a column a few words wide */
+.ix-banners > .act-status, .ix-banners > .impact-status { flex-wrap: wrap; }
+.ix-banners > .act-status > span, .ix-banners > .impact-status > span { flex: 1 1 100%; }
 @media (prefers-reduced-motion: reduce) {
   .act-status { animation: none; }
 }
-/* a group's alarm (bd murmur-4nik): under strength or suspended in the red, a refused re-form in the
-   warning amber; under the other banners when they are up */
+/* a group that stopped and waits for a person (suspended below its minimum, bd murmur-4nik), under
+   the other banners when they are up */
 .act-status.group-status .gcode { vertical-align: 1px; }
-.act-status.group-status.warn { border-color: var(--warn); background: rgba(36, 28, 10, .96); color: #fff3d6; box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(242, 193, 78, .3); animation: none; }
-.act-status.group-status.warn strong { color: var(--warn); }
-.act-status.group-status.warn button { border-color: var(--warn); background: #3a2e10; }
 .act-status.below2 { top: 116px; }

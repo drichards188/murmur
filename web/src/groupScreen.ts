@@ -14,7 +14,7 @@
 //           groups in it and their counts
 import type { LngLat } from './types'
 import { textWidth } from './declutter.ts'
-import type { GroupMark } from './swarmsModel'
+import { chipExceptions, type GroupMark } from './swarmsModel.ts'
 
 export type GroupLod = 'apart' | 'pile'
 
@@ -112,7 +112,7 @@ export function groupsOnScreen(members: readonly MemberOnScreen[]): { groups: Ma
 
 // ---- the chips' sizes and places --------------------------------------------------------------
 
-/** px: the chip's two lines (GroupChips.tsx, swarms.css .gchip) */
+/** px: the chip's two lines, the second only with an exception (GroupChips.tsx, swarms.css .gchip) */
 const LINE1_H = 24
 const LINE2_H = 19
 const PAD_X = 8
@@ -123,17 +123,19 @@ export function chipName(name: string): string {
   return name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1)}…` : name
 }
 
-/** A group chip's line two: what it does, then its parts. */
-export function chipLine(m: Pick<GroupMark, 'doing' | 'parts'>): string {
-  return [m.doing, ...m.parts.map((p) => p.text)].join(' · ')
+/** A group chip's line two: only what is wrong with it (swarmsModel chipExceptions); '' when nothing. */
+export function chipLine(m: Pick<GroupMark, 'parts'>): string {
+  return chipExceptions(m.parts).map((p) => p.text).join(' · ')
 }
 
 /** A group chip's size, px, as swarms.css lays it out (IBM Plex Mono's advance is 0.6 em; the name
- *  is in the condensed sans, narrower, counted as mono to be safe). */
-export function chipSize(m: Pick<GroupMark, 'code' | 'id' | 'name' | 'doing' | 'parts'>): { w: number; h: number } {
+ *  is in the condensed sans, narrower, counted as mono to be safe): one line, two with an
+ *  exception. */
+export function chipSize(m: Pick<GroupMark, 'code' | 'id' | 'name' | 'parts'>): { w: number; h: number } {
   const line1 = PAD_X + textWidth(m.code, 11) + 10 + 6 + textWidth(m.id, 14) + (m.name ? 6 + textWidth(chipName(m.name), 12) : 0) + PAD_X
-  const line2 = PAD_X + textWidth(chipLine(m), 11) + PAD_X
-  return { w: Math.max(line1, line2), h: LINE1_H + LINE2_H }
+  const text = chipLine(m)
+  if (!text) return { w: line1, h: LINE1_H }
+  return { w: Math.max(line1, PAD_X + textWidth(text, 11) + PAD_X), h: LINE1_H + LINE2_H }
 }
 
 export interface CellChip {

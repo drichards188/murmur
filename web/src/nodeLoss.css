@@ -9,8 +9,6 @@
 .nl-card.nl-settled.rv-card { border-left-color: var(--line); }
 .vd-standing .nl-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .vd-standing .nl-actions input { flex: 1 1 120px; min-width: 0; }
-.nl-h { margin: 12px 0 6px; font: 600 10.5px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
-.nl-h small { margin-left: 6px; font: 400 11px var(--sans); letter-spacing: 0; text-transform: none; }
 /* a vehicle confirmed lost: the fleet list's tag, and its details' last report (not current) */
 .vrow-standin.vrow-lost { border-style: solid; background: #1a2029; }
 .vd-last-report dl { opacity: 0.6; }

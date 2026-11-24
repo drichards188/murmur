@@ -57,11 +57,6 @@ function sidcOf(v: Vehicle, stale: boolean) {
   return stale ? base.slice(0, 3) + 'A' + base.slice(4) : base
 }
 
-/** The model label milsymbol draws left of the frame (map text in the GPU layers). */
-export function typeLabel(v: Vehicle): string {
-  return v.identity?.short ?? SIDC[v.kind ?? 'unknown'].type ?? ''
-}
-
 /** Icons are rasterised at this multiple of their on-screen size, so they stay sharp on HiDPI. */
 const ICON_SCALE = 2
 const ICON_PX = 28

@@ -1,11 +1,12 @@
 import { IconLayer, LineLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { PickingInfo } from '@deck.gl/core'
 import { NO_SCREEN, type MapScreen } from './aloft'
-import { ALL_FULL, besides, centred, type LabelCandidate, type LabelPlan, rightOf } from './declutter'
+import { ALL_FULL, centred, type LabelCandidate, type LabelPlan, rightOf } from './declutter'
 import { type FocusReason, labelFirst } from './focus'
 import { HEIGHT_EXAGGERATION } from './map3d'
 import type { LostContact, Track, TrackDomain } from './tracks'
-import { AFFILIATION_LABEL, isTrackStale, kindShortWithLevel, lostSidc, sidcFrameIcon, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
+import { lostWords, spanWords, trackWords } from './mapWords'
+import { AFFILIATION_LABEL, isTrackStale, kindLabel, lostSidc, sidcFrameIcon, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
 import type { LngLat } from './types'
 
 /** Tracks on the map (Phase C2), as deck.gl layers through MapView's `layers` prop, at their
@@ -20,10 +21,11 @@ import type { LngLat } from './types'
  *   tracks-selection    ring around the selected track
  *   tracks-pickable     while an identify target is picked (rules 21): a ring on each contact it can go to
  *   tracks              the 2525 frame with the estimated affiliation (pickable: onClick)
- *   tracks-ids          "T-0001 · 450 m" right of the frame (its height or depth, or "alt ?"),
- *                       tracks-kinds the estimated kind and its level left of it
- *   tracks-aloft        "▲ T-0001 · 9500 m" at the foot of the stem of one drawn above the view
- *                       (aloft.ts)
+ *   tracks-labels       its one label right of the frame: its kind in words ("small fast boat",
+ *                       "small air contact (detected)"), and in focus its height or depth ("·
+ *                       450 m", "· alt ?"); its id on hover (trackTooltip)
+ *   tracks-aloft        the same at the foot of the stem of one drawn above the view (aloft.ts),
+ *                       "▲ light aircraft · 9500 m"
  *
  *  Symbols fade with age and with falling existence confidence.
  *
@@ -43,22 +45,22 @@ import type { LngLat } from './types'
  *   lost-regions        where the keep-out counts each now, growing from its last fix (faint)
  *   lost-columns        an air or subsurface one: its column (it carries no altitude)
  *   lost                its last-known symbol, anticipated and faded, at its last fix
- *   lost-labels         "T-0002 LOST 4 min · POSSIBLE AREA": the ring is a keep-out
+ *   lost-labels         "lost 4 min" (the ring is its possible area, still in every keep-out)
  *
  *  Dim, don't paint (docs/research/saturation-display.md R1): the filled ring, the full column
- *  and the full intensity are for the tracks in focus (focus.ts: selected or hovered, pinned,
+ *  and the full intensity are for the tracks in focus (focus.ts: selected or hovered,
  *  hostile or suspect, declared or flagged, a review item's, an engagement's target or blocker).
  *  The rest get an outline, a short stem up to the symbol and a dimmer unknown symbol; a lost
  *  contact out of focus a faint outline of its possible area and the stem. Hundreds of filled
  *  rings add up to a painted map (ten 8 % fills cover about 57 %) that reads as one large unknown
  *  threat; the outline still shows each one's extent, and hover brings its ring back. `showAll`
- *  (the map legend's Show all) draws every one in full.
+ *  (a picture not crowded: App.tsx) draws every one in full.
  *
  *  Labels go through the one label budget (declutter.ts, R2; trackLabelCandidates gives this
- *  layer's): a track's short label is its id, its full block the kind and level, the id and its
- *  height ("SM AIR (DET) T-0536 · alt ?"); a lost contact's "T-0375 LOST" and "T-0375 LOST 10 min
- *  · POSSIBLE AREA · alt ?". In focus first and in full; the rest short where they fit, else the
- *  symbol alone and the full block on hover (trackTooltip). */
+ *  layer's): one label a contact, its kind in words at a readable size, with its height only in
+ *  focus (ledger 1, the map's contacts: R6 asks for one label, in words); a lost contact's "lost 4
+ *  min". In focus first; the rest where they fit, else the symbol alone. The id and the rest of
+ *  the full block show on hover (trackTooltip): the label never carries the id. */
 
 export interface TrackLayerInput {
   tracks: Track[]
@@ -75,7 +77,7 @@ export interface TrackLayerInput {
   screen?: MapScreen
   /** the tracks and lost contacts in focus (focus.ts focusMap): drawn in full, the rest dim */
   focus?: ReadonlyMap<string, FocusReason>
-  /** the map legend's Show all: every track (ring, column, intensity) or possible area in full */
+  /** every track (ring, column, intensity) or possible area in full: the picture is not crowded */
   showAll?: { tracks?: boolean; areas?: boolean }
   /** the label budget's plan (declutter.ts): which labels, short or full */
   plan?: LabelPlan
@@ -98,6 +100,8 @@ const ACCENT: RGBA = [255, 179, 71, 255]
 const PICK: RGBA = [127, 184, 255, 235]
 const FONT = 'IBM Plex Mono, ui-monospace, monospace'
 const FONT_SETTINGS = { sdf: true, fontSize: 48, buffer: 6 }
+/** a contact's label, px: readable, as our callsigns */
+const LABEL_PX = 12
 
 /** Where a track with no height or depth is drawn on its column, metres from sea level (a
  *  drawing height, not an estimate: see above). */
@@ -117,35 +121,23 @@ function rgba(c: RGBA, alpha: number): RGBA {
   return [c[0], c[1], c[2], Math.round(c[3] * alpha)]
 }
 
-/** "4 min", "56 s": how long out of view. */
-function outOfView(s: number) {
-  return s < 120 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min`
+/** A track's one label: its kind in words, and its height or depth with `height` (in focus). */
+function labelOf(t: Track, height: boolean) {
+  return trackWords(t.identity.kind == null ? null : kindLabel(t.identity.kind), t.identity.level, height ? trackHeightLabel(t.domain, t.alt_m) : null)
 }
 
-/** A track's full label right of its frame: "T-0347 · 450 m" (its height or depth, or "alt ?"). */
-function idWithHeight(t: Track) {
-  const h = trackHeightLabel(t.domain, t.alt_m)
-  return h ? `${t.id} · ${h}` : t.id
-}
-
-/** A lost contact's full label: "T-0002 LOST 4 min · POSSIBLE AREA · alt ?". */
-function lostFull(l: LostContact) {
-  const h = trackHeightLabel(l.domain, null)
-  return `${l.id} LOST ${outOfView(l.out_of_view_s)} · POSSIBLE AREA${h ? ` · ${h}` : ''}`
-}
-
-/** The full block of a track or lost contact under the pointer (MapView's tooltip): its id,
- *  kind and level, height, affiliation, by its label key. */
+/** The full block of a track or lost contact under the pointer (MapView's tooltip): its id, kind
+ *  and level, height, affiliation, by its label key. */
 export function trackTooltip(layerId: string, object: unknown, nowMs: number): { key: string; text: string } | null {
   if (layerId === 'lost') {
     const l = object as LostContact
-    return { key: `l:${l.id}`, text: `${lostFull(l)} · ${AFFILIATION_LABEL[l.affiliation].toLowerCase()}` }
+    const h = trackHeightLabel(l.domain, null)
+    return { key: `l:${l.id}`, text: `${l.id} · ${lostWords(l.out_of_view_s)} · possible area, still in every keep-out${h ? ` · ${h}` : ''} · ${AFFILIATION_LABEL[l.affiliation].toLowerCase()}` }
   }
-  if (layerId !== 'tracks' && layerId !== 'tracks-ids' && layerId !== 'tracks-aloft') return null
+  if (layerId !== 'tracks' && layerId !== 'tracks-labels' && layerId !== 'tracks-aloft') return null
   const t = object as Track
-  const kind = kindShortWithLevel(t.identity)
   const age = Math.max(0, nowMs / 1000 - t.last_seen_t)
-  return { key: `t:${t.id}`, text: `${idWithHeight(t)}${kind ? ` · ${kind}` : ''} · ${AFFILIATION_LABEL[t.affiliation].toLowerCase()}${age > 10 ? ` · seen ${outOfView(age)} ago` : ''}` }
+  return { key: `t:${t.id}`, text: `${t.id} · ${labelOf(t, true)} · ${AFFILIATION_LABEL[t.affiliation].toLowerCase()}${age > 10 ? ` · seen ${spanWords(age)} ago` : ''}` }
 }
 
 /** Whether a track is drawn on a column: an air or subsurface one without an altitude. */
@@ -203,7 +195,8 @@ export interface TrackLabelInput {
 }
 
 /** This layer's labels for the budget (declutter.ts), where the camera draws them: in focus
- *  first (priority 1; the selected and the pinned always), the rest last (4). */
+ *  first (priority 1; the selected always) with its height, the rest last (4)
+ *  without. */
 export function trackLabelCandidates({ tracks, lost = [], nowMs, staleAfterS, screen, focus = NO_FOCUS }: TrackLabelInput): LabelCandidate[] {
   const out: LabelCandidate[] = []
   const zOf = (domain: TrackDomain, alt: number | null) => (alt ?? UNKNOWN_DRAW_M[domain] ?? 0) * HEIGHT_EXAGGERATION
@@ -211,20 +204,21 @@ export function trackLabelCandidates({ tracks, lost = [], nowMs, staleAfterS, sc
     const [lon, lat] = trackPredicted(t, nowMs)
     const z = zOf(t.domain, t.alt_m)
     const r = focus.get(t.id)
-    const priority = labelFirst(r) ? 1 : 4
-    const force = r === 'selected' || r === 'pinned'
+    const first = labelFirst(r)
+    const priority = first ? 1 : 4
+    const force = r === 'selected'
     if (screen.aloft(lon, lat, z)) {
-      const h = trackHeightLabel(t.domain, t.alt_m)
-      out.push({ key: `t:${t.id}`, at: screen.at(lon, lat, 0), short: centred(`▲ ${t.id}`, 11, -8, 5), full: centred(`▲ ${t.id} · ${h}`, 11, -8, 5), priority, force })
+      out.push({ key: `t:${t.id}`, at: screen.at(lon, lat, 0), short: centred(`▲ ${labelOf(t, false)}`, 11, -8, 5), full: centred(`▲ ${labelOf(t, first)}`, 11, -8, 5), priority, force })
       continue
     }
     const halfW = trackFrameIcon(t, isTrackStale(t, nowMs, staleAfterS)).halfW
-    out.push({ key: `t:${t.id}`, at: screen.at(lon, lat, z), short: rightOf(halfW, t.id, 11), full: besides(halfW, kindShortWithLevel(t.identity) ?? '', 10, idWithHeight(t), 11), priority, force })
+    out.push({ key: `t:${t.id}`, at: screen.at(lon, lat, z), short: rightOf(halfW, labelOf(t, false), LABEL_PX), full: rightOf(halfW, labelOf(t, first), LABEL_PX), priority, force })
   }
   for (const l of lost) {
     const r = focus.get(l.id)
     const halfW = sidcFrameIcon(lostSidc(l)).halfW
-    out.push({ key: `l:${l.id}`, at: screen.at(l.position[0], l.position[1], zOf(l.domain, null)), short: rightOf(halfW, `${l.id} LOST`, 10), full: rightOf(halfW, lostFull(l), 10), priority: labelFirst(r) ? 1 : 4, force: r === 'selected' || r === 'pinned' })
+    const box = rightOf(halfW, lostWords(l.out_of_view_s), 10)
+    out.push({ key: `l:${l.id}`, at: screen.at(l.position[0], l.position[1], zOf(l.domain, null)), short: box, full: box, priority: labelFirst(r) ? 1 : 4, force: r === 'selected' })
   }
   return out
 }
@@ -232,7 +226,7 @@ export function trackLabelCandidates({ tracks, lost = [], nowMs, staleAfterS, sc
 export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick, pickable = null, screen = NO_SCREEN, focus = NO_FOCUS, showAll = {}, plan = ALL_FULL }: TrackLayerInput) {
   const level = (t: Track) => plan.level(`t:${t.id}`)
   const lostLevel = (l: LostContact) => plan.level(`l:${l.id}`)
-  /** drawn in full: in focus, or Show all */
+  /** drawn in full: in focus, or a picture not crowded */
   const full = (t: Track) => !!showAll.tracks || focus.has(t.id)
   const fullArea = (id: string) => !!showAll.areas || focus.has(id)
   /** the symbol's height, rendered metres: its altitude, else its column's drawing height */
@@ -343,7 +337,7 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       id: 'lost-labels',
       data: lost.filter((l) => lostLevel(l) !== 'none'),
       getPosition: lostAt,
-      getText: (l) => (lostLevel(l) === 'full' ? lostFull(l) : `${l.id} LOST`),
+      getText: (l) => lostWords(l.out_of_view_s),
       getSize: 10,
       getColor: rgba(TEXT, 0.6),
       getTextAnchor: 'start',
@@ -435,12 +429,12 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       parameters: onTop,
     }),
     new TextLayer<Track>({
-      id: 'tracks-ids',
+      id: 'tracks-labels',
       data: labelled,
       pickable: true,
       getPosition: at,
-      getText: (t) => (level(t) === 'full' ? idWithHeight(t) : t.id),
-      getSize: 11,
+      getText: (t) => labelOf(t, level(t) === 'full' && labelFirst(focus.get(t.id))),
+      getSize: LABEL_PX,
       getColor: tint,
       getTextAnchor: 'start',
       getAlignmentBaseline: 'center',
@@ -463,7 +457,7 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
         const [lon, lat] = trackPredicted(t, nowMs)
         return [lon, lat, 0]
       },
-      getText: (t) => (level(t) === 'full' ? `▲ ${t.id} · ${trackHeightLabel(t.domain, t.alt_m)}` : `▲ ${t.id}`),
+      getText: (t) => `▲ ${labelOf(t, level(t) === 'full' && labelFirst(focus.get(t.id)))}`,
       getSize: 11,
       getColor: tint,
       getTextAnchor: 'middle',
@@ -477,24 +471,6 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
       onClick: pick,
-      updateTriggers: triggers,
-      parameters: onTop,
-    }),
-    new TextLayer<Track>({
-      id: 'tracks-kinds',
-      data: labelled.filter((t) => t.identity.kind != null && level(t) === 'full'),
-      getPosition: at,
-      getText: (t) => kindShortWithLevel(t.identity) ?? '',
-      getSize: 10,
-      getColor: tint,
-      getTextAnchor: 'end',
-      getAlignmentBaseline: 'center',
-      getPixelOffset: (t) => [-(icon(t).halfW + 4), 0],
-      fontFamily: FONT,
-      outlineWidth: 3,
-      outlineColor: OUTLINE,
-      fontSettings: FONT_SETTINGS,
-      characterSet: 'auto',
       updateTriggers: triggers,
       parameters: onTop,
     }),

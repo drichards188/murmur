@@ -44,6 +44,9 @@ export interface Track {
     ais: { mmsi: string; name: string; ship_type: string } | null
     conflict: string | null
     supported_by: SensorType[]
+    /** each of our sensors' look at it (the physical model; the surest kept at scale): whose look
+     *  says what it is, on its card */
+    looks?: { uid: number; sensor: SensorType; level: IdentityLevel | null; label: string; confidence: number }[]
   }
   sources: TrackSource[]
   first_seen_t: number

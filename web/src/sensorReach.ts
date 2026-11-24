@@ -1,7 +1,7 @@
 // Sensor reach now (bd murmur-4tq; docs/WEATHER.md, "Seeing the effect on sensors"): what
-// `GET /api/sensing/reach` answers, and the map's rings and the fleet list's badges drawn from it.
-// Information only: the bridge computes it outside every decision and logs nothing; the decision
-// engine's assessment still reads the catalog's clear-day reach.
+// `GET /api/sensing/reach` answers, and the map's rings and the vehicle details' Sensors lines drawn
+// from it. The answer itself is never logged; from decision rules 32 the engine judges by the same
+// computation (an identify order's standoff, an assessment's cover: the vehicle fact `reach_now`).
 import type { LngLat } from './types'
 
 export type ReachDomain = 'air' | 'ground' | 'surface' | 'subsurface'
@@ -83,10 +83,6 @@ export function reachQuery(mode: ReachMode, selected: ReadonlySet<number>, bound
   const box = [Math.max(-180, down(w)), Math.max(-90, down(s)), Math.min(180, up(e)), Math.min(90, up(n))]
   return `/api/sensing/reach?bbox=${box.map((x) => x.toFixed(2)).join(',')}`
 }
-/** Which domain's reach the rings show: each sensor's own (`auto`, the bridge's
- *  `primary_domain`), or one for all (a sensor that does not see it draws none). */
-export type DomainChoice = 'auto' | ReachDomain
-
 export const DOMAIN_WORDS: Record<ReachDomain, string> = { air: 'Air', ground: 'Ground', surface: 'Surface', subsurface: 'Subsurface' }
 
 /** Short sensor names for badges and the legend. */
@@ -111,10 +107,9 @@ export function lightState(sunDeg: number): Light {
   return sunDeg >= 0 ? 'day' : sunDeg >= -6 ? 'twilight' : 'night'
 }
 
-/** The domain a sensor's rings show under `choice`; null: the sensor does not see that domain. */
-export function pickDomain(s: SensorReach, choice: DomainChoice): DomainReach | null {
-  const want = choice === 'auto' ? s.primary_domain : choice
-  return s.domains.find((d) => d.domain === want) ?? null
+/** The domain a sensor's rings show: its own (the bridge's `primary_domain`); null without it. */
+export function pickDomain(s: SensorReach): DomainReach | null {
+  return s.domains.find((d) => d.domain === s.primary_domain) ?? null
 }
 
 /** A closed ring `radiusM` about `center` ([lon, lat]), on a local flat earth (rings are at most
@@ -135,13 +130,12 @@ export type RingKind = 'detect' | 'identify' | 'clear'
 
 /** The rings to draw: for each vehicle shown (`uids`; null: every vehicle answered) and each of
  *  its sensors, at the vehicle's position now (`positions`), a solid ring at the detection reach
- *  for the chosen domain, a dashed one at the identification reach, and a faint one at the
+ *  in the sensor's own domain, a dashed one at the identification reach, and a faint one at the
  *  clear-day reference. A reach of 0 draws no ring. */
 export function reachFeatures(
   answer: ReachAnswer | null,
   positions: Map<number, LngLat>,
   uids: Set<number> | null,
-  choice: DomainChoice,
 ): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = []
   if (!answer?.available || answer.stale) return { type: 'FeatureCollection', features }
@@ -150,7 +144,7 @@ export function reachFeatures(
     const at = positions.get(v.uid)
     if (!at) continue
     for (const s of v.sensors) {
-      const d = pickDomain(s, choice)
+      const d = pickDomain(s)
       if (!d) continue
       const ring = (kind: RingKind, m: number | null) => {
         if (m == null || !(m > 0)) return
@@ -170,22 +164,43 @@ export function reachFeatures(
   return { type: 'FeatureCollection', features }
 }
 
-/** A vehicle's degraded-reach badge: its worst sensor whose detection reach (in the chosen
- *  domain) is under half its clear-day reference, e.g. "EO 18% · fog"; null when none is. */
-export function reachBadge(v: VehicleReach, choice: DomainChoice): { text: string; title: string } | null {
-  let worst: { s: SensorReach; d: DomainReach; ratio: number } | null = null
-  for (const s of v.sensors) {
-    const d = pickDomain(s, choice)
-    if (!d || d.ratio == null || d.ratio >= 0.5) continue
-    if (!worst || d.ratio < worst.ratio) worst = { s, d, ratio: d.ratio }
-  }
-  if (!worst) return null
-  const pct = Math.round(worst.ratio * 100)
-  const why = worst.d.limited_by ? ` · ${worst.d.limited_by}` : ''
-  return {
-    text: `${sensorShort(worst.s.type)} ${pct}%${why}`,
-    title: `${sensorShort(worst.s.type)} detects a reference ${worst.d.domain} contact out to ${km(worst.d.detect_m)}, ${pct}% of its clear-day ${km(worst.d.clear_day_m ?? 0)}${worst.d.limited_by ? `, limited by ${worst.d.limited_by}` : ''}. Information only: the decision engine still assumes the clear-day reach.`,
-  }
+/** A detection reach under this share of its clear day's is shown as a loss (the warning colour). */
+export const LOW_REACH = 0.5
+
+const SENSOR_NAME: Record<string, string> = { eo_ir: 'EO/IR', radar: 'Radar', sonar: 'Sonar', esm: 'ESM' }
+
+/** One sensor's reach now, in the vehicle details' Sensors row (R4: choosing a vehicle). */
+export interface SensorLine {
+  /** "EO/IR" */
+  name: string
+  /** "surface contact: detects to 2.6 km of a clear day's 14.5 km, identifies to 650 m; limited by fog" */
+  text: string
+  /** detection under LOW_REACH of its clear day's */
+  low: boolean
+}
+
+/** Each sensor's reach now in its own domain (the rings' `auto`): detection against the clear
+ *  day's, identification, and what limits it. */
+export function sensorLines(v: VehicleReach): SensorLine[] {
+  return v.sensors.flatMap((s) => {
+    const d = pickDomain(s)
+    if (!d) return []
+    const clear = d.clear_day_m != null && d.clear_day_m > 0 ? ` of a clear day's ${km(d.clear_day_m)}` : ''
+    const identify = d.identify_m > 0 ? `, identifies to ${km(d.identify_m)}` : ''
+    const why = d.limited_by ? `; limited by ${d.limited_by}` : d.horizon_limited ? '; limited by the horizon' : ''
+    const what = `${DOMAIN_WORDS[d.domain].toLowerCase()} contact`
+    // nothing at all (an airborne radar against a still contact on the sea, inside its glare):
+    // say so, not "detects to 0 m"
+    if (d.detect_m <= 0) return [{ name: SENSOR_NAME[s.type] ?? s.type, text: `${what}: cannot detect one now${why}`, low: true }]
+    return [{ name: SENSOR_NAME[s.type] ?? s.type, text: `${what}: detects to ${km(d.detect_m)}${clear}${identify}${why}`, low: d.ratio != null && d.ratio < LOW_REACH }]
+  })
+}
+
+/** The conditions a vehicle's reach is for, in words: "visibility 50 m, night, sea state 2". */
+export function conditionsText(c: ReachConditions): string {
+  const vis = c.visibility_m >= 10_000 ? null : `visibility ${km(c.visibility_m)}`
+  const light = c.light === 'day' ? null : c.light
+  return [vis, light, `sea state ${c.sea_state}`].filter(Boolean).join(', ')
 }
 
 export function km(m: number): string {

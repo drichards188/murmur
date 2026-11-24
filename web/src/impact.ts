@@ -21,25 +21,23 @@ export interface ImpactEvent {
   assessment?: { result: 'persists' | 'ceased' | 'unknown'; t: number }
 }
 
-export const IMPACT_ANIMATION_MS = 6000
 export const IMPACT_STATUS_MS = 45000
 
-/** A CSS animation anchored to the recorded map position. A negative delay catches up if
- *  the WebSocket message arrives after the release, without replaying an old effect. */
-export function impactElement(impact: ImpactEvent, ageMs: number): HTMLDivElement {
-  const el = document.createElement('div')
-  el.className = 'impact-marker'
-  el.dataset.impact = impact.key
-  el.setAttribute('aria-hidden', 'true')
-  el.style.setProperty('--impact-age', `${-Math.max(0, ageMs)}ms`)
-  for (const name of ['smoke', 'ring ring-outer', 'ring ring-inner', 'flash', 'core']) {
-    const part = document.createElement('span')
-    part.className = `impact-${name.replaceAll(' ', ' impact-')}`
-    el.appendChild(part)
-  }
-  const label = document.createElement('span')
-  label.className = 'impact-label'
-  label.textContent = 'IMPACT'
-  el.appendChild(label)
-  return el
+/** The assessment's banner (the cutdown, R14): only when the strike asks a decision, the target
+ *  still detected (persists) or nobody of ours able to tell (unknown); never a ceased one. The
+ *  verdict first, once an engagement (a salvo's rounds share one assessment), for IMPACT_STATUS_MS
+ *  from the assessment or until dismissed (`dismissed`: intent ids). Pure: impact.check.ts. */
+export function assessmentAsk(impacts: readonly ImpactEvent[], nowMs: number, dismissed: ReadonlySet<number>): { impact: ImpactEvent; text: string } | null {
+  const asks = impacts.filter((i) => {
+    const a = i.assessment
+    return a && a.result !== 'ceased' && nowMs >= a.t && nowMs - a.t < IMPACT_STATUS_MS && !dismissed.has(i.intentId)
+  })
+  const impact = asks.sort((a, b) => b.assessment!.t - a.assessment!.t || b.t - a.t)[0]
+  if (!impact) return null
+  const target = impact.track ?? 'the target'
+  const text =
+    impact.assessment!.result === 'persists'
+      ? `${impact.track ?? 'The target'} still detected after the strike: decide whether to engage again.`
+      : `Outcome unknown: none of ours covers the strike on ${target}. Decide whether to look again.`
+  return { impact, text }
 }

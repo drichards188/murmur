@@ -15,29 +15,28 @@
 //                     the rest of its group on the screen (groupScreen.ts); in a pile, the chip
 //   vehicles          the 2525 frame, one icon per symbol code and stale state (shared atlas)
 //   vehicle-callsigns the callsign right of the frame, and with the full block its height or
-//                     depth and (vehicle-types) the model label left of it: only for the vehicles
-//                     the label budget placed (declutter.ts), which is bounded by the screen, not
-//                     the fleet; the full block for the selected or while few labels are in view
+//                     depth: only for the vehicles the label budget placed (declutter.ts), which
+//                     is bounded by the screen, not the fleet; the full block only for the
+//                     selected and the one whose details are open (hover shows it for the rest)
 //   vehicle-exception its one exception slot under the symbol (vehicleException.ts), in the same
 //                     words as its fleet row, where the budget placed it: "LOST 12s" while its
 //                     link is stale (under rules 30 its standing: "SILENT 12s", "PRESUMED LOST
 //                     12s", or "LOST" once an operator confirmed it, grey), "DAMAGED: CANNOT
 //                     MOVE", "LINK DOWN", "OUT OF ROUNDS", "LINK DEGRADED"
-//   vehicle-oneway    "ONE-WAY > T-12" ("STRIKING > T-12" from its release) over a platform that is its
-//                     own munition, on its way
-//                     to its engagement's effect (bd murmur-64z)
+//   vehicle-oneway    "striking T-0012" over a platform that is its own munition, on its way to
+//                     its engagement's effect (bd murmur-64z)
 //   vehicle-aloft     "▲ HAWK 1 · 18000 m" at the foot of the stem of one drawn above the view
 //                     (aloft.ts), its selection ring there too
 //
 // Picking ('vehicles', 'vehicle-callsigns', 'vehicle-aloft') drives click to select and right
 // click to deselect.
 import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
-import { besides, centred, type LabelCandidate, type LabelLevel, type Priority, rightOf } from './declutter'
-import { drawnTick, drawnXYZ, lastKnownAlt, smoothing } from './drawn'
-import { drawnHeight, HEIGHT_EXAGGERATION, NO_NEAR_GROWTH } from './map3d'
+import { centred, type LabelCandidate, type LabelLevel, type Priority, rightOf } from './declutter'
+import { drawnTick, drawnXYZ, lastKnownAlt } from './drawn'
+import { HEIGHT_EXAGGERATION, NO_NEAR_GROWTH } from './map3d'
 import { emuCause } from './linkEmu'
 import { exceptionOf, exceptionPriority, type ExceptionContext, type ExceptionTone, NO_EXCEPTIONS, type VehicleException } from './vehicleException'
-import { frameIcon, typeLabel } from './symbols'
+import { frameIcon } from './symbols'
 import { rgba, type GroupMark } from './swarmsModel'
 import type { Vehicle } from './types'
 import { callsign, domainOf, isStale } from './types'
@@ -87,19 +86,20 @@ export function vehicleLabel(v: Vehicle): string {
 }
 
 /** A vehicle's labels as the budget weighs them (declutter.ts): its callsign (`v:<uid>`; the full
- *  block adds its height and model), and its exception slot (`vl:<uid>`) when something is wrong
- *  with it (vehicleException.ts), at `at` (where it is seen, CSS px), or at its foot when it is
- *  drawn above the view. */
-export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, aloft: boolean, priority: Priority, force: boolean, exceptions?: ExceptionContext): LabelCandidate[] {
+ *  block, its height or depth too, only for one `focused`: selected or its details open), and its
+ *  exception slot (`vl:<uid>`) when something is wrong with it (vehicleException.ts), at `at`
+ *  (where it is seen, CSS px), or at its foot when it is drawn above the view. */
+export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, aloft: boolean, priority: Priority, focused: boolean, exceptions?: ExceptionContext): LabelCandidate[] {
   const stale = isStale(v)
   const icon = frameIcon(v, stale)
+  const text = focused ? vehicleLabel(v) : callsign(v)
   const out: LabelCandidate[] = aloft
-    ? [{ key: `v:${v.uid}`, at, short: centred(`▲ ${callsign(v)}`, 11, -8, 5), full: centred(`▲ ${vehicleLabel(v)}`, 11, -8, 5), priority, force }]
-    : [{ key: `v:${v.uid}`, at, short: rightOf(icon.halfW, callsign(v), 12), full: besides(icon.halfW, typeLabel(v), 11, vehicleLabel(v), 12), priority, force }]
+    ? [{ key: `v:${v.uid}`, at, short: centred(`▲ ${callsign(v)}`, 11, -8, 5), full: centred(`▲ ${text}`, 11, -8, 5), priority, force: focused }]
+    : [{ key: `v:${v.uid}`, at, short: rightOf(icon.halfW, callsign(v), 12), full: rightOf(icon.halfW, text, 12), priority, force: focused }]
   const x = aloft ? null : exceptionOf(v, exceptions ?? NO_EXCEPTIONS, emuCause)
   if (x) {
     const badge = centred(x.text, 10, icon.halfH + 4, 5)
-    out.push({ key: `vl:${v.uid}`, at, short: badge, full: badge, priority: exceptionPriority(x, priority), force })
+    out.push({ key: `vl:${v.uid}`, at, short: badge, full: badge, priority: exceptionPriority(x, priority), force: focused })
   }
   return out
 }
@@ -123,6 +123,8 @@ export interface VehicleLayerInput {
   oneWay?: ReadonlyMap<number, string>
   /** what each one's exception slot is made from (vehicleException.ts) */
   exceptions?: ExceptionContext
+  /** the vehicle whose details are open: its label is the full block, as a selected one's */
+  follow?: number | null
   /** the groups (swarms): each member's ring and code */
   groups?: GroupDraw | null
 }
@@ -160,8 +162,6 @@ export function groupRingDrop(v: Vehicle): number {
 interface Parts {
   placed: Vehicle[]
   labelled: Vehicle[]
-  /** the full block: the model label left of the frame too */
-  typed: Vehicle[]
   ringed: Vehicle[]
   lost: Vehicle[]
   aloft: Vehicle[]
@@ -180,7 +180,7 @@ let memo: { vehicles: Vehicle[]; selected: Set<number>; labels: ReadonlyMap<numb
 
 function partition({ vehicles, selected, labels, badges, aloft, oneWay, groups }: VehicleLayerInput): Parts {
   if (memo && memo.vehicles === vehicles && memo.selected === selected && memo.labels === labels && memo.badges === badges && memo.aloft === aloft && memo.oneWay === oneWay && memo.groups === groups) return memo.parts
-  const parts: Parts = { placed: [], labelled: [], typed: [], ringed: [], lost: [], aloft: [], oneWay: [], oneWayTags: oneWay ?? new Map(), members: [], coded: [] }
+  const parts: Parts = { placed: [], labelled: [], ringed: [], lost: [], aloft: [], oneWay: [], oneWayTags: oneWay ?? new Map(), members: [], coded: [] }
   for (const v of vehicles) {
     // no position, nowhere to draw it (the fleet list still shows it); no altitude is no reason
     if (!v.position) continue
@@ -190,10 +190,7 @@ function partition({ vehicles, selected, labels, badges, aloft, oneWay, groups }
     const level = labels.get(v.uid) ?? 'none'
     if (aloft.has(v.uid)) {
       if (level !== 'none') parts.aloft.push(v)
-    } else if (level !== 'none') {
-      parts.labelled.push(v)
-      if (level === 'full') parts.typed.push(v)
-    }
+    } else if (level !== 'none') parts.labelled.push(v)
     if (oneWay?.has(v.uid)) parts.oneWay.push(v)
     const g = groups?.ofUid.get(v.uid)
     if (g && !aloft.has(v.uid)) {
@@ -206,7 +203,7 @@ function partition({ vehicles, selected, labels, badges, aloft, oneWay, groups }
 }
 
 export function buildVehicleLayers(input: VehicleLayerInput) {
-  const { placed, labelled, typed, ringed, lost, aloft, oneWay, oneWayTags, members, coded } = partition(input)
+  const { placed, labelled, ringed, lost, aloft, oneWay, oneWayTags, members, coded } = partition(input)
   // the exception slots the budget placed, as they stand now (a few: those with something wrong)
   const slots = new Map<number, VehicleException>()
   for (const v of lost) {
@@ -227,15 +224,13 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
     return [g.rgb[0], g.rgb[1], g.rgb[2], a]
   }
   const groupTrigger = [groups?.hovered, groups?.selected, groups?.ofUid]
-  const full = (v: Vehicle) => input.labels.get(v.uid) === 'full'
-  // where each vehicle is drawn: its glide (drawn.ts) or, with smoothing off, its report
-  const smooth = smoothing()
-  const at = smooth
-    ? (v: Vehicle, info?: { target?: number[] }): XYZ => drawnXYZ(v, info?.target, HEIGHT_EXAGGERATION) as XYZ
-    : (v: Vehicle): XYZ => [v.position![0], v.position![1], drawnHeight(v)]
+  // the full block (height or depth) only for the selected and the one whose details are open
+  const full = (v: Vehicle) => input.labels.get(v.uid) === 'full' && (input.selected.has(v.uid) || input.follow === v.uid)
+  // where each vehicle is drawn: its glide (drawn.ts), else its report
+  const at = (v: Vehicle, info?: { target?: number[] }): XYZ => drawnXYZ(v, info?.target, HEIGHT_EXAGGERATION) as XYZ
   // the foot of its stem, on the surface under it
   const foot = (v: Vehicle, info?: { target?: number[] }): XYZ => {
-    const p = (smooth ? drawnXYZ(v, info?.target, 0) : [v.position![0], v.position![1], 0]) as XYZ
+    const p = drawnXYZ(v, info?.target, 0) as XYZ
     p[2] = input.aloft.get(v.uid) ?? 0
     return p
   }
@@ -348,25 +343,6 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
-      id: 'vehicle-types',
-      data: typed,
-      getPosition: at,
-      getText: typeLabel,
-      getSize: 11,
-      getColor: tint,
-      getTextAnchor: 'end',
-      getAlignmentBaseline: 'center',
-      getPixelOffset: (v) => [-(frameIcon(v, isStale(v)).halfW + 4), 0],
-      fontFamily: FONT,
-      outlineWidth: 3,
-      outlineColor: OUTLINE,
-      fontSettings: FONT_SETTINGS,
-      characterSet: 'auto',
-      updateTriggers: posTrigger,
-      extensions: NO_NEAR_GROWTH,
-      parameters: onTop,
-    }),
-    new TextLayer<Vehicle>({
       id: 'vehicle-exception',
       data: slotted,
       getPosition: at,
@@ -392,7 +368,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       id: 'vehicle-oneway',
       data: oneWay,
       getPosition: at,
-      getText: (v) => oneWayTags.get(v.uid) ?? 'ONE-WAY MUNITION',
+      getText: (v) => oneWayTags.get(v.uid) ?? 'striking',
       getSize: 10,
       getColor: WHITE,
       getTextAnchor: 'middle',

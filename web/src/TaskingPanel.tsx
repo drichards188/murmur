@@ -1,10 +1,10 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Bluf } from './Bluf'
 import { parseRationale } from './bluf'
-import type { Intent } from './decisions'
+import { getOperator, type Intent } from './decisions'
 import { groupsFor, lookOf, type OperatorGroup } from './groups'
 import { proposedIn } from './officer'
-import { ago, awaitsReply, BOUNDARY, deliveryOf, lastReply, officerOf, outcomeView, split, type Reply, type TaskingItem } from './tasking'
+import { awaitsReply, BOUNDARY, deliveryOf, lastReply, officerOf, outcomeView, split, type Reply, type TaskingItem } from './tasking'
 import type { TaskingApi } from './useTasking'
 import './tasking.css'
 
@@ -26,7 +26,7 @@ export function TaskingButton({ api, open, onClick }: { api: TaskingApi; open: b
       aria-label={`Watch officer${officer ? (officer.connected ? ', connected' : ', not connected') : ''}: ${n} message${n === 1 ? '' : 's'} in force`}
       title={`The watch officer: requests to it (not an approval, not a decision)${officer ? `. ${officer.text}` : ''}`}
     >
-      {officer && <span className={`tko-dot ${officer.connected ? 'on' : 'off'}`} aria-hidden="true" />}
+      {officer && !officer.connected && <span className="tko-dot off" aria-hidden="true" />}
       Officer
       {n > 0 && <span className="ix-badge tko-badge">{n}</span>}
     </button>
@@ -67,24 +67,24 @@ function IntentLink({ id, onIntent, title }: { id: number; onIntent?: (id: numbe
 
 /** One of the officer's answers: its outcome as a chip, its text bottom line first, the intents it
  *  proposed (each opens its card) and the groups it made (each selects its members). */
-function ReplyView({ r, nowMs, groups, onIntent, onGroup, compact = false }: Links & { r: Reply; nowMs: number; compact?: boolean }) {
+function ReplyView({ r, nowMs, groups, onIntent, onGroup, compact = false, turn = [] }: Links & { r: Reply; nowMs: number; compact?: boolean; turn?: readonly Intent[] }) {
   const o = outcomeView(r, nowMs)
   const made = (r.groups ?? []).map((id) => ({ id, g: groups.find((x) => x.id === id) }))
+  // one list of the orders it proposed: those its answer names, then those of the turn that read the request
+  const orders = [...r.intents, ...turn.map((i) => i.id).filter((id) => !r.intents.includes(id))]
   return (
     <div className={`tko-reply ${o.tone} ${compact ? 'compact' : ''}`}>
       <div className="tko-rhead">
         <span className={`tko-out ${o.tone}`} title={o.title}>
           {o.label}
         </span>
-        <span className="tko-rwho">
-          {r.agent} · {ago(r.t, nowMs)} ago
-        </span>
       </div>
       <Bluf parts={parseRationale(r.text)} className="compact" />
-      {(r.intents.length > 0 || made.length > 0) && (
+      {(orders.length > 0 || made.length > 0) && (
         <div className="tko-links">
-          {r.intents.map((id) => (
-            <IntentLink key={id} id={id} onIntent={onIntent} title={`Intent i${id}, which the officer's answer names: open its card (in the Inbox while it waits for you)`} />
+          {orders.length > 0 && <span className="tko-turn-label">orders proposed</span>}
+          {orders.map((id) => (
+            <IntentLink key={id} id={id} onIntent={onIntent} title={`Order i${id}: open its card (in the Inbox while it waits for you)`} />
           ))}
           {made.map(({ id, g }) =>
             g ? (
@@ -115,10 +115,10 @@ function Answer({ item, nowMs, kept, intents, ...links }: Links & { item: Taskin
   const inTurn = named ? [] : proposedIn(item, intents)
   const turn =
     inTurn.length > 0 ? (
-      <div className="tko-links tko-turn" title="Proposed by the officer while the turn that first read this request was going on: when, not why">
-        <span className="tko-turn-label">proposed in its turn</span>
+      <div className="tko-links tko-turn">
+        <span className="tko-turn-label">orders proposed</span>
         {inTurn.map((i) => (
-          <IntentLink key={i.id} id={i.id} onIntent={links.onIntent} title={`Intent i${i.id} (${i.kind}), proposed in the turn that first read this request: open its card`} />
+          <IntentLink key={i.id} id={i.id} onIntent={links.onIntent} title={`Order i${i.id}: open its card`} />
         ))}
       </div>
     ) : null
@@ -137,8 +137,7 @@ function Answer({ item, nowMs, kept, intents, ...links }: Links & { item: Taskin
   const earlier = (item.replies ?? []).slice(0, -1)
   return (
     <>
-      <ReplyView r={last} nowMs={nowMs} {...links} />
-      {turn}
+      <ReplyView r={last} nowMs={nowMs} {...links} turn={inTurn} />
       {earlier.length > 0 && (
         <>
           <button className="ghost mini tko-more" aria-expanded={all} onClick={() => setAll(!all)}>
@@ -167,19 +166,58 @@ interface PanelProps extends Partial<Links> {
   intents?: readonly Intent[]
 }
 
+const SEEN_KEY = 'murmur.officer-note-seen'
+
+/** The first visit shows what a request is (BOUNDARY); after that it is behind the "?". */
+function useFirstVisit(): [boolean, (v: boolean) => void] {
+  const [show, setShow] = useState(() => {
+    try {
+      return window.localStorage.getItem(SEEN_KEY) == null
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SEEN_KEY, '1')
+    } catch {
+      /* a private window: the note is behind the ? every time */
+    }
+  }, [])
+  return [show, setShow]
+}
+
+/** A request's meta line: its number as a grey chip, who only when it is not me, the time it was
+ *  posted as a clock time. */
+function Meta({ item, me }: { item: TaskingItem; me: string | null }) {
+  return (
+    <>
+      <span className="ix-id" title={`request ${item.id}`}>
+        {item.id}
+      </span>
+      {item.by !== me && <span> {item.by}</span>}
+      <span> {new Date(item.at_t).toISOString().slice(11, 16)}Z</span>
+    </>
+  )
+}
+
 /** The drawer's body. */
 export function TaskingPanel({ api, now, onClose, banners, compose, groups = [], intents = [], onIntent, onGroup }: PanelProps) {
   const [showRetired, setShowRetired] = useState(false)
+  const [note, setNote] = useFirstVisit()
   const { active, retired } = split(api.items)
   const nowMs = now()
   const officer = officerOf(api.reader)
   const kept = api.reader.officer_replies
   const links: Links = { groups, onIntent, onGroup }
+  const me = getOperator()
   return (
     <aside className="ix tko" aria-label="The AI watch officer">
       <div className="ix-top">
         <h2>Watch officer</h2>
-        <span className="q-sub">requests</span>
+        <button className="ghost mini tko-why" aria-expanded={note} onClick={() => setNote(!note)} title="What a request is">
+          ?
+        </button>
         <button className="ghost close" onClick={onClose} aria-label="Close the watch officer">
           ×
         </button>
@@ -187,30 +225,27 @@ export function TaskingPanel({ api, now, onClose, banners, compose, groups = [],
       {banners && <div className="ix-banners">{banners}</div>}
       {compose}
       <div className="ix-scroll">
-        <p className="tko-boundary" role="note">
-          {BOUNDARY}
-        </p>
-        {api.status === 'missing' && (
-          <p className="empty sw-missing" role="status">
-            This bridge has no tasking channel (<code>/api/tasking</code>).
+        {note && (
+          <p className="tko-boundary" role="note">
+            {BOUNDARY}
           </p>
         )}
-        <h3 className="ix-h">
-          In force <span>{active.length}</span>
-          <small>carried out where the checks allow, and answered</small>
-        </h3>
-        {api.status === 'ok' && officer && (
-          <p className={`tko-officer ${officer.connected ? 'on' : 'off'}`} role="status">
+        {api.status === 'missing' && (
+          <p className="empty sw-missing" role="status">
+            This bridge has no tasking channel.
+          </p>
+        )}
+        {api.status === 'ok' && officer && !officer.connected && (
+          <p className="tko-officer off" role="status">
             {officer.text}
           </p>
         )}
-        {api.status === 'ok' && active.length === 0 && <p className="empty muted">No requests in force: the officer works from its brief alone.</p>}
         {active.map((i) => (
           <div key={i.id} className="tko-item" data-tasking-id={i.id}>
             <p>{i.text}</p>
             <div className="tko-meta">
               <span>
-                {i.id} · {i.by} · {ago(i.at_t, nowMs)} ago
+                <Meta item={i} me={me} />
               </span>
               <DeliveryChip item={i} nowMs={nowMs} />
               <button className="ghost mini" onClick={() => void api.deactivate(i.id)} title="Stop sending this request to the officer">
@@ -231,7 +266,7 @@ export function TaskingPanel({ api, now, onClose, banners, compose, groups = [],
                   <p>{i.text}</p>
                   <div className="tko-meta">
                     <span>
-                      {i.id} · {i.by} · {ago(i.at_t, nowMs)} ago · retired
+                      <Meta item={i} me={me} /> · retired
                     </span>
                     <DeliveryChip item={i} nowMs={nowMs} />
                   </div>

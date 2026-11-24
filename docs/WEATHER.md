@@ -164,11 +164,13 @@ level over the water and the ground over land, and following it:
 - a faint ring at the clear-day reference, so shrinkage is visible at a glance.
 
 Auto shows a sonar's reach under water, a ground vehicle's on the ground and every other sensor's
-at the surface (the harbour's boats). A vehicle whose sensor detects at under half its clear-day
-reach carries a badge in the fleet list, such as `EO 18% · fog`. The console asks only for what
-the rings show, while they show: the selected vehicles, or with All those in view (its view
-widened to a 0.05 degree grid), so the badges are those vehicles' (bd murmur-jvdc: every
-vehicle's every 3 s was a fifth of the bridge's time at Saturation's 3,602). The legend gives
+at the surface (the harbour's boats). A vehicle's details give each sensor's reach now in its
+Sensors row, against the clear day's and what limits it ("surface contact: detects to 2.6 km of a
+clear day's 14 km, identifies to 650 m; limited by fog"), in the warning colour under half the
+clear day's. The console asks only for what the rings show, while they show: the selected
+vehicles, or with All those in view (its view widened to a 0.05 degree grid), and the details ask
+for their one vehicle while that answer does not hold it (bd murmur-jvdc: every vehicle's every
+3 s was a fifth of the bridge's time at Saturation's 3,602). The legend gives
 the sun's state (day, twilight or night: the sun up, up to 6 degrees down, or lower, as a day
 camera's light in the model), and the Weather panel's **Effect on sensors** gives the sampled
 vehicle's reaches, their share of a clear day and why.
@@ -233,8 +235,8 @@ answer took 10 ms and one from the memo 2.2 ms (release build, this machine;
 
 In Fog watch, select PUMA 1: before the fog its camera's surface ring is the clear-day ring
 (14.5 km); from 2:30 the solid ring closes in, and at 50 m visibility it is about 140 m, about the
-slant range to the surface below the aircraft, with the badge `EO 1% · fog`; it opens out again
-from 7:00.
+slant range to the surface below the aircraft, its details' Sensors row at about 1 % of the clear
+day's, limited by fog; it opens out again from 7:00.
 
 ## Communications and satellite imagery
 

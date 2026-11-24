@@ -33,6 +33,10 @@ export const STATE_WORDS: Record<VehicleState, string> = {
 /** A mode that takes the vehicle home or down: RTL, SMART_RTL, QRTL, AUTOLAND, LAND. */
 const RETURNING = /RTL|RETURN|LAND/
 
+export function isReturning(mode: string): boolean {
+  return RETURNING.test(mode.toUpperCase())
+}
+
 export interface LatestOp {
   state: string
   task: string
@@ -55,7 +59,7 @@ type V = Pick<Vehicle, 'uid' | 'link' | 'mode' | 'groundspeed'>
 export function vehicleState(v: V, latest: ReadonlyMap<number, LatestOp>, damaged: ReadonlySet<number>): VehicleState {
   if (damaged.has(v.uid)) return 'damaged'
   if (isStale(v)) return 'lost'
-  if (v.mode && RETURNING.test(v.mode.toUpperCase())) return 'returning'
+  if (v.mode && isReturning(v.mode)) return 'returning'
   if (onStation(latest.get(v.uid))) return 'station'
   if ((v.groundspeed ?? 0) >= 1) return 'moving'
   return 'idle'
@@ -128,7 +132,7 @@ export const FOLD_MIN = 5
 interface T {
   id: string
   affiliation: string
-  identity: { kind: string | null; level?: string | null }
+  identity: { kind: string | null }
 }
 
 export interface TrackFold<X extends T> {
@@ -137,8 +141,6 @@ export interface TrackFold<X extends T> {
   affiliation: string
   kind: string | null
   tracks: X[]
-  /** how many at each identity level ("identify", "recognise", "detect", "" for none) */
-  levels: Record<string, number>
 }
 
 export interface TrackList<X extends T> {
@@ -176,9 +178,7 @@ export function foldTracks<X extends T>(sorted: readonly X[], inFocus: (t: X) =>
       for (const t of tracks) looseIds.add(t.id)
       continue
     }
-    const levels: Record<string, number> = {}
-    for (const t of tracks) levels[t.identity.level ?? ''] = (levels[t.identity.level ?? ''] ?? 0) + 1
-    folds.push({ key, affiliation: tracks[0].affiliation, kind: tracks[0].identity.kind, tracks, levels })
+    folds.push({ key, affiliation: tracks[0].affiliation, kind: tracks[0].identity.kind, tracks })
   }
   folds.sort((a, b) => (AFF_RANK[a.affiliation] ?? 9) - (AFF_RANK[b.affiliation] ?? 9) || b.tracks.length - a.tracks.length || a.key.localeCompare(b.key))
   return { pinned, folds, loose: sorted.filter((t) => looseIds.has(t.id)) }

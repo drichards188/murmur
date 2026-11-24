@@ -13,14 +13,16 @@
 import { type KeyboardEvent, useState } from 'react'
 import { stepsUpAct } from './auth'
 import { StepUpNeeded, useOperator } from './decisions'
-import { aisText, declarationLine, declFacts, evidenceBullets } from './engageSteps'
+import { againstText, aisText, declarationLine, declFacts, evidenceBullets } from './engageSteps'
+import { agoWhen, plainText } from './plainText'
 import { confirmDeclaration, revokeDeclaration } from './ident'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { AFFILIATION_LABEL, type Affiliation, declareTrack, type Track } from './tracks'
 import { type Vehicle, vehicleNamer } from './types'
 import { focusInView } from './reveal'
-import { type Blocking, waited } from './blocking'
+import type { Blocking } from './blocking'
+import { holdingLine } from './trackCard'
 import type { TrackEngagement } from './trackEngagement'
 import './declaration.css'
 
@@ -53,7 +55,7 @@ export function DeclarationBlock({
   /** bridge clock, ms */
   now: () => number
   onEngage?: () => void
-  where: 'track' | 'nominate'
+  where: 'track' | 'nominate' | 'inbox'
   /** after a confirmation or revocation the bridge accepted */
   onChanged?: (what: 'confirmed' | 'revoked') => void
   /** the bridge's reading that this declaration alone holds up a nomination (blocking.ts) */
@@ -103,15 +105,17 @@ export function DeclarationBlock({
     })
   const aff = AFFILIATION_LABEL[d.affiliation].toLowerCase()
   const tone = unconfirmed ? 'warn' : d.affiliation === 'hostile' ? 'bad' : ''
+  const against = d.evidence ? againstText(d.evidence.against, nameOf) : null
   return (
     <section className="dc" aria-label={`Declaration of ${t.id}`}>
+      {/* the bottom line first (D1): who declared it and on what, the evidence before the act */}
       <p className={`dc-head ${tone}`}>
-        {unconfirmed ? `Declared ${aff} by the engine's rule: not confirmed by an operator` : declarationLine(facts)}
+        {unconfirmed ? `The engine declared ${t.id} ${aff}${against ? `: it made a hostile act against ${against}` : ''}` : declarationLine(facts)}
       </p>
-      {unconfirmed && holding && holding.kind === 'declaration' && (
+      {/* what deciding does, in one line: the strip across the top holds the alarm and its timer */}
+      {unconfirmed && (
         <p className="dc-holding" role="note">
-          <b>Waiting on you {waited(holding, now())}</b>
-          {holding.text}
+          {holding && holding.kind === 'declaration' ? holdingLine(holding) : `Confirming it makes ${t.id} a target a nomination may name; no operator has yet.`} Revoking withdraws it, and every engagement in play on it stops first.
         </p>
       )}
       {(evidence.length > 0 || d.note) && (
@@ -122,6 +126,12 @@ export function DeclarationBlock({
           {d.rule && <li>{aisText(t)}</li>}
           {d.note && <li>Note: {d.note}</li>}
         </ul>
+      )}
+      {d.basis && (
+        <details className="dc-fold" onClick={(e) => e.stopPropagation()}>
+          <summary>The engine&apos;s wording</summary>
+          <p>{plainText(d.basis, { nameOf: (u) => nameOf(u), when: agoWhen(now()) })}</p>
+        </details>
       )}
       {engagement && (
         <p className={`dc-engaged${engagement.inPlay ? ' live' : ''}`}>

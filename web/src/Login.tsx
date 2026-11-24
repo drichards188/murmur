@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { enrollPasskey, login, loginWithPasskey, logout, refreshAuth, registerPasskey, useAuth } from './auth'
 import { useOperator, useOperators } from './decisions'
 import { passkeyBlocker, passkeyPlace } from './passkey'
@@ -185,7 +185,7 @@ function PasskeyMenu({ onClose }: { onClose: () => void }) {
     <form className="pk-menu" onSubmit={go} onKeyDown={(e) => e.key === 'Escape' && onClose()}>
       <b>Passkeys</b>
       <span className="muted">
-        {auth.passkey?.registered ?? 0} registered for {auth.operator}
+        {auth.passkey?.registered ?? 0} registered
         {auth.step_up_factor === 'passkey' ? '; this run asks for one at every consequential act' : ''}.
       </span>
       {blocked ? (
@@ -221,13 +221,39 @@ function PasskeyMenu({ onClose }: { onClose: () => void }) {
   )
 }
 
-/** The top bar's "who am I": the signed-in operator, their passkeys and Sign out (credentials
- *  run), or the dev run's switcher with a warning that ids are asserted, not authenticated. */
+/** Closes a menu on Escape or a click outside `box`. */
+function useCloseAway(open: boolean, box: React.RefObject<HTMLElement | null>, close: () => void) {
+  useEffect(() => {
+    if (!open) return
+    const away = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) close()
+    }
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && close()
+    window.addEventListener('mousedown', away)
+    window.addEventListener('keydown', esc)
+    return () => {
+      window.removeEventListener('mousedown', away)
+      window.removeEventListener('keydown', esc)
+    }
+  }, [open, box, close])
+}
+
+const DEV_MEANS =
+  'A dev run (the default; MURMUR_AUTH=credentials signs operators in): the bridge believes whatever operator id a request names. The run is recorded as dev and is not evidence about people.'
+
+/** The top bar's "who am I", a quiet mark: in a dev run "DEV" and the id this console acts as,
+ *  whose menu changes it in one click; in a credentials run the signed-in operator, whose menu holds
+ *  their passkeys and Sign out. */
 export function OperatorBadge() {
   const auth = useAuth()
   const [operator, setOperator] = useOperator()
   const ops = useOperators()
+  // the operator menu, and (credentials) the passkeys' form opened from it
   const [menu, setMenu] = useState(false)
+  const [passkeys, setPasskeys] = useState(false)
+  const box = useRef<HTMLSpanElement>(null)
+  const close = useCallback(() => setMenu(false), [])
+  useCloseAway(menu, box, close)
   // keep the session's remaining time roughly current (a status query, not activity)
   useEffect(() => {
     if (auth.auth !== 'credentials' || !auth.signed_in) return
@@ -236,39 +262,71 @@ export function OperatorBadge() {
   }, [auth.auth, auth.signed_in])
 
   if (auth.auth === 'dev') {
+    const ids = ops.operators.includes(operator) ? ops.operators : [operator, ...ops.operators]
     return (
-      <span className="op-badge dev" title="A dev run (the default; MURMUR_AUTH=credentials signs operators in): the bridge believes whatever operator id a request names. The run is recorded as dev and is not evidence about people.">
-        <span className="pill down">DEV: IDS NOT AUTHENTICATED</span>
-        <label>
-          Acting as
-          <select value={operator} onChange={(e) => setOperator(e.target.value)} aria-label="Operator">
-            {(ops.operators.includes(operator) ? ops.operators : [operator, ...ops.operators]).map((o) => (
-              <option key={o} value={o}>
+      <span className="op-badge dev" ref={box}>
+        <button className="op-mark" onClick={() => setMenu((m) => !m)} aria-expanded={menu} aria-haspopup="menu" title={`${DEV_MEANS} Acting as ${operator}: click to change.`}>
+          <span className="dev-mark">DEV</span>
+          <span className="op-as">{operator}</span>
+        </button>
+        {menu && (
+          <span className="op-menu" role="menu" aria-label="Act as">
+            <span className="op-menu-h">Act as</span>
+            {ids.map((o) => (
+              <button
+                key={o}
+                role="menuitemradio"
+                aria-checked={o === operator}
+                className={o === operator ? 'on' : ''}
+                onClick={() => {
+                  setOperator(o)
+                  setMenu(false)
+                }}
+              >
+                <span className="views-tick" aria-hidden="true">{o === operator ? '✓' : ''}</span>
                 {o}
-                {ops.engage.includes(o) ? ' (engagement authority)' : ''}
-              </option>
+                {ops.engage.includes(o) && <span className="muted"> engagement authority</span>}
+              </button>
             ))}
-          </select>
-        </label>
+            <span className="op-menu-note">{DEV_MEANS}</span>
+          </span>
+        )}
       </span>
     )
   }
   if (auth.auth !== 'credentials' || !auth.signed_in) return null
   return (
-    <span className="op-badge">
-      <span className="op-name" title={auth.ends_in_s != null ? `session ends in about ${Math.ceil(auth.ends_in_s / 60)} min without an action` : undefined}>
+    <span className="op-badge" ref={box}>
+      <button
+        className="op-mark"
+        onClick={() => setMenu((m) => !m)}
+        aria-expanded={menu}
+        aria-haspopup="menu"
+        title={auth.ends_in_s != null ? `Signed in; the session ends in about ${Math.ceil(auth.ends_in_s / 60)} min without an action` : 'Signed in'}
+      >
         <b>{auth.operator}</b>
         {auth.engage ? <span className="muted"> engagement authority</span> : null}
-      </span>
-      {auth.passkey && (
-        <button className="ghost" onClick={() => setMenu((m) => !m)} aria-expanded={menu} title="Your passkeys: register one">
-          Passkeys ({auth.passkey.registered ?? 0})
-        </button>
-      )}
-      <button className="ghost" onClick={() => void logout()}>
-        Sign out
       </button>
-      {menu && <PasskeyMenu onClose={() => setMenu(false)} />}
+      {menu && (
+        <span className="op-menu" role="menu">
+          {auth.passkey && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                setPasskeys(true)
+                setMenu(false)
+              }}
+              title="Your passkeys: register one"
+            >
+              Passkeys ({auth.passkey.registered ?? 0})
+            </button>
+          )}
+          <button role="menuitem" onClick={() => void logout()}>
+            Sign out
+          </button>
+        </span>
+      )}
+      {passkeys && <PasskeyMenu onClose={() => setPasskeys(false)} />}
     </span>
   )
 }

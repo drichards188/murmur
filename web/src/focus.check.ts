@@ -1,6 +1,6 @@
 // Checks for focus.ts (no test runner in web/): node web/src/focus.check.ts, as make check does.
 // The claims (docs/research/saturation-display.md R1): a track is in focus when it is selected,
-// pinned, hostile or suspect, declared (by the engine's rule too), flagged, named by a review item,
+// hostile or suspect, declared (by the engine's rule too), flagged, named by a review item,
 // an engagement's target or blocker, or hovered, and only then; the first reason that holds is the
 // one given; a lost contact the same by its last affiliation; a hover never puts a label first;
 // the review's and the engagements' tracks are gathered from the inbox's shapes, an ended
@@ -17,14 +17,13 @@ function check(cond: unknown, what: string) {
 
 type T = Pick<Track, 'id' | 'affiliation' | 'declared' | 'review'>
 const track = (id: string, extra: Partial<T> = {}): T => ({ id, affiliation: 'unknown', declared: null, ...extra })
-const none: FocusInput = { selected: null, hovered: null, pinned: new Set(), review: new Set(), engagement: new Set() }
+const none: FocusInput = { selected: null, hovered: null, review: new Set(), engagement: new Set() }
 
 // an unknown track nobody looks at is dim
 check(trackFocus(track('T-1'), none) === null, 'a plain unknown is out of focus')
 check(trackFocus(track('T-1', { affiliation: 'neutral' }), none) === null, 'a plain neutral is out of focus')
 // each reason
 check(trackFocus(track('T-1'), { ...none, selected: 'T-1' }) === 'selected', 'selected')
-check(trackFocus(track('T-1'), { ...none, pinned: new Set(['T-1']) }) === 'pinned', 'pinned')
 check(trackFocus(track('T-1', { affiliation: 'hostile' }), none) === 'hostile', 'hostile')
 check(trackFocus(track('T-1', { affiliation: 'suspect' }), none) === 'suspect', 'suspect')
 const declared = { affiliation: 'neutral' as const, by: 'op-1', t: 1, note: null }

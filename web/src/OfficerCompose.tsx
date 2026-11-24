@@ -18,7 +18,8 @@ export interface ComposeInsert {
  *  why, while no officer reads the tasking. The draft is the caller's (App), so it outlives the
  *  drawer: switching to the Inbox to decide and back keeps what was half written. A request the
  *  officer carries out with the orders it may propose: sending it is never an approval or a
- *  decision, and those orders wait where they always wait (officer.ts, tasking.ts). */
+ *  decision, and those orders wait where they always wait (officer.ts, tasking.ts). The count shows
+ *  only near the cap; Send says why it is off only when it is. */
 export function OfficerCompose({ api, draft, setDraft, inserts = [] }: { api: TaskingApi; draft: string; setDraft: Dispatch<SetStateAction<string>>; inserts?: ComposeInsert[] }) {
   const [busy, setBusy] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
@@ -58,9 +59,9 @@ export function OfficerCompose({ api, draft, setDraft, inserts = [] }: { api: Ta
         className="oc-text"
         rows={3}
         value={draft}
-        placeholder="What should the officer do? e.g. Split the picket in two groups, one patrolling each side of the bridge."
+        placeholder="Ask the officer for something. Enter sends, Shift+Enter starts a new line."
         aria-label="Message to the watch officer"
-        aria-describedby="oc-count oc-keys oc-why"
+        aria-describedby="oc-count oc-why"
         aria-invalid={n > TEXT_MAX}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
@@ -88,19 +89,20 @@ export function OfficerCompose({ api, draft, setDraft, inserts = [] }: { api: Ta
             ))}
           </div>
         )}
-        <span id="oc-count" className={`oc-count ${countTone(draft)}`}>
-          {n}/{TEXT_MAX}
-        </span>
-        <button type="submit" className="oc-send" disabled={!state.ok}>
-          {busy ? 'Sending…' : 'Send'}
+        {countTone(draft) !== 'muted' && (
+          <span id="oc-count" className={`oc-count ${countTone(draft)}`}>
+            {n}/{TEXT_MAX}
+          </span>
+        )}
+        <button type="submit" className="oc-send" disabled={!state.ok} title="A request, not an approval: every order the officer proposes waits for you as always">
+          {busy ? 'Sending…' : 'Send request'}
         </button>
       </div>
-      <p id="oc-keys" className="oc-keys">
-        Enter sends · Shift+Enter new line · a request, not an approval
-      </p>
-      <p id="oc-why" className="oc-why" role="status">
-        {state.why ?? api.error ?? ''}
-      </p>
+      {!state.ok && (state.why ?? api.error) && (
+        <p id="oc-why" className="oc-why" role="status">
+          {state.why ?? api.error}
+        </p>
+      )}
     </form>
   )
 }

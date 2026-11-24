@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import type { GroupsApi } from './useGroups'
 import { defaultName, groupOfSelection, lookOf, nameProblem, nextColor, officerNote, splitByMaker, strength, toAdd, toSeparate, NAME_MAX, type OperatorGroup } from './groups'
-import { GROUP_PALETTE } from './swarmsModel'
 import './groups.css'
 
 /** The operator's own groups: made, renamed, recoloured and deleted at run
@@ -20,20 +19,9 @@ interface Props {
   onSelect: (uids: number[]) => void
 }
 
-function Swatches({ value, onPick, label }: { value: string | null; onPick: (color: string) => void; label: string }) {
-  return (
-    <span className="og-swatches" role="radiogroup" aria-label={label}>
-      {GROUP_PALETTE.map((p) => (
-        <button key={p.color} type="button" role="radio" aria-checked={value?.toLowerCase() === p.color} className={`og-swatch ${value?.toLowerCase() === p.color ? 'on' : ''}`} style={{ background: p.color }} title={p.color} onClick={() => onPick(p.color)} />
-      ))}
-    </span>
-  )
-}
-
-/** The form that makes a group: a name, a colour, and the selection as its first members. */
+/** The form that makes a group: a name, and the selection as its first members (its colour is the next free one). */
 function NewGroup({ api, selected, onDone }: { api: GroupsApi; selected: ReadonlySet<number>; onDone: (g: OperatorGroup | null) => void }) {
   const [name, setName] = useState(() => defaultName(api.groups))
-  const [color, setColor] = useState(() => nextColor(api.groups))
   const [fromSel, setFromSel] = useState(selected.size > 0)
   const [busy, setBusy] = useState(false)
   const [said, setSaid] = useState<string | null>(null)
@@ -41,7 +29,7 @@ function NewGroup({ api, selected, onDone }: { api: GroupsApi; selected: Readonl
   const go = async () => {
     if (problem) return
     setBusy(true)
-    const made = await api.create(name, fromSel ? [...selected].sort((a, b) => a - b) : [], color)
+    const made = await api.create(name, fromSel ? [...selected].sort((a, b) => a - b) : [], nextColor(api.groups))
     setBusy(false)
     if (!made) return
     if (made.dropped.length) setSaid(`${made.dropped.length} not in the fleet, left out.`)
@@ -59,10 +47,6 @@ function NewGroup({ api, selected, onDone }: { api: GroupsApi; selected: Readonl
         <span>Name</span>
         <input value={name} maxLength={NAME_MAX} onChange={(e) => setName(e.target.value)} autoFocus aria-invalid={problem != null} />
       </label>
-      <div className="og-line">
-        <span className="muted">Colour</span>
-        <Swatches value={color} onPick={setColor} label="Group colour" />
-      </div>
       <label className="og-check">
         <input type="checkbox" checked={fromSel} disabled={selected.size === 0} onChange={(e) => setFromSel(e.target.checked)} />
         start with the {selected.size} selected vehicle{selected.size === 1 ? '' : 's'}
@@ -81,8 +65,8 @@ function NewGroup({ api, selected, onDone }: { api: GroupsApi; selected: Readonl
   )
 }
 
-/** One group, opened: rename, recolour, the selection in and out, delete, and its members one by one. */
-function GroupBody({ g, index, props }: { g: OperatorGroup; index: number; props: Props }) {
+/** One group, opened: rename, the selection in and out, delete, and its members one by one. */
+function GroupBody({ g, props }: { g: OperatorGroup; props: Props }) {
   const { api, selected, nameOf, present } = props
   const [name, setName] = useState(g.name)
   const [confirm, setConfirm] = useState(false)
@@ -106,28 +90,12 @@ function GroupBody({ g, index, props }: { g: OperatorGroup; index: number; props
           Rename
         </button>
       </form>
-      <div className="og-line">
-        <span className="muted">Colour</span>
-        <Swatches value={lookOf(g, index).color} onPick={(color) => void api.patch(g.id, { color })} label={`${g.name} colour`} />
-      </div>
       <div className="og-line og-acts">
         <button className="ghost" disabled={add.length === 0} onClick={() => void api.patch(g.id, { add })} title="Put the selected vehicles that are not in it into it">
           Add selection{add.length ? ` (${add.length})` : ''}
         </button>
         <button className="ghost" disabled={out.length === 0} onClick={() => void api.patch(g.id, { remove: out })} title="Take the selected members out of it (they stay in the fleet and in any other group)">
           Remove selection{out.length ? ` (${out.length})` : ''}
-        </button>
-        <button
-          className="ghost"
-          disabled={out.length === 0}
-          onClick={async () => {
-            // separate: the selected members leave this group and form a new one
-            const made = await api.create(defaultName(api.groups), out, nextColor(api.groups))
-            if (made) void api.patch(g.id, { remove: out })
-          }}
-          title="Take the selected members out of it and make them a group of their own"
-        >
-          Separate into new group
         </button>
       </div>
       {away > 0 && <p className="muted">{away} member{away === 1 ? ' is' : 's are'} not in the fleet now.</p>}
@@ -189,13 +157,9 @@ export function GroupsSection(props: Props) {
               {st.here}
               {st.away > 0 ? <span className="dim">/{g.members.length}</span> : null}
             </span>
-            {byOfficer ? (
+            {byOfficer && (
               <span className="og-badge og-officer" title={officerNote(g)}>
                 officer · {g.tasking ?? '?'}
-              </span>
-            ) : (
-              <span className="og-badge" title="Your own group: the fleet's swarms are fixed by its file">
-                yours
               </span>
             )}
           </button>
@@ -204,7 +168,7 @@ export function GroupsSection(props: Props) {
           </button>
         </div>
         {isOpen && byOfficer && <p className="og-made muted">{officerNote(g)}</p>}
-        {isOpen && <GroupBody g={g} index={i} props={props} />}
+        {isOpen && <GroupBody g={g} props={props} />}
       </div>
     )
   }
@@ -212,11 +176,10 @@ export function GroupsSection(props: Props) {
     <section className="sw-group og" aria-label="Your groups">
       <h3 className="ix-h">
         Your groups <span>{yours.length}</span>
-        <small>made by you, shared, never an order</small>
       </h3>
       {api.status === 'missing' && (
         <p className="empty sw-missing" role="status">
-          This bridge has no groups of your own (<code>/api/groups</code>).
+          This bridge keeps no groups of your own.
         </p>
       )}
       {api.error && api.status !== 'missing' && <p className="error">{api.error}</p>}
@@ -235,13 +198,11 @@ export function GroupsSection(props: Props) {
           }}
         />
       )}
-      {api.status === 'ok' && api.groups.length === 0 && !making && <p className="empty muted">No groups yet. Select vehicles, then New group.</p>}
       {yours.map((g) => row(g, false))}
       {officer.length > 0 && (
         <>
           <h4 className="og-sub">
             Made by the watch officer <span>{officer.length}</span>
-            <small>for your tasking requests; not yours until you change one</small>
           </h4>
           {officer.map((g) => row(g, true))}
         </>

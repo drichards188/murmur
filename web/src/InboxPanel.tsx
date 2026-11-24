@@ -1,10 +1,7 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import type { Alert, ApproveExtra, Check, Decisions, Intent } from './decisions'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import type { Alert, Check, Decisions, Intent } from './decisions'
 import {
   ALERT_LABEL,
-  fmtDuration,
-  getOperator,
-  intentAction,
   StepUpNeeded,
   stepsUp,
   useAlertMemory,
@@ -15,26 +12,30 @@ import {
   unspendPlatform,
   unspendTarget,
 } from './decisions'
-import { Bluf, BlufReason, ChecksFold } from './Bluf'
+import { Bluf, BlufReason } from './Bluf'
 import { RefusalFold } from './RefusalFold'
 import { alertParts } from './bluf'
 import { waitingItems } from './blocking'
-import { EngageCard, EngagementsSection } from './EngageCard'
+import { EngageCard, RunCard } from './EngageCard'
+import { leftText, soonestLeftS, urgentInbox } from './inboxBadge'
 import { needsYou } from './needsYou'
+import { alertRank, alertSort, engagementRank, inboxOrder, RANK, shownEngagements } from './inboxOrder'
 import { agoWhen, plainText } from './plainText'
 import { RationaleText } from './Rationale'
-import { ReviewSection, SettledFlags } from './ReviewSection'
+import { reviewEntries } from './reviewEntries'
+import { ApprovalCard } from './ApprovalCard'
+import { askFleet, nameOf } from './approvalFleet'
+import { Proposer } from './Proposer'
+import { askSentence } from './approvalText'
+import { doingWords, latestOrders, type OrderIntent } from './orderWords'
 import { isEngage } from './engage'
-import { distanceM } from './geo'
-import { reportView } from './operatorView'
-import { scriptedBadge } from './situationIds'
+import { fmtWorldZ } from './scenarioClock'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { alertLabel } from './swarms'
 import { causeLines, foldedInto, type SwarmAlert, unfolded } from './swarmsModel'
-import { approvalMeans, counts, foldByRule, foldLine, foldTone, headline, memberClasses } from './groupOrders'
-import type { LngLat, Vehicle } from './types'
-import { callsign } from './types'
+import type { Tasking, Vehicle } from './types'
+import type { Track } from './tracks'
 import './inbox.css'
 
 export type InboxTab = 'inbox' | 'decisions'
@@ -65,436 +66,41 @@ interface Props {
   banners?: ReactNode
   /** an order's line saying what request it was proposed for (Awaiting.tsx's TurnCause), or nothing */
   cause?: (i: Intent) => ReactNode
+  /** the task layer's orders, for what each vehicle does now (orderWords.ts) */
+  taskings?: Tasking[]
+  /** the track picture, for a declaration's AIS and its kind in words */
+  tracks?: Track[]
 }
 
 // ---- top bar button -------------------------------------------------------------------------
 
 /** The Inbox's button: one number, what needs the person (needsYou.ts, the same count as the
- *  drawer's Pending tab), coloured by the most urgent kind in it; its title says what it counts and
- *  what it leaves out. Each item counts once: a review item holding up a nomination is one review
- *  item, not also a second badge. */
-export function InboxButton({ decisions, open, onClick, hiddenAlerts, settled }: { decisions: Decisions | null; open: boolean; onClick: () => void; hiddenAlerts: Set<string>; settled: ReadonlyMap<string, string> }) {
-  const n = needsYou(decisions?.inbox, hiddenAlerts, new Set(settled.keys()))
+ *  drawer's "Needs you" tab and list), red only when something urgent is in it and grey for the routine
+ *  (inboxBadge.ts), and beside it the time left on the item that expires soonest once that is
+ *  under a few minutes; its title says what it counts and what it leaves out. Each item counts
+ *  once: a review item holding up a nomination is one review item, not also a second badge. */
+export function InboxButton({ decisions, open, onClick, hiddenAlerts, settled, now }: { decisions: Decisions | null; open: boolean; onClick: () => void; hiddenAlerts: Set<string>; settled: ReadonlyMap<string, string>; now: () => number }) {
+  const n = needsYou(decisions?.inbox, hiddenAlerts, new Set(settled.keys()), shownEngagements(decisions?.intents ?? []))
+  const urgent = urgentInbox(decisions?.inbox, hiddenAlerts)
+  const left = soonestLeftS(decisions?.inbox.pending ?? [], now())
+  const says = `${n.says}${left != null ? ` The soonest expires in ${leftText(left)}.` : ''}`
   return (
-    <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={n.says} aria-label={`Inbox: ${n.says}`}>
+    <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={says} aria-label={`Inbox: ${says}`}>
       Inbox
-      {n.total > 0 && n.tone && <span className={`ix-badge ${n.tone}`}>{n.total}</span>}
+      {n.total > 0 && <span className={`ix-badge ${urgent ? 'urgent' : 'routine'}`}>{n.total}</span>}
+      {left != null && <span className={`ix-left${urgent ? ' urgent' : ''}`}>{leftText(left)}</span>}
     </button>
   )
 }
 
 // ---- helpers ----------------------------------------------------------------------------------
 
-const OUTCOME_ORDER: Record<Check['outcome'], number> = { fail: 0, unverified: 1, not_evaluated: 2, pass: 3 }
 const OUTCOME_MARK: Record<Check['outcome'], string> = { pass: 'PASS', fail: 'FAIL', unverified: 'UNVERIFIED', not_evaluated: 'NOT EVALUATED' }
 
-function vehicleOf(vehicles: Vehicle[], uid: string) {
-  return vehicles.find((v) => String(v.uid) === uid)
-}
-
-function nameOf(vehicles: Vehicle[], uid: string) {
-  const v = vehicleOf(vehicles, uid)
-  return v ? callsign(v) : `vehicle ${uid}`
-}
-
-function ll(p: LngLat) {
-  return `${p[1].toFixed(4)}, ${p[0].toFixed(4)}`
-}
-
-function km(m: number) {
-  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`
-}
-
-function taskSummary(i: Intent, vehicles: Vehicle[]) {
-  const p = i.params
-  switch (i.kind) {
-    case 'orbit':
-      return p.center ? `Orbit, radius ${km(p.radius_m ?? 0)}, centre ${ll(p.center)}` : 'Orbit'
-    case 'patrol': {
-      const r = p.route ?? []
-      let len = 0
-      for (let k = 0; k < r.length; k++) len += distanceM(r[k], r[(k + 1) % r.length])
-      return `Patrol, ${r.length} waypoint${r.length === 1 ? '' : 's'}, loop ${km(len)}`
-    }
-    case 'transit': {
-      const r = p.route ?? []
-      let len = 0
-      for (let k = 1; k < r.length; k++) len += distanceM(r[k - 1], r[k])
-      return r.length > 1 ? `Transit, ${r.length} points, ${km(len)}, held at its end` : `Transit to ${r[0] ? ll(r[0]) : '?'}, held there`
-    }
-    case 'track':
-      return `Track ${p.target ? nameOf(vehicles, p.target) : '?'}`
-    case 'rtl':
-      return 'Return to launch'
-    case 'hold':
-      return 'Hold position'
-    case 'collect': {
-      const o = i.space?.chosen
-      return o ? `Satellite collection: ${o.label ?? o.satellite} (${o.class_name}, ${o.capability.toUpperCase()})` : 'Satellite collection (no option chosen)'
-    }
-    case 'cover': {
-      const s = p.service as { type?: string; class?: string } | undefined
-      return `Coverage: ${s?.type === 'gnss' ? `${(s.class ?? 'gps').toUpperCase()} GNSS` : `${s?.class ?? '?'} SATCOM`} over the area`
-    }
-    default:
-      return i.kind
-  }
-}
-
-/** Distance from a vehicle to where the task starts, when the task has a place. */
-function transitM(i: Intent, v: Vehicle | undefined): number | null {
-  if (!v?.position) return null
-  const start = i.params.center ?? i.params.route?.[0]
-  return start ? distanceM(v.position, start) : null
-}
-
-function Countdown({ intent, now }: { intent: Intent; now: () => number }) {
-  if (intent.expires_t == null) return null
-  const left = (intent.expires_t - now()) / 1000
-  const start = intent.history.find((h) => h.state === 'pending_approval')?.t ?? intent.created_t
-  const total = Math.max(1, (intent.expires_t - start) / 1000)
-  const frac = Math.min(1, Math.max(0, left / total))
-  return (
-    <span className={`ix-count ${left <= 0 ? 'out' : left < 30 ? 'urgent' : ''}`} title="time left to decide; an intent that expires is not dispatched">
-      <b>{left <= 0 ? 'expired' : fmtDuration(left)}</b>
-      <span className="ix-count-bar">
-        <span style={{ width: `${frac * 100}%` }} />
-      </span>
-    </span>
-  )
-}
-
-/** A collect's chosen option, as the submission's checks found it, and what its deadline is. */
-function CollectDetails({ intent: i }: { intent: Intent }) {
-  const o = i.space?.chosen
-  if (!o) return null
-  const z = (t: string | number) => new Date(t).toISOString().slice(11, 19) + 'Z'
-  const lead = i.space?.tasking_lead_s
-  return (
-    <dl className="ix-collect">
-      <dt>Collect</dt>
-      <dd>
-        {z(o.collect_time)} · NORAD {o.norad_id}
-      </dd>
-      <dt>Product</dt>
-      <dd>{o.product_time ? z(o.product_time) : 'time unknown'}</dd>
-      <dt>Resolution</dt>
-      <dd>{o.resolution_m != null ? `${o.resolution_m.toFixed(2)} m` : 'unknown'}</dd>
-      <dt>Geometry</dt>
-      <dd>
-        off-nadir {o.geometry.off_nadir_deg.toFixed(1)}°, incidence {o.geometry.incidence_deg.toFixed(1)}°{o.covers_area === false ? ', partial area' : ''}
-      </dd>
-      <dt>Deadline</dt>
-      <dd>
-        {i.expires_t != null ? `${z(i.expires_t)} (bridge clock)` : 'none'}
-        {lead != null ? `: the last moment this pass can be tasked (collect minus ${Math.round(lead / 60)} min lead)` : ''}
-      </dd>
-      {o.notes.length > 0 && (
-        <>
-          <dt>Notes</dt>
-          <dd>{o.notes.join('; ')}</dd>
-        </>
-      )}
-      {(i.space?.options_total ?? 0) > 1 && (
-        <>
-          <dt>Others</dt>
-          <dd>
-            {(i.space?.options_total ?? 1) - 1} other feasible option{(i.space?.options_total ?? 2) === 2 ? '' : 's'}, {i.space?.exclusions_total ?? 0} passes excluded
-          </dd>
-        </>
-      )}
-    </dl>
-  )
-}
-
-// ---- a group order (rules 34) --------------------------------------------------------------------
-
-/** At most this many names in one line of a group's card; the rest counted. */
-const GROUP_NAMES = 8
-
-/** Rules 34: a group order's card body (docs/SWARMS.md section 5; bd murmur-3kqi fault 12): one
- *  card however many members, its bottom line first (how many it sends now, how many join if
- *  heard in time, how many it leaves out, its minimum and whether it re-forms), then its checks
- *  folded by rule with counts and each reason once, the members one click away, and what approving
- *  does. Never one line per member per rule. */
-function GroupBody({ intent: i, vehicles }: { intent: Intent; vehicles: Vehicle[] }) {
-  const lines = memberClasses(i.uids, i.checks)
-  const c = counts(lines, i.group, i.kind)
-  const folds = foldByRule(i.checks)
-  const armed = new Set(i.policy?.facts.armed ?? [])
-  const name = (u: string) => nameOf(vehicles, u)
-  const listed = (uids: string[]) =>
-    uids.length > GROUP_NAMES ? `${uids.slice(0, GROUP_NAMES).map(name).join(', ')} and ${uids.length - GROUP_NAMES} more` : uids.map(name).join(', ')
-  return (
-    <>
-      <p className="ix-group-head">
-        <b>Group of {c.n}</b>
-        {i.group?.spread && <span className="ix-tag">{i.group.spread}</span>}
-        {i.group?.swarm && <span className="ix-tag">{i.group.swarm}</span>}
-        {armed.size > 0 && <span className="ix-tag warn">{armed.size} armed</span>}
-        <span>{headline(c, i.group, i.kind, null)}</span>
-      </p>
-      <RefusalFold checks={i.checks} uids={i.uids} vehicles={vehicles} />
-      <details className="ix-group-members" onClick={(e) => e.stopPropagation()}>
-        <summary>
-          {c.n} members ({c.sent} sent{c.waiting ? `, ${c.waiting} waiting` : ''}
-          {c.excluded ? `, ${c.excluded} left out` : ''})
-        </summary>
-        <p className="ix-group-names">{i.uids.map(name).join(', ')}</p>
-      </details>
-      <section className="ix-checks">
-        <span className="ix-label">Checks, by rule</span>
-        <ChecksFold
-          checks={i.checks}
-          line={{
-            text: `${folds.length} rules over ${c.n} members: ${folds.filter((f) => foldTone(f) !== 'ok').map((f) => f.rule).join(', ') || 'every one passes'}`,
-            tone: folds.some((f) => foldTone(f) === 'bad') ? 'bad' : folds.some((f) => foldTone(f) === 'warn') ? 'warn' : 'ok',
-          }}
-        >
-          {folds.map((f) => (
-            <div key={f.rule} className={`ix-check ${foldTone(f) === 'ok' ? 'pass' : foldTone(f) === 'bad' ? 'fail' : 'unverified'}`}>
-              <span className="ix-mark">{foldTone(f) === 'ok' ? 'PASS' : foldTone(f) === 'bad' ? 'FAIL' : 'SEE'}</span>
-              <span className="ix-text">
-                <span className="ix-rule">{f.rule}</span>
-                <span className="ix-detail">{foldLine(f)}</span>
-                {f.reasons.map((r, k) => (
-                  <span key={k} className="ix-detail">
-                    {r.class ?? r.outcome.replace('_', ' ')} ×{r.uids.length}: {r.example} ({listed(r.uids)})
-                  </span>
-                ))}
-              </span>
-            </div>
-          ))}
-        </ChecksFold>
-      </section>
-      <p className="ix-group-means">{approvalMeans(c, i.group, i.kind)}</p>
-    </>
-  )
-}
-
-// ---- a pending approval -------------------------------------------------------------------------
-
-interface CardProps {
-  intent: Intent
-  vehicles: Vehicle[]
-  now: () => number
-  selected: boolean
-  onFocus: () => void
-  onDone: (text: string, tone: 'ok' | 'bad') => void
-  /** engagements in play (pending, approved, under way) on this intent's vehicles: its
-   *  dispatch stops them, and the approval must say so */
-  engaged?: Intent[]
-  /** what the watch officer was asked in the turn that proposed it (App.tsx), under the head */
-  cause?: ReactNode
-}
-
-function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, engaged = [], cause }: CardProps) {
-  const [note, setNote] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // rules 8: a tier the policy marks consequential takes the approver's credential again
-  // (rules 10: by passkey where the run asks for one)
-  const stepUp = stepsUp() && i.policy?.step_up === true
-  const [step, setStep] = useStepUp()
-  const [stepUpError, setStepUpError] = useState(false)
-  const [operator] = useOperator()
-  const selfApproval = i.source.kind === 'human' && i.source.id === operator
-  const expired = i.expires_t != null && i.expires_t <= now()
-  const checks = [...i.checks].sort((a, b) => OUTCOME_ORDER[a.outcome] - OUTCOME_ORDER[b.outcome])
-  const unverified = new Set(i.policy?.facts.unverified ?? [])
-  const armed = new Set(i.policy?.facts.armed ?? [])
-  const reasons = (i.why ?? []).slice(1) // the first line is the policy rule, shown as the tier
-  // evaluation instrumentation (operatorView.ts): the card opened, closed or was decided
-  const view = useRef({ openedAt: performance.now(), decided: false })
-  useEffect(() => {
-    const v = view.current
-    reportView(i, 'open', v.openedAt)
-    return () => {
-      if (!v.decided) reportView(i, 'close', v.openedAt)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [i.id])
-
-  const act = async (action: 'approve' | 'reject') => {
-    setBusy(true)
-    setError(null)
-    view.current.decided = true
-    reportView(i, 'decide', view.current.openedAt, action)
-    setStepUpError(false)
-    try {
-      const extra: ApproveExtra = {}
-      if (action === 'approve' && engaged.length) extra.acknowledge_supersede = true
-      if (action === 'approve' && stepUp) Object.assign(extra, await stepUpProof(step, { act: 'sign', intent: i.id }))
-      setStep({ password: '' })
-      const r = await intentAction(i.id, action, note, extra)
-      const last = r.intent.history[r.intent.history.length - 1]
-      if (action === 'reject') onDone(`i${i.id} rejected by ${getOperator()}`, 'ok')
-      else if (r.dispatched) onDone(`i${i.id} approved by ${getOperator()}${r.intent.approval?.self_approved ? ' (self-approval)' : ''} and dispatched`, 'ok')
-      else onDone(`i${i.id} ${r.intent.state}: ${last?.reason ?? ''}`, r.intent.state === 'voided' ? 'bad' : 'ok')
-    } catch (e) {
-      setStepUpError(e instanceof StepUpNeeded)
-      setError((e as Error).message)
-      setBusy(false)
-    }
-  }
-
-  return (
-    <article
-      className={`ix-card ${selected ? 'sel' : ''}`}
-      data-intent-id={i.id}
-      tabIndex={0}
-      onClick={onFocus}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' && e.target === e.currentTarget) onFocus()
-      }}
-    >
-      <header className="ix-head">
-        <strong className="ix-kind">{i.kind.toUpperCase()}</strong>
-        <span className="ix-id">i{i.id}</span>
-        {scriptedBadge(i.source.id) ? (
-          <span className="ix-src scripted" title={`${i.source.id}: a situation's script, not a person and not the AI`}>
-            {scriptedBadge(i.source.id)} {i.source.id}
-          </span>
-        ) : (
-          <span
-            className={`ix-src ${i.source.kind}`}
-            title={
-              i.source.kind === 'agent'
-                ? 'proposed by an AI agent'
-                : i.source.kind === 'handover'
-                  ? "the previous watch's order, handed over at the start by this fleet file"
-                  : 'proposed by a human operator'
-            }
-          >
-            {i.source.kind} {i.source.id}
-          </span>
-        )}
-        <Countdown intent={i} now={now} />
-      </header>
-      {cause}
-
-      {i.rationale && (
-        <blockquote className="ix-rationale">
-          <span className="ix-label">{i.source.kind === 'agent' ? 'Agent rationale' : 'Rationale'}</span>
-          <RationaleText rationale={i.rationale} source={i.source} />
-        </blockquote>
-      )}
-
-      <div className="ix-task">{taskSummary(i, vehicles)}</div>
-      {i.kind === 'collect' && <CollectDetails intent={i} />}
-      {i.group && <GroupBody intent={i} vehicles={vehicles} />}
-      {!i.group && <ul className="ix-vehicles">
-        {i.uids.map((u) => {
-          const v = vehicleOf(vehicles, u)
-          const age = v?.link.since_last_ms
-          const stale = age != null && age > 3000
-          const tm = transitM(i, v)
-          return (
-            <li key={u}>
-              <b>{v ? callsign(v) : `vehicle ${u}`}</b>
-              {v?.identity && <span className="ix-model">{v.identity.name}</span>}
-              {armed.has(u) && <span className="ix-tag warn">armed platform</span>}
-              <span className="ix-facts" title="live values now, not the values the checks read">
-                {age == null ? 'no telemetry' : <span className={stale ? 'bad' : ''}>position age {age < 1000 ? '<1 s' : `${(age / 1000).toFixed(1)} s`}</span>}
-                {v?.battery_pct != null && <span>battery {Math.round(v.battery_pct)}%</span>}
-                {v?.mode && <span>{v.mode}</span>}
-                {tm != null && <span>{km(tm)} to start</span>}
-              </span>
-            </li>
-          )
-        })}
-      </ul>}
-
-      <section className="ix-why">
-        <span className="ix-label">Why this needs a human</span>
-        {i.policy ? (
-          <p>
-            <span className={`ix-tier ${i.policy.tier}`}>{i.policy.tier} approval</span>
-            <code>{i.policy.rule}</code> {i.policy.reason}
-          </p>
-        ) : (
-          <p className="muted">No policy decision recorded.</p>
-        )}
-        {reasons.length > 0 && (
-          <ul>
-            {reasons.map((r, k) => (
-              <li key={k} className={unverified.has(r) ? 'unv' : ''}>
-                {r}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {!i.group && <section className="ix-checks">
-        <span className="ix-label">Checks</span>
-        <ChecksFold checks={i.checks}>
-          {checks.map((c, k) => (
-            <div key={k} className={`ix-check ${c.outcome}`}>
-              <span className="ix-mark">{OUTCOME_MARK[c.outcome]}</span>
-              <span className="ix-text">
-                <span className="ix-rule">
-                  {c.rule}
-                  {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
-                </span>
-                <span className="ix-detail">{plainText(c.detail, { nameOf: (u) => nameOf(vehicles, u), when: agoWhen(now()) })}</span>
-              </span>
-            </div>
-          ))}
-        </ChecksFold>
-      </section>}
-
-      {selfApproval && (
-        <p className="ix-self">
-          You ({operator}) proposed this. Approving it is a self-approval, and the decision log records that.
-        </p>
-      )}
-      {engaged.length > 0 && (
-        <p className="eg-alarm" role="alert">
-          <b>Approving this stops {engaged.map((e) => `engagement i${e.id}`).join(', ')}</b> on the same vehicle (the newest order stands; no fallback is commanded). Your approval records that you accept it.
-        </p>
-      )}
-      <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
-        <input
-          className="ix-note"
-          placeholder="Note (optional)"
-          value={note}
-          maxLength={300}
-          disabled={busy}
-          onChange={(e) => setNote(e.target.value)}
-          aria-label="Decision note"
-        />
-        <button className="ix-reject" disabled={busy || expired} onClick={() => act('reject')}>
-          Reject
-        </button>
-        <button className="ix-approve" disabled={busy || expired || (stepUp && !stepUpReady(step))} onClick={() => act('approve')} title={`as ${operator}`}>
-          {engaged.length ? `Approve and stop i${engaged.map((e) => e.id).join(', i')}` : selfApproval ? 'Approve (self)' : 'Approve'}
-        </button>
-        {stepUp && (
-          <StepUpField
-            passwordLabel="Consequential: your password to approve"
-            purpose="to sign this approval"
-            ariaLabel="Your password, to approve"
-            value={step}
-            onChange={setStep}
-            busy={busy}
-            bad={stepUpError}
-            onEnter={() => !expired && void act('approve')}
-          />
-        )}
-        {error && <p className="error ix-error">{error}</p>}
-      </footer>
-    </article>
-  )
-}
+/** The browser-only caveat, on the Acknowledge button's title where a person who asks sees it. */
+const ACK_TITLE = 'Kept in this browser only: not shared with other operators or consoles, and the bridge does not record it.'
 
 // ---- an alert -----------------------------------------------------------------------------------
-
-const SNOOZES: [string, number][] = [
-  ['5 min', 5 * 60_000],
-  ['15 min', 15 * 60_000],
-  ['1 h', 3_600_000],
-]
 
 function AlertCard({
   alert: a,
@@ -508,13 +114,12 @@ function AlertCard({
   alert: Alert
   now: () => number
   selected: boolean
-  muted: string | null
+  muted: boolean
   mem: ReturnType<typeof useAlertMemory>
   onFocus: () => void
   /** one of ours by its uid, for a detail that names one by uid */
   name: (uid: string) => string
 }) {
-  const [snoozing, setSnoozing] = useState(false)
   // rules 12: a restore that will never be confirmed (the vehicle lost or spent, another one
   // under its uid, an earlier log gone) is written off by an operator, saying why; rules 15: a
   // platform spent by its own effect that survived is un-spent by one with engagement authority
@@ -549,21 +154,25 @@ function AlertCard({
       setBusy(false)
     }
   }
+  const who = a.callsign ?? `vehicle ${a.uid}`
   const age = Math.max(0, now() / 1000 - a.since_t)
   return (
     <article className={`ix-alert ${a.severity} ${selected ? 'sel' : ''} ${muted ? 'muted-card' : ''}`} tabIndex={0} onClick={onFocus} onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onFocus()}>
       <header className="ix-head">
-        <strong className="ix-akind">{ALERT_LABEL[a.kind]}</strong>
-        <span className="ix-who">{a.callsign ?? `vehicle ${a.uid}`}</span>
-        <span className="ix-age">{fmtDuration(age)} ago</span>
+        <strong className="ix-akind">{ALERT_LABEL[a.kind] ?? alertLabel(a.kind)}</strong>
+        <span className="ix-who">{who}</span>
+        <span className="ix-age" title="since">since {fmtWorldZ(a.since_t * 1000)}</span>
       </header>
-      {/* the bridge's detail with its epoch stamps in words ("since t=1795533627.2": "9 min 48 s ago") */}
-      <Bluf className="ix-adetail" parts={alertParts({ kind: a.kind, detail: plainText(a.detail, { nameOf: name, when: agoWhen(now()) }) }, fmtDuration(age))} />
-      {a.intent_id != null && <p className="ix-link">from intent i{a.intent_id}</p>}
+      {/* the consequence first, the bridge's detail with its epoch stamps in words under More */}
+      <Bluf
+        className="ix-adetail"
+        parts={alertParts({ kind: a.kind, detail: plainText(a.detail, { nameOf: name, when: agoWhen(now()) }) }, `${Math.max(1, Math.round(age / 60))} min`, who)}
+      />
+      {a.intent_id != null && <p className="ix-link"><span className="ix-id">i{a.intent_id}</span></p>}
       <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
         {muted ? (
           <>
-            <span className="muted ix-muted">{muted}</span>
+            <span className="muted ix-muted">acknowledged</span>
             <button className="ghost" onClick={() => mem.wake(a)}>
               Restore
             </button>
@@ -601,25 +210,6 @@ function AlertCard({
             )}
             {writeErr && <span className="muted ix-muted">{writeErr}</span>}
           </>
-        ) : snoozing ? (
-          <>
-            <span className="muted ix-muted">Snooze for</span>
-            {SNOOZES.map(([label, ms]) => (
-              <button
-                key={label}
-                className="ghost"
-                onClick={() => {
-                  mem.snooze(a, ms)
-                  setSnoozing(false)
-                }}
-              >
-                {label}
-              </button>
-            ))}
-            <button className="ghost" onClick={() => setSnoozing(false)}>
-              Back
-            </button>
-          </>
         ) : (
           <>
             <button className="ghost" onClick={onFocus}>
@@ -636,10 +226,7 @@ function AlertCard({
                 Un-spend
               </button>
             )}
-            <button className="ghost" onClick={() => setSnoozing(true)}>
-              Snooze
-            </button>
-            <button className="ghost" onClick={() => mem.ack(a)}>
+            <button className="ghost" title={ACK_TITLE} onClick={() => mem.ack(a)}>
               Acknowledge
             </button>
           </>
@@ -649,11 +236,11 @@ function AlertCard({
   )
 }
 
-// ---- a swarm alert ------------------------------------------------------------------------------
+// ---- a group alert ------------------------------------------------------------------------------
 
-/** One card for a swarm's members' alerts of one kind (the bridge folds them: `swarm_alerts`),
+/** One card for a group's members' alerts of one kind (the bridge folds them: `swarm_alerts`),
  *  instead of one card per member; opened, it lists the members and each one's own alert. A view:
- *  acknowledging or snoozing it is this browser's, as for any alert. */
+ *  acknowledging it is this browser's, as for any alert. */
 function SwarmAlertCard({ alert: a, members, vehicles, now, selected, onFocus }: {
   alert: SwarmAlert
   members: Map<number, Alert[]>
@@ -663,7 +250,6 @@ function SwarmAlertCard({ alert: a, members, vehicles, now, selected, onFocus }:
   onFocus: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const age = Math.max(0, now() / 1000 - a.since_t)
   const causes = causeLines(a.causes)
   const uids = a.uids.length ? a.uids : [...members.keys()]
   return (
@@ -671,9 +257,9 @@ function SwarmAlertCard({ alert: a, members, vehicles, now, selected, onFocus }:
       <header className="ix-head">
         <strong className="ix-akind">{alertLabel(a.kind)}</strong>
         <span className="ix-who">
-          swarm <b>{a.swarm}</b>
+          group <b>{a.swarm}</b>
         </span>
-        <span className="ix-age">{fmtDuration(age)} ago</span>
+        <span className="ix-age" title="since">since {fmtWorldZ(a.since_t * 1000)}</span>
       </header>
       <p className="sw-count">
         <b>{a.count}</b> of {a.of} members
@@ -710,10 +296,16 @@ function SwarmAlertCard({ alert: a, members, vehicles, now, selected, onFocus }:
 
 // ---- decisions list -----------------------------------------------------------------------------
 
-function median(xs: number[]) {
-  if (!xs.length) return null
-  const s = [...xs].sort((a, b) => a - b)
-  return s[Math.floor(s.length / 2)]
+/** Who decided an order, in plain words (the route chip's replacement). */
+function routeWords(i: Intent): { text: string; tone: string } {
+  const v = verdict(i)
+  const a = i.approval
+  if (v.route === 'auto') return { text: 'sent at once', tone: 'auto' }
+  if (v.route === 'rules') return { text: 'stopped by a check', tone: 'rules' }
+  if (a) return a.by === i.source.id ? { text: `self-approved by ${a.by}`, tone: 'self' } : { text: `approved by ${a.by}`, tone: 'human' }
+  if (v.decided === 'rejected') return { text: 'rejected by a person', tone: 'human' }
+  if (v.decided === 'expired') return { text: 'expired undecided', tone: 'human' }
+  return { text: 'waiting for a person', tone: 'human' }
 }
 
 function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: Vehicle[]; now: () => number }) {
@@ -722,32 +314,25 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
   const names = i.uids.length ? i.uids.map((u) => nameOf(vehicles, u)).join(', ') : 'no vehicles'
   const t0 = i.created_t
   const approver = i.approval
+  const route = routeWords(i)
+  const ask = askSentence({ kind: i.kind, params: i.params as Record<string, unknown>, uids: i.uids, group: i.group }, askFleet(vehicles), true)
   return (
     <li className={`ix-dec ${open ? 'open' : ''}`}>
       <button className="ix-dec-row" onClick={() => setOpen(!open)} aria-expanded={open}>
         <span className="ix-dec-top">
-          <strong>{i.kind.toUpperCase()}</strong>
+          <strong className="ix-dec-ask">{ask}</strong>
           <span className="ix-id">i{i.id}</span>
-          <span className="ix-dec-names">{names}</span>
           <span className={`ix-state ${i.state}`}>{i.state.replace('_', ' ')}</span>
         </span>
         <span className="ix-dec-sub">
-          <span className={`ix-route ${v.route}`}>{v.route === 'auto' ? 'auto' : v.route === 'human' ? 'human' : 'rules'}</span>
-          <span>
-            from {i.source.kind} {i.source.id}
-          </span>
-          {approver && (
-            <span>
-              {approver.by === i.source.id ? '' : 'approved by '}
-              {approver.by === i.source.id ? <b className="self">self-approved by {approver.by}</b> : approver.by}
-            </span>
-          )}
-          {v.wait_s != null && <span>decided in {fmtDuration(v.wait_s)}</span>}
-          <span className="right">{fmtDuration((now() - t0) / 1000)} ago</span>
+          <span className={`ix-route ${route.tone}`}>{route.text}</span>
+          <Proposer source={i.source} />
+          <span className="right">{fmtWorldZ(t0)}</span>
         </span>
       </button>
       {open && (
         <div className="ix-dec-body">
+          {v.wait_s != null && <p className="ix-note-shown">A person decided it in {Math.round(v.wait_s)} s.</p>}
           {i.rationale && (
             <div className="ix-rationale">
               <RationaleText rationale={i.rationale} source={i.source} />
@@ -756,7 +341,7 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
           <ol className="ix-trail">
             {i.history.map((h, k) => (
               <li key={k}>
-                <span className="ix-t">+{fmtDuration((h.t - t0) / 1000)}</span>
+                <span className="ix-t">+{Math.round((h.t - t0) / 1000)} s</span>
                 <b>{h.state.replace('_', ' ')}</b>
                 <BlufReason className="compact" text={plainText(h.reason, { nameOf: (u) => nameOf(vehicles, u), when: agoWhen(now()) })} ctx={{ who: names }} />
               </li>
@@ -782,35 +367,13 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
 }
 
 function DecisionsList({ intents, vehicles, now }: { intents: Intent[]; vehicles: Vehicle[]; now: () => number }) {
-  const stats = useMemo(() => {
-    const vs = intents.map(verdict)
-    return {
-      auto: vs.filter((v) => v.route === 'auto').length,
-      human: vs.filter((v) => v.route === 'human').length,
-      rules: vs.filter((v) => v.route === 'rules').length,
-      approved: vs.filter((v) => v.decided === 'approved').length,
-      rejected: vs.filter((v) => v.decided === 'rejected').length,
-      expired: vs.filter((v) => v.decided === 'expired').length,
-      med: median(vs.flatMap((v) => (v.wait_s != null ? [v.wait_s] : []))),
-    }
-  }, [intents])
-  if (!intents.length) return <p className="empty">No intents yet. Every command sent from this console becomes one, with its checks and decision.</p>
+  if (!intents.length) return <p className="empty">No orders yet.</p>
   return (
-    <>
-      <p className="ix-stats">
-        last {intents.length}: <b>{stats.auto}</b> auto, <b>{stats.human}</b> to a human ({stats.approved} approved, {stats.rejected} rejected, {stats.expired} expired), <b>{stats.rules}</b> stopped by rules
-        {stats.med != null && (
-          <>
-            ; median human wait <b>{fmtDuration(stats.med)}</b>
-          </>
-        )}
-      </p>
-      <ul className="ix-decs">
-        {intents.map((i) => (
-          <DecisionRow key={i.id} intent={i} vehicles={vehicles} now={now} />
-        ))}
-      </ul>
-    </>
+    <ul className="ix-decs">
+      {intents.map((i) => (
+        <DecisionRow key={i.id} intent={i} vehicles={vehicles} now={now} />
+      ))}
+    </ul>
   )
 }
 
@@ -822,7 +385,17 @@ interface Notice {
   tone: 'ok' | 'bad'
 }
 
-export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden, settled, cause }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string>; settled: ReadonlyMap<string, string> }) {
+const NO_INTENTS: Intent[] = []
+
+/** An Inbox item with where it sorts (inboxOrder.ts) and its card. */
+interface Item {
+  key: string
+  rank: number
+  sort: number | null
+  node: ReactNode
+}
+
+export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden, settled, cause, taskings, tracks }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string>; settled: ReadonlyMap<string, string> }) {
   // a card chosen from outside this drawer (a line at the head of another, the task panel's link)
   // is brought into view; one clicked here already is (`nearest` leaves it be)
   const selId = selection?.kind === 'intent' ? selection.id : null
@@ -835,45 +408,19 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
     setNoticeSeen(notice.n)
     setNotices((ns) => [...ns, notice])
   }
-  const [showHidden, setShowHidden] = useState(false)
+  const [operator] = useOperator()
   const pending = decisions?.inbox.pending ?? []
+  const intents = decisions?.intents ?? NO_INTENTS
   const allAlerts = decisions?.inbox.alerts ?? []
-  // a member alert folded into a swarm alert is shown inside that swarm's card, not on its own
+  // a member alert folded into a group alert is shown inside that group's card, not on its own
   const alerts = unfolded(allAlerts)
-  const live = alerts.filter((a) => !hidden.has(a.id))
-  const muted = alerts.filter((a) => hidden.has(a.id))
   const swarmAlerts = decisions?.inbox.swarm_alerts ?? []
   const blocking = decisions?.inbox.blocking
-  const waiting = waitingItems(blocking).length > 0
   // what needs the person, counted as the Inbox button counts it (needsYou.ts)
-  const need = needsYou(decisions?.inbox, hidden, new Set(settled.keys()))
+  const engagements = shownEngagements(intents)
+  const need = needsYou(decisions?.inbox, hidden, new Set(settled.keys()), engagements)
   const name = (uid: string) => nameOf(vehicles, uid)
-  // (the strip's and the Situation panel's links open the Pending tab themselves: App.tsx)
-  const engagements = (
-    <EngagementsSection
-      key="engagements"
-      intents={decisions?.intents ?? []}
-      vehicles={vehicles}
-      now={now}
-      selection={selection}
-      onFocus={(i) => onFocus({ kind: 'intent', id: i.id }, i.uids.map(Number).filter((n) => Number.isFinite(n)), i)}
-      onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
-    />
-  )
-  const review = (
-    <ReviewSection
-      key="review"
-      review={decisions?.inbox.review}
-      acts={decisions?.inbox.acts}
-      now={now}
-      onTrack={onTrack}
-      blocking={blocking}
-      settled={settled}
-      focus={focus}
-      nameOf={name}
-      onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
-    />
-  )
+  const done = (text: string, tone: 'ok' | 'bad') => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])
 
   useEffect(() => {
     if (!notices.length) return
@@ -881,11 +428,83 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
     return () => window.clearTimeout(id)
   }, [notices])
 
-  const uidsOf = (i: Intent) => i.uids.map(Number).filter((n) => Number.isFinite(n))
-  const mutedLabel = (a: Alert) => {
-    const until = mem.snoozedUntil(a)
-    return until != null ? `snoozed, back in ${fmtDuration(until)}` : 'acknowledged'
+  // what each of ours is doing, in the words of its order
+  const orders = useMemo(() => latestOrders(taskings ?? [], new Map<number, OrderIntent>(intents.map((i) => [i.id, i]))), [taskings, intents])
+  const doing = (uid: string) => {
+    const v = vehicles.find((x) => String(x.uid) === uid)
+    return v ? doingWords(v, orders.get(v.uid), (u) => nameOf(vehicles, String(u))) : 'no report'
   }
+  const uidsOf = (i: Intent) => i.uids.map(Number).filter((n) => Number.isFinite(n))
+  const selectedIntent = (i: Intent) => selection?.kind === 'intent' && selection.id === i.id
+  const left = (i: Intent) => (i.expires_t != null ? (i.expires_t - now()) / 1000 : null)
+
+  const items: Item[] = []
+  for (const i of pending) {
+    if (isEngage(i)) {
+      const until = i.engagement?.preview?.window?.until
+      const t = until != null && i.expires_t != null ? Math.min(until, i.expires_t) : (until ?? i.expires_t)
+      items.push({
+        key: `i${i.id}`,
+        rank: RANK.signing,
+        sort: t != null ? (t - now()) / 1000 : null,
+        node: <EngageCard key={`i${i.id}`} intent={i} vehicles={vehicles} now={now} selected={selectedIntent(i)} onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)} onDone={done} onReplace={onReplace} />,
+      })
+    } else {
+      items.push({
+        key: `i${i.id}`,
+        rank: RANK.approval,
+        sort: left(i),
+        node: (
+          <ApprovalCard
+            key={`i${i.id}`}
+            intent={i}
+            engaged={intents.filter((e) => isEngage(e) && e.id !== i.id && ['pending_approval', 'approved', 'dispatched'].includes(e.state) && e.uids.some((u) => i.uids.includes(u)))}
+            vehicles={vehicles}
+            now={now}
+            selected={selectedIntent(i)}
+            onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
+            onDone={done}
+            cause={cause?.(i)}
+            doing={doing}
+          />
+        ),
+      })
+    }
+  }
+  for (const i of engagements) {
+    items.push({
+      key: `i${i.id}`,
+      rank: engagementRank(i),
+      sort: null,
+      node: <RunCard key={`i${i.id}`} intent={i} vehicles={vehicles} now={now} selected={selectedIntent(i)} onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)} onDone={done} onTrack={onTrack} />,
+    })
+  }
+  for (const e of reviewEntries(
+    { review: decisions?.inbox.review, acts: decisions?.inbox.acts, now, onDone: done, onTrack, blocking, focus, nameOf: name, settled, tracks, vehicles },
+    operator,
+  ))
+    items.push(e)
+  for (const a of alerts) {
+    const muted = hidden.has(a.id)
+    items.push({
+      key: a.id,
+      rank: muted ? RANK.acknowledged : alertRank(a.kind, a.severity),
+      sort: alertSort(a.severity, a.since_t),
+      node: <AlertCard key={a.id} alert={a} now={now} selected={selection?.kind === 'alert' && selection.id === a.id} muted={muted} mem={mem} name={name} onFocus={() => onFocus({ kind: 'alert', id: a.id }, [a.uid], null)} />,
+    })
+  }
+  for (const a of swarmAlerts) {
+    items.push({
+      key: a.id,
+      rank: alertRank(a.kind, a.severity),
+      sort: alertSort(a.severity, a.since_t),
+      node: <SwarmAlertCard key={a.id} alert={a} members={foldedInto(allAlerts, a.id)} vehicles={vehicles} now={now} selected={selection?.kind === 'alert' && selection.id === a.id} onFocus={() => onFocus({ kind: 'alert', id: a.id }, a.uids, null)} />,
+    })
+  }
+  const { needs, info } = inboxOrder(items)
+  const urgentWaiting = waitingItems(blocking).length > 0
+  // the policy's route, said once for every approval below (not on each card)
+  const routes = [...new Set(pending.filter((i) => !isEngage(i)).map((i) => i.policy?.reason).filter((r): r is string => !!r))]
 
   return (
     <aside className="ix" aria-label="Inbox">
@@ -893,7 +512,7 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
         <h2>Inbox</h2>
         <div className="seg">
           <button className={tab === 'inbox' ? 'on' : ''} onClick={() => setTab('inbox')} title={need.says}>
-            Pending{need.total ? ` (${need.total})` : ''}
+            Needs you{need.total ? ` (${need.total})` : ''}
           </button>
           <button className={tab === 'decisions' ? 'on' : ''} onClick={() => setTab('decisions')}>
             Decisions
@@ -916,89 +535,26 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
 
       <div className="ix-scroll">
         {tab === 'decisions' ? (
-          <DecisionsList intents={decisions?.intents ?? []} vehicles={vehicles} now={now} />
+          <DecisionsList intents={intents} vehicles={vehicles} now={now} />
         ) : (
           <>
-            {/* a review item that alone holds up a nomination: the Review first, that item first in
-                it (keyed, so moving it keeps what a card has open or typed) */}
-            {(waiting ? [review, engagements] : [engagements, review])}
-            <h3 className="ix-h">
-              Approvals <span>{pending.length}</span>
-              <small>soonest expiry first</small>
+            {/* one list, by consequence, then time left: what asks a person first, a review item that
+                alone holds up a nomination ahead of the rest (keyed, so a card that moves keeps what
+                it has open or typed) */}
+            <h3 className={`ix-h${urgentWaiting ? ' ix-h-urgent' : ''}`}>
+              Needs you <span>{needs.length}</span>
             </h3>
-            {pending.length === 0 && <p className="empty">Nothing waiting for a human.</p>}
-            {pending.map((i) =>
-              isEngage(i) ? (
-                <EngageCard
-                  key={i.id}
-                  intent={i}
-                  vehicles={vehicles}
-                  now={now}
-                  selected={selection?.kind === 'intent' && selection.id === i.id}
-                  onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
-                  onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
-                  onReplace={onReplace}
-                />
-              ) : (
-              <ApprovalCard
-                key={i.id}
-                intent={i}
-                engaged={(decisions?.intents ?? []).filter(
-                  (e) => isEngage(e) && e.id !== i.id && ['pending_approval', 'approved', 'dispatched'].includes(e.state) && e.uids.some((u) => i.uids.includes(u)),
-                )}
-                vehicles={vehicles}
-                now={now}
-                selected={selection?.kind === 'intent' && selection.id === i.id}
-                onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
-                onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
-                cause={cause?.(i)}
-              />
-              ),
-            )}
-            {swarmAlerts.length > 0 && (
+            {routes.length > 0 && <p className="ix-route-note">A person decides these: {routes.join('; ')}.</p>}
+            {needs.length === 0 && <p className="empty">Nothing needs you</p>}
+            {needs.map((x) => x.node)}
+            {info.length > 0 && (
               <>
-                <h3 className="ix-h">
-                  Swarm alerts <span>{swarmAlerts.length}</span>
-                  <small>one card for a swarm's members</small>
+                <h3 className="ix-h ix-h-quiet">
+                  For information <span>{info.length}</span>
                 </h3>
-                {swarmAlerts.map((a) => (
-                  <SwarmAlertCard
-                    key={a.id}
-                    alert={a}
-                    members={foldedInto(allAlerts, a.id)}
-                    vehicles={vehicles}
-                    now={now}
-                    selected={selection?.kind === 'alert' && selection.id === a.id}
-                    onFocus={() => onFocus({ kind: 'alert', id: a.id }, a.uids, null)}
-                  />
-                ))}
+                {info.map((x) => x.node)}
               </>
             )}
-            <h3 className="ix-h">
-              Alerts <span>{live.length}</span>
-              <small>most severe first, then oldest</small>
-            </h3>
-            {live.length === 0 && <p className="empty">No active alerts.</p>}
-            {live.map((a) => (
-              <AlertCard key={a.id} alert={a} now={now} selected={selection?.kind === 'alert' && selection.id === a.id} muted={null} mem={mem} name={name} onFocus={() => onFocus({ kind: 'alert', id: a.id }, [a.uid], null)} />
-            ))}
-            {/* open flags a later declaration settled: below the live items, quiet, each still
-                opening its card to confirm or dismiss (the person's act; nothing resolves them here) */}
-            <SettledFlags review={decisions?.inbox.review} settled={settled} now={now} onTrack={onTrack} nameOf={name} focus={focus} onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])} />
-            {muted.length > 0 && (
-              <>
-                <button className="ix-toggle" onClick={() => setShowHidden(!showHidden)}>
-                  {showHidden ? 'Hide' : 'Show'} {muted.length} acknowledged or snoozed
-                </button>
-                {showHidden &&
-                  muted.map((a) => (
-                    <AlertCard key={a.id} alert={a} now={now} selected={false} muted={mutedLabel(a)} mem={mem} name={name} onFocus={() => onFocus({ kind: 'alert', id: a.id }, [a.uid], null)} />
-                  ))}
-              </>
-            )}
-            <p className="ix-foot">
-              Acknowledge and snooze are kept in this browser only. They are not shared with other operators or consoles, and the bridge does not record them.
-            </p>
           </>
         )}
       </div>

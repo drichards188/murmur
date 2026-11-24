@@ -13,8 +13,7 @@
 // only where its box overlaps no label placed before it; one that does not fit in full falls back
 // to its short form, then to none (the symbol stays, the full block shows on hover). A forced
 // label (selected, pinned, details open) is placed whatever it overlaps. Each priority has a zoom
-// floor (below it, symbols alone). `all`: every label in full, nothing dropped (the legend's
-// Show all). Display only.
+// floor (below it, symbols alone). Display only.
 
 export type LabelLevel = 'full' | 'short' | 'none'
 export type Priority = 1 | 2 | 3 | 4
@@ -40,21 +39,8 @@ export interface LabelCandidate {
   obstacle?: boolean
 }
 
-export interface LabelStats {
-  /** labels on screen that could be drawn (zoom floors passed) and those beyond a floor */
-  inView: number
-  full: number
-  short: number
-  /** in view, not drawn: shown on hover */
-  none: number
-  /** the budget is in force: more than FEW labels in view */
-  budgeted: boolean
-  all: boolean
-}
-
 export interface LabelPlan {
   level(key: string): LabelLevel
-  stats: LabelStats
 }
 
 /** below this zoom, symbols alone for the rest (a whole region is on screen; labels would be noise) */
@@ -105,34 +91,25 @@ export function textBox(lines: readonly string[], size: number, anchor: 'start' 
   return [left - room, top - room, left + w + room, top + h + room]
 }
 
-const NONE: LabelPlan ={ level: () => 'none', stats: { inView: 0, full: 0, short: 0, none: 0, budgeted: false, all: false } }
+const NONE: LabelPlan = { level: () => 'none' }
 
 export interface PlanOptions {
   zoom: number
-  /** the map's size, CSS px: labels anchored outside it are not counted */
+  /** the map's size, CSS px: labels anchored outside it are not placed */
   width: number
   height: number
-  /** Show all: every label in view in full, none dropped */
-  all?: boolean
 }
 
 /** The plan: each candidate's level. Candidates of equal priority keep their order (the caller's
  *  order is the tie-break: give it a stable one). */
-export function planLabels(cands: readonly LabelCandidate[], { zoom, width, height, all = false }: PlanOptions): LabelPlan {
+export function planLabels(cands: readonly LabelCandidate[], { zoom, width, height }: PlanOptions): LabelPlan {
   if (!cands.length) return NONE
   const levels = new Map<string, LabelLevel>()
   const margin = 40
   const inView = cands.filter((c) => c.at && c.at[0] >= -margin && c.at[0] <= width + margin && c.at[1] >= -margin && c.at[1] <= height + margin)
   const eligible = inView.filter((c) => c.force || c.obstacle || zoom >= ZOOM_FLOOR[c.priority])
   const labels = eligible.filter((c) => !c.obstacle).length
-  const counted = inView.filter((c) => !c.obstacle).length
   const few = labels <= FEW
-  const stats: LabelStats = { inView: counted, full: 0, short: 0, none: 0, budgeted: !few && !all, all }
-  if (all) {
-    for (const c of inView) if (!c.obstacle) levels.set(c.key, 'full')
-    stats.full = counted
-    return { level: (k) => levels.get(k) ?? 'none', stats }
-  }
   // obstacles, forced, then by priority, each in the caller's order (buckets: no sort of thousands)
   const buckets: LabelCandidate[][] = [[], [], [], [], [], []]
   for (const c of eligible) buckets[c.obstacle ? 0 : c.force ? 1 : c.priority + 1].push(c)
@@ -170,15 +147,8 @@ export function planLabels(cands: readonly LabelCandidate[], { zoom, width, heig
       levels.set(c.key, 'short')
     }
   }
-  for (const c of inView) {
-    if (c.obstacle) continue
-    const l = levels.get(c.key)
-    if (l === 'full') stats.full++
-    else if (l === 'short') stats.short++
-    else stats.none++
-  }
-  return { level: (k) => levels.get(k) ?? 'none', stats }
+  return { level: (k) => levels.get(k) ?? 'none' }
 }
 
 /** Every label in full: before the map has a camera, and for builders called without a plan. */
-export const ALL_FULL: LabelPlan = { level: () => 'full', stats: { inView: 0, full: 0, short: 0, none: 0, budgeted: false, all: true } }
+export const ALL_FULL: LabelPlan = { level: () => 'full' }

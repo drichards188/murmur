@@ -1,21 +1,19 @@
-import { useEffect, useState } from 'react'
-import type { Decisions, Intent } from './decisions'
+import { useEffect, useMemo, useState } from 'react'
+import type { Decisions } from './decisions'
 import { Bluf } from './Bluf'
 import { watchParts } from './bluf'
-import { namedBlocking, waited } from './blocking'
-import { RationaleText } from './Rationale'
 import { setScriptedBadges } from './situationIds'
-import { plainText, situationWhen } from './plainText'
-import { scriptedLine, situationZero } from './situationText'
-import { usePoll } from './space'
+import { clockText } from './plainText'
+import { situationZero, type SituationTime, whatHappened, withoutCommands } from './situationText'
 import './situation.css'
 
 /** The Situation panel: shown only while a situation runner (`make situation`,
- *  `sim/situations/`) has posted its status to the bridge (`GET /api/situation`). Display
- *  only: the status is the runner's, never a decision input and not in the audit log. With
- *  `reveal` off (a blinded run) it carries no director's notes and nothing still to come (the
- *  bridge strips them whatever the runner sends). The clock runs on this console's own clock
- *  from each post's arrival; a runner that stops posting is shown as not reporting. */
+ *  `sim/situations/`) has posted its status to the bridge (`GET /api/situation`, read once for the
+ *  console by useSituation.ts). Display only: the status is the runner's, never a decision input
+ *  and not in the audit log. It opens to its chip (the run's title and the newest thing to watch:
+ *  one line at the glance); a click opens the panel: what this run is, who decides, the brief,
+ *  what to watch for, and one closed fold of what happened. The situation's time is the top bar's
+ *  clock. With `reveal` off (a blinded run) the bridge strips the director's items. */
 
 interface Entry {
   t_s: number
@@ -31,14 +29,6 @@ export interface WatchItem {
   director?: boolean
   headline?: string
   bullets?: string[]
-}
-
-interface Activity {
-  t: number
-  /** situation time (s), stamped by the runner */
-  t_s: number | null
-  action: string
-  detail: string
 }
 
 export interface SituationStatus {
@@ -66,18 +56,13 @@ export interface SituationStatus {
   phase_detail: string
   clock: { t: number; elapsed_s: number | null; duration_s: number; remaining_s: number | null }
   orders: { id: string; task: string; vehicles?: string[]; by?: string; routed?: string; intent_id?: number; state?: string; error?: string }[]
-  timeline: { done: Entry[]; upcoming?: { at_s: number; id: string; kind: string; text: string }[] }
+  timeline: { done: Entry[] }
   watch: WatchItem[]
-  watch_upcoming?: WatchItem[]
   agent: {
     kind: string
     label: string
     id: string | null
     status: string
-    activity: Activity[]
-    /** `blocking`: the review items holding up a nomination when the AI's turn ended (its
-     *  driver's reading of the bridge's `blocking`), so the note is tied to them */
-    notes: { t: number | null; t_s: number | null; kind: string; text: string; blocking?: string[] }[]
   }
   autoplay: null | {
     operators: string[]
@@ -103,122 +88,54 @@ export interface SituationStatus {
   scripted?: Record<string, string>
 }
 
-interface Envelope {
-  situation: SituationStatus | null
-  received_t: number | null
-  /** how many statuses the runner has posted (a new one every 2 s while it runs) */
-  posts?: number
-}
-
-/** no new status for this long (s) while the runner starts or runs: it is not reporting */
-const STALE_S = 10
-
-const DECIDES: Record<string, string> = {
-  autoplay: 'autoplay: not people',
-  cosigner: 'cosign only, never first',
-  signers: "sign only your nominations: scripts, not people",
-  setup: 'live: setup and timeline only, they never decide',
-}
-
-/** m:ss of situation time */
-function clock(s: number) {
-  const n = Math.max(0, Math.round(s))
-  return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`
-}
-
-const STATE_TONE: Record<string, string> = {
-  pending_approval: 'wait',
-  approved: 'ok',
-  auto_approved: 'ok',
-  dispatched: 'ok',
-  done: 'ok',
-  queued: 'wait',
-  rejected: 'bad',
-  expired: 'bad',
-  voided: 'bad',
-  failed: 'bad',
-}
-
-function who(i: Intent) {
-  const a = i.approval
-  if (!a) return i.state === 'pending_approval' ? 'waiting for a decision' : i.policy?.tier === 'auto' ? 'by policy (auto)' : ''
-  return `${a.at_submission ? 'authorized' : 'approved'} by ${a.by}`
-}
+/** a watch item this new (situation s) is marked new */
+const FRESH_S = 60
 
 export function SituationPanel({
+  s,
+  time,
   decisions,
-  now,
-  onWaiting,
-  onAi,
   nameOf,
 }: {
+  s: SituationStatus
+  time: SituationTime
   decisions: Decisions | null
-  now?: () => number
-  onWaiting?: (id: string) => void
   /** one of ours by its uid (its callsign), for the engine's words the panel shows */
   nameOf?: (uid: string) => string
-  /** the situation's AI (`modes.ai`), null when no situation runs, undefined before the first
-   *  answer: whether the run has a watch officer that takes requests (officer.ts `officerShown`) */
-  onAi?: (ai: SituationStatus['modes']['ai'] | null | undefined) => void
 }) {
-  const { data } = usePoll<Envelope>('/api/situation', 2000)
-  const ai = data == null ? undefined : (data.situation?.modes.ai ?? null)
-  useEffect(() => {
-    onAi?.(ai)
-  }, [ai, onAi])
-  // open unless the tutorial runs (its coach card walks the person; the panel is a click away)
-  const [openSet, setOpen] = useState<boolean | null>(null)
-  const [showAll, setShowAll] = useState(false)
-  // this console's clock (s), ticking each second: the situation clock is extrapolated from it
-  const [nowS, setNowS] = useState(() => Date.now() / 1000)
-  useEffect(() => {
-    const id = window.setInterval(() => setNowS(Date.now() / 1000), 1000)
-    return () => window.clearInterval(id)
-  }, [])
-  const s = data?.situation
+  // closed to its chip at the start (one line at the glance; the panel a click away)
+  const [open, setOpen] = useState(false)
   // the Inbox badges a scripted id's card (kept outside React: a few ids, display only)
-  const badges = s?.scripted
+  const badges = s.scripted
   useEffect(() => setScriptedBadges(badges), [badges])
-  const posts = data?.posts ?? 0
-  const postedElapsed = s?.clock.elapsed_s ?? null
-  // anchored on when this console received each new post (as useScenarioNow does), never on
-  // the runner's host clock against this one's
-  // (state adjusted while rendering when a new post has come: React's pattern for state that
-  // follows a prop)
-  const [anchor, setAnchor] = useState<{ posts: number; elapsed: number | null; at: number } | null>(null)
-  if (s && (anchor == null || anchor.posts !== posts)) {
-    setAnchor({ posts, elapsed: postedElapsed, at: nowS })
-  }
-  if (!s) return null
-  const open = openSet ?? !s.modes.tutorial
-  const sincePost = anchor ? Math.max(0, nowS - anchor.at) : 0
-  const stale = (s.phase === 'running' || s.phase === 'starting') && sincePost > STALE_S
-  const running = s.phase === 'running' && !stale
-  const base = anchor && anchor.posts === posts ? anchor.elapsed : s.clock.elapsed_s
-  const elapsed = base == null ? null : Math.min(s.clock.duration_s, base + (running ? sincePost : 0))
-  const left = elapsed == null ? null : Math.max(0, s.clock.duration_s - elapsed)
-  const frac = elapsed == null ? 0 : Math.min(1, elapsed / s.clock.duration_s)
-  const scripted = new Set(s.modes.scripted_operators)
-  const agentIntents = (decisions?.intents ?? []).filter((i) => s.agent.id && i.source.kind === 'agent' && i.source.id === s.agent.id)
-  const done = [...s.timeline.done].reverse()
+  const { elapsed, stale, running, sincePost } = time
   const watch = [...s.watch].reverse()
   const latestWatch = watch[0]
-  const fresh = (at: number) => elapsed != null && elapsed - at < 60
-  // the runner's and the engine's words with epoch stamps on this situation's clock (T+m:ss) and
-  // our vehicles by callsign (situationText.ts); the AI's own notes are quoted as it wrote them
-  const zero = situationZero(s.clock)
+  const fresh = (at: number) => elapsed != null && elapsed - at < FRESH_S
   const name = nameOf ?? ((uid: string) => `vehicle ${uid}`)
-  const plain = (text: string) => (zero == null ? text : plainText(text, { nameOf: name, when: situationWhen(zero) }))
+  const zero = situationZero(s.clock)
+  // the AI's orders (intents whose source is the run's AI), for what happened
+  const agentId = s.agent.id
+  const intents = decisions?.intents
+  const proposals = useMemo(() => (agentId ? (intents ?? []).filter((i) => i.source.kind === 'agent' && i.source.id === agentId) : []), [agentId, intents])
+  const happened = useMemo(
+    () => whatHappened(s.timeline.done, proposals, zero, s.modes.ai_label, new Set(s.modes.scripted_operators), name),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [s, proposals, zero],
+  )
 
-  if (!open)
+  if (!open) {
+    const head = latestWatch ? watchParts(latestWatch).headline : null
     return (
-      <button className="sit-chip" onClick={() => setOpen(true)} title="Show the situation panel">
+      <button className="sit-chip" onClick={() => setOpen(true)} title="Show the situation panel: what this run is, your job, what to watch for">
         SITUATION <b>{s.title}</b>
-        {elapsed != null && <span>T+{clock(elapsed)}</span>}
+        {head && <span className="sit-chip-next">{head}</span>}
         {latestWatch && fresh(latestWatch.at_s) && <i className="sit-dot" aria-label="new item to watch for" />}
       </button>
     )
+  }
 
+  const earlier = watch.slice(1)
   return (
     <aside className="sit" aria-label="Situation">
       <div className="sit-top">
@@ -230,12 +147,12 @@ export function SituationPanel({
       </div>
       <div className="sit-chips">
         {s.modes.operator === 'live' ? (
-          <span className="sit-mode you" title="You decide at this console">
-            operator: you ({s.modes.console_operator}, live)
+          <span className="sit-mode you" title={`You decide at this console, as ${s.modes.console_operator}`}>
+            You decide
           </span>
         ) : (
-          <span className="sit-mode scripted" title="A scripted operator model decides: not a person, never evidence">
-            operator: autoplay ({s.modes.autoplay_operator ?? 'scripted'}), scripted
+          <span className="sit-mode scripted" title={`A scripted operator model (${s.modes.autoplay_operator ?? 'scripted'}) decides: not a person, never evidence`}>
+            Scripts decide (autoplay)
           </span>
         )}
         <span className={`sit-mode ai ${s.modes.ai}`}>AI: {s.modes.ai_label}</span>
@@ -249,19 +166,14 @@ export function SituationPanel({
             signers: op-2, op-3 (scripted)
           </span>
         )}
-        {s.reveal && <span className="sit-mode reveal" title="Director's notes and the timeline to come are shown">revealed</span>}
       </div>
-      <div className="sit-clock">
-        <b>T+{elapsed == null ? '--:--' : clock(elapsed)}</b>
-        <span>{left == null ? '' : `${clock(left)} left of ${clock(s.clock.duration_s)}`}</span>
-        <span className={`sit-phase ${stale ? 'failed' : s.phase}`} title={s.phase_detail}>
-          {stale ? 'not reporting' : s.phase}
-        </span>
-        <span className="sit-bar">
-          <span style={{ width: `${(frac * 100).toFixed(1)}%` }} />
-        </span>
-        {!running && !stale && s.phase_detail && <small>{s.phase_detail}</small>}
-      </div>
+      {/* the phase only when the run is not simply running; the time is the top bar's */}
+      {(stale || !running) && (
+        <div className="sit-clock">
+          <span className={`sit-phase ${stale ? 'failed' : s.phase}`}>{stale ? 'not reporting' : s.phase}</span>
+          {!stale && s.phase_detail && <small>{withoutCommands(s.phase_detail)}</small>}
+        </div>
+      )}
       {stale && (
         <p className="sit-warn">
           Runner not reporting: no status for {Math.round(sincePost)} s. The stack may still be running; this is its last status.
@@ -288,151 +200,45 @@ export function SituationPanel({
           </details>
         )}
 
-        <h3 className="sit-h">
-          Watch for <span>{watch.length}</span>
-        </h3>
-        {watch.length === 0 && <p className="sit-empty">Nothing yet.</p>}
-        <ul className="sit-watch">
-          {watch.map((w, k) => (
-            <li key={`${w.at_s}-${k}`} className={`${fresh(w.at_s) ? 'new' : ''}${w.director ? ' sit-director' : ''}`}>
-              <time>{clock(w.at_s)}</time>
-              <Bluf parts={watchParts(w)}>{w.director && <small className="sit-dir-tag">(director, revealed)</small>}</Bluf>
+        <h3 className="sit-h">Watch for</h3>
+        {latestWatch ? (
+          <ul className="sit-watch">
+            <li className={fresh(latestWatch.at_s) ? 'new' : ''}>
+              <time>{clockText(latestWatch.at_s)}</time>
+              <Bluf parts={watchParts(latestWatch)} />
             </li>
-          ))}
-        </ul>
-
-        <h3 className="sit-h">
-          AI <span>{s.agent.label}</span>
-          <small>
-            {s.agent.id ? `${s.agent.id}: ` : ''}
-            {s.agent.status}
-          </small>
-        </h3>
-        {s.modes.ai === 'none' && <p className="sit-empty">No AI on this run.</p>}
-        {agentIntents.length > 0 && (
-          <ul className="sit-ai">
-            {agentIntents.slice(0, 6).map((i) => (
-              <li key={i.id}>
-                <div>
-                  <b>i{i.id}</b> proposed {i.kind}
-                  <span className={`sit-state ${STATE_TONE[i.state] ?? ''}`}>{i.state.replace(/_/g, ' ')}</span>
-                  <small>{who(i)}{i.approval && scripted.has(i.approval.by) ? ' (scripted)' : ''}</small>
-                </div>
-                {i.rationale && (
-                  <div className="sit-rationale">
-                    <RationaleText rationale={i.rationale} source={i.source} />
-                  </div>
-                )}
-              </li>
-            ))}
           </ul>
+        ) : (
+          <p className="sit-empty">Nothing yet.</p>
         )}
-        {s.agent.activity.length > 0 && (
-          <ul className="sit-log">
-            {[...s.agent.activity].reverse().slice(0, 6).map((a, k) => (
-              <li key={k}>
-                <time>{a.t_s != null ? clock(a.t_s) : ''}</time>
-                <b>{a.action}</b> {plain(a.detail)}
-              </li>
-            ))}
-          </ul>
-        )}
-        {s.agent.notes.length > 0 && (
-          <ul className="sit-log notes">
-            {[...s.agent.notes].reverse().slice(0, 4).map((n, k) => {
-              // a note naming an item that alone holds up a nomination now (blocking.ts): urgent,
-              // with a link to its card (the person decides there)
-              const named = namedBlocking(n, decisions?.inbox.blocking)
-              return (
-                <li key={k} className={named.length ? 'sit-urgent' : undefined}>
-                  <time>{n.t_s != null ? clock(n.t_s) : ''}</time>
-                  <b>{n.kind}</b> {n.text}
-                  {named.length > 0 && (
-                    <span className="sit-wait-go">
-                      waiting on you{now ? ` ${waited(named[0], now())}` : ''}:
-                      {named.map((b) => (
-                        <button key={b.id} onClick={() => onWaiting?.(b.id)} disabled={!onWaiting} title={`${b.text} Open its card in the Inbox: you decide there.`}>
-                          open {b.id}
-                        </button>
-                      ))}
-                    </span>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        )}
-        {s.modes.ai !== 'none' && agentIntents.length === 0 && s.agent.activity.length === 0 && s.agent.notes.length === 0 && (
-          <p className="sit-empty">No AI action yet.</p>
-        )}
-
-        {s.autoplay && (
-          <>
-            <h3 className="sit-h">
-              Scripted operators <span>{s.autoplay.operators.join(', ')}</span>
-              <small>{DECIDES[s.autoplay.mode] ?? ''}</small>
-            </h3>
-            {s.autoplay.decisions.filter((d) => d.action !== 'wait').length === 0 && <p className="sit-empty">No decision yet.</p>}
-            <ul className="sit-log">
-              {[...s.autoplay.decisions]
-                .filter((d) => d.action !== 'wait')
-                .reverse()
-                .slice(0, 5)
-                .map((d, k) => {
-                  // said once and as what it was: a scripted confirmation never also as unconfirmed
-                  // (what the script read before acting is in the title, said as read before)
-                  const l = scriptedLine(d, zero, name)
-                  return (
-                    <li key={k}>
-                      {zero != null && <time>{clock(d.t - zero)}</time>}
-                      <b>{l.text}</b>
-                      {l.why && <small title={l.read ?? undefined}> {l.why}</small>}
-                    </li>
-                  )
-                })}
-            </ul>
-          </>
-        )}
-
-        <h3 className="sit-h">
-          Timeline <span>{done.length}</span>
-          {done.length > 6 && (
-            <button className="sit-more" onClick={() => setShowAll((v) => !v)}>
-              {showAll ? 'fewer' : 'all'}
-            </button>
-          )}
-        </h3>
-        <ul className="sit-tl">
-          {(showAll ? done : done.slice(0, 6)).map((e, k) => (
-            <li key={k} className={`sit-k-${e.kind}${e.director ? ' sit-director' : ''}`}>
-              <time>{clock(e.t_s)}</time>
-              {plain(e.text)}
-            </li>
-          ))}
-        </ul>
-        {s.reveal && (s.timeline.upcoming?.length ?? 0) > 0 && (
-          <>
-            <h3 className="sit-h">
-              To come <small>revealed</small>
-            </h3>
-            <ul className="sit-tl upcoming">
-              {s.timeline.upcoming!.map((u) => (
-                <li key={u.id}>
-                  <time>{clock(u.at_s)}</time>
-                  {u.text}
+        {earlier.length > 0 && (
+          <details className="sit-fold">
+            <summary>Earlier ({earlier.length})</summary>
+            <ul className="sit-watch">
+              {earlier.map((w, k) => (
+                <li key={`${w.at_s}-${k}`}>
+                  <time>{clockText(w.at_s)}</time>
+                  <Bluf parts={watchParts(w)} />
                 </li>
               ))}
             </ul>
-          </>
-        )}
-        {s.reveal && s.director && (
-          <details className="sit-brief director">
-            <summary>Director's notes (revealed)</summary>
-            {s.director.split(/\n\s*\n/).map((p, k) => (
-              <p key={k}>{p}</p>
-            ))}
           </details>
         )}
+
+        {happened.length > 0 && (
+          <details className="sit-fold">
+            <summary>What happened ({happened.length})</summary>
+            <ul className="sit-tl">
+              {happened.map((h, k) => (
+                <li key={k} className={`sit-k-${h.kind}`} title={h.title ?? undefined}>
+                  {h.t_s != null && <time>{clockText(h.t_s)}</time>}
+                  {h.text}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
         {(s.problems?.length ?? 0) > 0 && (
           <ul className="sit-warn">
             {s.problems!.map((p, k) => (
@@ -448,9 +254,6 @@ export function SituationPanel({
               .join('; ')}
           </p>
         )}
-        <p className="sit-foot">
-          Status from the situation runner: display only, not a decision input. Run {s.run.id}; audit log {s.run.audit_log}.
-        </p>
       </div>
     </aside>
   )

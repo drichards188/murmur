@@ -1,10 +1,9 @@
 // Cluster markers (murmur-and): when the view holds more vehicles than the bridge sends in
 // full (zoomed out over a large fleet), the bridge sends counts per map tile instead
 // (`clusters` in the state and delta messages, push.rs) and the console draws one marker per
-// tile here: a disc sized by the count, the count in it, the split by domain under it, and the
-// tracks in the tile that need a look: hostile and suspect in red, unknown in the dim text of
-// everything not in focus (docs/research/saturation-display.md R1: hundreds of unknown drones
-// counted in red painted every marker as a threat). Clicking a marker zooms in on it (MapView).
+// tile here: a disc sized by the count, the count in it, and under it the tracks in the tile that
+// matter, hostile and suspect, in red (the split by domain and the unknowns' count decide nothing
+// at that zoom: ledger 1, the map's clusters). Clicking a marker zooms in on it (MapView).
 // The pinned vehicles (selected, followed, in the inbox) still come in full and are drawn as
 // symbols on top.
 import { ScatterplotLayer, TextLayer } from '@deck.gl/layers'
@@ -19,10 +18,7 @@ const FILL: RGBA = [20, 30, 42, 225]
 const RING: RGBA = [127, 184, 255, 200]
 const RING_LOST: RGBA = [255, 93, 93, 220]
 const TEXT: RGBA = [215, 221, 228, 255]
-const DIM: RGBA = [215, 221, 228, 200]
 const HOT: RGBA = [255, 120, 120, 255]
-/** unknowns: counted, not painted */
-const UNK: RGBA = [215, 221, 228, 150]
 const OUTLINE: RGBA = [11, 15, 20, 255]
 const FONT = 'IBM Plex Mono, ui-monospace, monospace'
 const FONT_SETTINGS = { sdf: true, fontSize: 48, buffer: 6 }
@@ -32,12 +28,6 @@ export function clusterRadius(c: Cluster) {
   return 16 + 6 * Math.log10(Math.max(1, c.n))
 }
 
-/** "A412 G130 W88 S40", only the domains present */
-export function domainLine(c: Cluster) {
-  const names = ['A', 'G', 'W', 'S']
-  return c.d.flatMap((n, i) => (n ? [`${names[i]}${n}`] : [])).join(' ')
-}
-
 /** "2 hostile 1 suspect" for the tile's tracks of concern; '' otherwise */
 export function hotLine(c: Cluster) {
   const [hostile, suspect] = c.tk
@@ -45,11 +35,6 @@ export function hotLine(c: Cluster) {
   if (hostile) parts.push(`${hostile} hostile`)
   if (suspect) parts.push(`${suspect} suspect`)
   return parts.join(' ')
-}
-
-/** "5 unk" for the tile's unknown tracks; '' otherwise */
-export function unknownLine(c: Cluster) {
-  return c.tk[2] ? `${c.tk[2]} unk` : ''
 }
 
 export function clusterCenter(c: Cluster): LngLat {
@@ -97,24 +82,6 @@ export function buildClusterLayers(clusters: Clusters | null | undefined) {
       parameters: onTop,
     }),
     new TextLayer<Cluster>({
-      id: 'cluster-domains',
-      data: cells.filter((c) => c.n > 0),
-      getPosition: at,
-      getText: domainLine,
-      getSize: 10,
-      getColor: DIM,
-      getTextAnchor: 'middle',
-      getAlignmentBaseline: 'top',
-      getPixelOffset: (c) => [0, clusterRadius(c) + 3],
-      fontFamily: FONT,
-      outlineWidth: 3,
-      outlineColor: OUTLINE,
-      fontSettings: FONT_SETTINGS,
-      characterSet: 'auto',
-      updateTriggers: trigger,
-      parameters: onTop,
-    }),
-    new TextLayer<Cluster>({
       id: 'cluster-tracks',
       data: cells.filter((c) => hotLine(c)),
       getPosition: at,
@@ -123,28 +90,9 @@ export function buildClusterLayers(clusters: Clusters | null | undefined) {
       getColor: HOT,
       getTextAnchor: 'middle',
       getAlignmentBaseline: 'top',
-      getPixelOffset: (c) => [0, clusterRadius(c) + (c.n > 0 ? 15 : 3)],
+      getPixelOffset: (c) => [0, clusterRadius(c) + 3],
       fontFamily: FONT,
       fontWeight: 600,
-      outlineWidth: 3,
-      outlineColor: OUTLINE,
-      fontSettings: FONT_SETTINGS,
-      characterSet: 'auto',
-      updateTriggers: trigger,
-      parameters: onTop,
-    }),
-    new TextLayer<Cluster>({
-      id: 'cluster-unknowns',
-      data: cells.filter((c) => unknownLine(c)),
-      getPosition: at,
-      getText: unknownLine,
-      getSize: 10,
-      getColor: UNK,
-      getTextAnchor: 'middle',
-      getAlignmentBaseline: 'top',
-      // under the hot line when there is one
-      getPixelOffset: (c) => [0, clusterRadius(c) + (c.n > 0 ? 15 : 3) + (hotLine(c) ? 12 : 0)],
-      fontFamily: FONT,
       outlineWidth: 3,
       outlineColor: OUTLINE,
       fontSettings: FONT_SETTINGS,

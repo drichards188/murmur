@@ -17,24 +17,26 @@ import type { Reveal } from './reveal'
 import { isTrackStale, type Track, trackPredicted } from './tracks'
 import { VehicleDetailsWhenFull } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
-import { callsign, DOMAIN_LABEL, domainOf, isStale, vehicleNamer, type Tasking } from './types'
+import { callsign, isStale, vehicleNamer, type Tasking } from './types'
 import { useBridge } from './useBridge'
 import { ErrorBoundary } from './ErrorBoundary'
 import { EngagePanel } from './EngagePanel'
 import { isEngage, previewOf, RUNNING, type EngagePreview, type KeepOutExplanation } from './engage'
 import { buildEngageLayers, buildKeepOutLayers, engageLabelCandidates, type EngageDrawing } from './engageLayers'
-import { IMPACT_STATUS_MS, type ImpactEvent } from './impact'
-import { actDrawings, bannerAct, bannerLine, type ActDrawing, type Seen, type Victim } from './hostileAct'
+import { assessmentAsk, type ImpactEvent } from './impact'
+import { actDrawings, type ActDrawing, type Seen, type Victim } from './hostileAct'
 import type { Against } from './ident'
-import { span } from './engageSteps'
+import { type AttackEvent, attackEvents } from './attackEvents'
+import { trackEngagement } from './trackEngagement'
 import { shownAlt } from './drawn'
 import './act.css'
-import { ESTIMATE_NOTE, weaponBanner, weaponReports, type WeaponTrack } from './weapon'
-import { loadoutProfile, secondsToImpact } from './munition'
+import { weaponReports, type WeaponTrack } from './weapon'
+import { loadoutProfile } from './munition'
 import { usePlatformLimits } from './taskDefaults'
 import { estimated } from './estimate'
-import { buildEstimateLayers, estimateLabelCandidates, estimateTooltip, hiddenHypotheses } from './estimateLayers'
+import { buildEstimateLayers, estimateLabelCandidates, estimateTooltip } from './estimateLayers'
 import { circle } from './geo'
+import { collectWords } from './mapWords'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
 import { QueueButton, QueuePanel } from './QueuePanel'
@@ -49,12 +51,12 @@ import type { WeatherMode } from './weather'
 import { regionsOf } from './weatherField'
 import type { Effects, WeatherView } from './weatherMap'
 import { saveEffects, savedEffects } from './weatherPrefs'
-import { reachBadge, reachFeatures, reachQuery, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
+import { reachFeatures, reachQuery, type ReachAnswer, type ReachMode } from './sensorReach'
 import { minefieldFeatures, type MinefieldsAnswer } from './minefields'
 import { SituationPanel } from './SituationPanel'
-import { pendingItems, waitingItems } from './blocking'
+import { waitingItems } from './blocking'
 import { settledFlags } from './needsYou'
-import { PendingStrip, WaitingStrip } from './WaitingStrip'
+import { WaitingStrip } from './WaitingStrip'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
@@ -65,9 +67,7 @@ import { buildNodeRegionLayers } from './nodeLossLayers'
 import { useNodes } from './useNodes'
 import { buildSwarmLayers, useSwarms } from './swarms'
 import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
-import { HiddenLegend, type HiddenRow } from './HiddenLegend'
-import type { LabelStats } from './declutter'
-import { alarmKey, GROUP_ALARM, groupMarks, groupState, heldAlarms, missingLines, selectedSwarm, shownTaskings, stepAlarms, swarmOf, swarmOutlines, unfolded, type AlarmSeen, type GroupState, type Swarm } from './swarmsModel'
+import { alarmKey, GROUP_ALARM, groupMarks, groupState, heldAlarms, selectedSwarm, shownTaskings, stepAlarms, swarmOf, swarmOutlines, unfolded, type AlarmSeen, type GroupState, type Swarm } from './swarmsModel'
 import { GroupStrip } from './GroupStrip'
 import { latestOps, vehicleState } from './exceptions'
 import type { GroupsOnMap } from './GroupChips'
@@ -80,10 +80,16 @@ import { TaskingButton, TaskingPanel } from './TaskingPanel'
 import { useTasking } from './useTasking'
 import { closeDock, fitPad, headsWithWaiting, toggleDock, type DockId } from './dock'
 import { awaitingRows, officerShown, selectionInsert, turnOf } from './officer'
+import { askSentence } from './approvalText'
+import { askFleet } from './approvalFleet'
 import { Awaiting, TurnCause } from './Awaiting'
 import { OfficerCompose, type ComposeInsert } from './OfficerCompose'
 import { damageOf, type Damage, type ExceptionContext, type LoadoutWeapon, outOfRounds } from './vehicleException'
-import { clockText, type ScenarioClockAnswer, setWorldClock } from './scenarioClock'
+import { clockText, runClock, type ScenarioClockAnswer, setWorldClock } from './scenarioClock'
+import { opensInTopView } from './situationText'
+import { useSituation } from './useSituation'
+import { glanceOf, groupScale, mattersText, nextTrouble, troubleOf } from './topbar'
+import { type ViewEntry, ViewsMenu } from './ViewsMenu'
 
 /** The bridge's scenario clock (scenarioClock.ts, `scenario` in GET /api/weather): asked once the
  *  bridge answers, again on each reconnect (a restarted bridge has a new start) and each minute. A
@@ -117,7 +123,7 @@ const OWN_CLOCK: ScenarioClockAnswer = { map: { engine_origin: 0, scenario_origi
 const byUidDetails = (vs: Vehicle[], uid: number) => vs.find((v) => v.uid === uid)
 
 /** the map layers whose objects are tracks or lost contacts (their `id`): hovering one draws it in full */
-const TRACK_HOVER_LAYERS = new Set(['tracks', 'tracks-ids', 'tracks-aloft', 'lost'])
+const TRACK_HOVER_LAYERS = new Set(['tracks', 'tracks-labels', 'tracks-aloft', 'lost'])
 
 /** Renders nothing. Its effect is the first passive effect of the tree on every commit (it
  *  is App's first child and has no children), so it marks where the effects' work begins. */
@@ -140,9 +146,6 @@ const NO_SWARMS: Swarm[] = []
 const NO_TRACKS: Track[] = []
 const NO_INTENTS: Intent[] = []
 
-/** The top bar's domain counts in a narrow window (dock.css). */
-const STAT_SHORT = { air: 'air', ground: 'gnd', surface: 'sea', subsurface: 'sub' } as const
-
 /** No vehicles (the groups panel while closed). */
 const NO_UIDS: ReadonlySet<number> = new Set()
 
@@ -164,7 +167,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     if (status === 'live') void refreshAuth()
   }, [status])
   perfRenderBegin()
-  // the world's time (bd murmur-iobd.5), on the bridge's clock below
+  // the bridge's clock (it re-renders the console twice a second), and the world's time on it (bd
+  // murmur-iobd.5)
+  const now = useBridgeClock(state?.t)
   const scenarioClock = useScenarioClock(status === 'live')
   // every card's time on the bridge's clock said in the same world time as the bar
   useEffect(() => setWorldClock(scenarioClock?.map ?? null), [scenarioClock])
@@ -174,27 +179,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [revealVeh, setRevealVeh] = useState<Reveal | null>(null)
   const [revealTrack, setRevealTrack] = useState<Reveal | null>(null)
   const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
-  // the track under the pointer (drawn in full while it is), and the tracks the person pinned to
-  // be drawn in full (focus.ts; a view setting of this console only)
+  // the track under the pointer (drawn in full while it is: focus.ts)
   const [hoverTrack, setHoverTrack] = useState<string | null>(null)
-  const [pinnedTracks, setPinnedTracks] = useState<ReadonlySet<string>>(() => new Set())
-  // the map legend's Show all (HiddenLegend.tsx, R3): each thing drawn dim, unlabelled or folded,
-  // in full while on; and what the label budget drew last
-  const [showAll, setShowAll] = useState({ tracks: false, areas: false, estimates: false, labels: false, lists: false })
-  const toggleAll = useCallback((k: keyof typeof showAll) => setShowAll((s) => ({ ...s, [k]: !s[k] })), [])
-  const [labelStats, setLabelStats] = useState<LabelStats | null>(null)
-  // what the lists fold (R6), as each reports it: the legend counts it
-  const [fleetFolds, setFleetFolds] = useState({ vehicles: 0, groups: 0 })
-  const [trackFolds, setTrackFolds] = useState({ tracks: 0, folds: 0 })
-  const [orderFolds, setOrderFolds] = useState({ lines: 0, cards: 0 })
-  const togglePin = useCallback((id: string) => {
-    setPinnedTracks((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
   const onMapHover = useCallback((layer: string | null, object: unknown) => {
     const id = layer && TRACK_HOVER_LAYERS.has(layer) ? ((object as { id?: string } | null)?.id ?? null) : null
     setHoverTrack((h) => (h === id ? h : id))
@@ -223,7 +209,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const taskingApi = useTasking()
   // the Officer button and drawer only where the run's AI takes requests (officer.ts): a situation's
   // model officer, or in the open world one the bridge says has read the tasking
-  const [situationAi, setSituationAi] = useState<string | null | undefined>(undefined)
+  const situation = useSituation(now)
+  const situationAi = situation.s === undefined ? undefined : (situation.s?.modes.ai ?? null)
   const officerVisible = officerShown(situationAi, taskingApi.reader, taskingApi.status)
   if (dock === 'officer' && !officerVisible) setDock(null)
   const showTasking = dock === 'officer' && officerVisible
@@ -277,7 +264,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     if (selectedTrack) noteTrackViewed(selectedTrack)
   }, [selectedTrack])
   const [fit, setFit] = useState<{ points: LngLat[]; n: number; padRight: number } | null>(null)
-  const [showGlobe, setShowGlobe] = useState(false)
   // predicted link coverage (docs/LINK-COVERAGE.md): the map layer, off by default, and the
   // drafted order's predicted link (the task panel's dry run)
   const [showCoverage, setShowCoverage] = useState(false)
@@ -301,9 +287,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     return regions ? { regions, effects: weatherEffects, field: weatherMode === 'off' ? null : weatherMode } : null
   }, [weatherField.grid, weatherMode, weatherEffects, weatherOn])
   // sensor reach now (bd murmur-4tq, sensorReach.ts): rings on the map for the selected vehicles
-  // (or all, or none) and a badge on each vehicle whose reach is under half its clear day's
+  // (or all, or none), and the vehicle details' Sensors lines from the same answer
   const [reachMode, setReachMode] = useState<ReachMode>('selected')
-  const [reachDomain, setReachDomain] = useState<DomainChoice>('auto')
   // only what the rings show, while they show (bd murmur-jvdc: the whole fleet's every 3 s was
   // a fifth of the bridge's time at Saturation's 3,602): the selected vehicles, or those in view
   const reachUrl = useMemo(() => reachQuery(reachMode, selected, mapView?.bounds ?? null), [reachMode, selected, mapView?.bounds])
@@ -315,6 +300,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
   const [box, setBox] = useState<LngLat[] | null>(null)
   const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
+  /** the Space view (its timeline and its globe) closed, the box being drawn with it */
+  const closeSpace = useCallback(() => {
+    setShowSpace(false)
+    setDrawing(null)
+    setSpaceSel({ scene: null, norad: null })
+  }, [])
   // the engagement nomination form (Phase E), opened from a declared-hostile track or an
   // armed platform, and the preview of the platform it would use
   // the nomination form: opened from a track, a platform, or (murmur-8xe) a pending nomination to replace
@@ -327,11 +318,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // the nomination form's latest checks on its target, for the tutorial's coach card
   const [engageChecks, setEngageChecks] = useState<{ track: string; checks: Check[] } | null>(null)
 
-  // space data is fetched only while a space view is open
-  const spaceOn = showSpace || showGlobe
-  const catalog = usePoll<Catalog>(spaceOn ? '/api/space/catalog' : null, 30_000)
+  // space data is fetched only while the Space view is open
+  const catalog = usePoll<Catalog>(showSpace ? '/api/space/catalog' : null, 30_000)
   const overhead = usePoll<Overhead>(showSpace ? '/api/space/overhead' : null, 5_000)
-  const linksNow = usePoll<LinksNow>(spaceOn ? '/api/space/links/now' : null, 10_000)
+  const linksNow = usePoll<LinksNow>(showSpace ? '/api/space/links/now' : null, 10_000)
   // tasked collections still running: outlined on the map whether or not the space panel is open
   const spaceRuns = decisions?.space
   const tasked = useMemo(
@@ -340,20 +330,20 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         .filter((r) => r.kind === 'collect' && r.collect && !r.outcome)
         .map((r) => ({
           ring: r.collect!.scene ?? r.collect!.area,
-          label: `COLLECT i${r.intent_id} ${r.collect!.satellite} ${fmtZ(r.collect!.collect_time)}${r.collect!.scene ? '' : ' (area)'}`,
+          label: collectWords(r.collect!.satellite, fmtZ(r.collect!.collect_time), !!r.collect!.scene),
         })),
     [spaceRuns],
   )
   const overlay = useMemo<SpaceOverlay>(
     () => ({
-      area: spaceOn ? (catalog.data?.area ?? null) : null,
+      area: showSpace ? (catalog.data?.area ?? null) : null,
       overhead: showSpace ? (overhead.data?.overhead ?? []) : [],
       scene: showSpace ? spaceSel.scene : null,
-      links: spaceOn ? (linksNow.data?.links ?? []) : [],
+      links: showSpace ? (linksNow.data?.links ?? []) : [],
       box: showSpace ? box : null,
       tasked,
     }),
-    [spaceOn, showSpace, catalog.data, overhead.data, spaceSel, linksNow.data, box, tasked],
+    [showSpace, catalog.data, overhead.data, spaceSel, linksNow.data, box, tasked],
   )
   // Escape clears the selection (the Fleet list's Clear), unless an order is being drawn (that
   // Escape cancels the drawing), a panel that Escape closes is open (the vehicle details, the
@@ -434,39 +424,19 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         setDock('swarms')
         setSwarmFocus((f) => ({ id, n: (f?.n ?? 0) + 1 }))
       },
-      detail: (id) => {
-        const m = marks.byId.get(id)
-        if (!m) return []
-        const members = new Set(m.members)
-        const byUid = new Map(allVehicles.filter((v) => members.has(v.uid)).map((v) => [v.uid, v]))
-        const lostNow = m.members.filter((u) => {
-          const v = byUid.get(u)
-          return v != null && isStale(v)
-        })
-        return missingLines(m, lostNow, (u) => (byUid.has(u) ? callsign(byUid.get(u)!) : `vehicle ${u}`))
-      },
     }
-  }, [marks, swarmSel, hoverGroup, flashGroup, allVehicles])
+  }, [marks, swarmSel, hoverGroup, flashGroup])
   const reachRings = useMemo(() => {
-    const fields = minefieldFeatures(minefields.data)
+    const fields = minefieldFeatures(minefields.data, selected)
     if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) {
       return fields.length ? { type: 'FeatureCollection' as const, features: fields } : null
     }
     const positions = new Map<number, LngLat>()
     for (const v of vehicles) if (v.position) positions.set(v.uid, v.position)
-    const rings = reachFeatures(reach.data, positions, reachMode === 'selected' ? selected : null, reachDomain)
+    const rings = reachFeatures(reach.data, positions, reachMode === 'selected' ? selected : null)
     if (!fields.length) return rings
     return { type: 'FeatureCollection' as const, features: [...(rings?.features ?? []), ...fields] }
-  }, [reach.data, minefields.data, vehicles, selected, reachMode, reachDomain])
-  const reachBadges = useMemo(() => {
-    const out = new Map<number, { text: string; title: string }>()
-    if (!reach.data?.available || reach.data.stale) return out
-    for (const v of reach.data.vehicles) {
-      const b = reachBadge(v, reachDomain)
-      if (b) out.set(v.uid, b)
-    }
-    return out
-  }, [reach.data, reachDomain])
+  }, [reach.data, minefields.data, vehicles, selected, reachMode])
   useEffect(() => {
     if (!spent.size) return
     setSelected((prev) => {
@@ -475,7 +445,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     })
     setDetailsUid((uid) => uid != null && spent.has(uid) ? null : uid)
   }, [spent])
-  const now = useBridgeClock(state?.t)
   // tracks of contacts that are not ours (Phase C2), drawn through MapView's layers prop;
   // ages advance with the bridge clock (useBridgeClock re-renders twice a second), so the
   // callback's identity changes every tick while there are tracks: rings grow, symbols fade
@@ -508,17 +477,17 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     [revealTrackId],
   )
   // what is drawn in full on the map (focus.ts, docs/research/saturation-display.md R1): the
-  // selected, hovered and pinned tracks, hostile and suspect ones, declared or flagged, a review
+  // selected and hovered tracks, hostile and suspect ones, declared or flagged, a review
   // item's, an engagement's target or blocker; the rest dim
   const reviewIds = useMemo(() => reviewTracks(decisions?.inbox.review, decisions?.inbox.blocking), [decisions?.inbox.review, decisions?.inbox.blocking])
   const engageIds = useMemo(() => engagementTracks(decisions?.intents, engageKeepOuts, engageForm?.track), [decisions?.intents, engageKeepOuts, engageForm?.track])
   const trackFocus = useMemo(
-    () => focusMap(tracks?.tracks ?? [], tracks?.lost ?? [], { selected: selectedTrack, hovered: hoverTrack, pinned: pinnedTracks, review: reviewIds, engagement: engageIds }),
-    [tracks, selectedTrack, hoverTrack, pinnedTracks, reviewIds, engageIds],
+    () => focusMap(tracks?.tracks ?? [], tracks?.lost ?? [], { selected: selectedTrack, hovered: hoverTrack, review: reviewIds, engagement: engageIds }),
+    [tracks, selectedTrack, hoverTrack, reviewIds, engageIds],
   )
   // the dim rule holds once the picture is crowded; a few contacts are each drawn in full, as before
   const crowded = (tracks?.tracks.length ?? 0) + (tracks?.lost?.length ?? 0) > CROWD
-  const trackAll = useMemo(() => ({ tracks: showAll.tracks || !crowded, areas: showAll.areas || !crowded }), [showAll.tracks, showAll.areas, crowded])
+  const trackAll = useMemo(() => ({ tracks: !crowded, areas: !crowded }), [crowded])
   const trackLayers = useCallback<MapLayers>(
     (screen, plan) =>
       buildTrackLayers({
@@ -603,10 +572,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       if (impactNowMs - impact.t < 4000) (impact.munition ? focusFlight : focusImpact)(impact)
     }
   }, [impacts, impactNowMs, focusImpact, focusFlight])
-  // the status line: a munition on its way (the next to land) before any strike's status, which
-  // has the line once nothing is in flight
-  const flyingImpact = impacts.filter((x) => x.munition && impactNowMs >= x.munition.launch_t && impactNowMs < x.t).sort((a, b) => a.t - b.t)[0]
-  const visibleImpact = flyingImpact ? undefined : impacts.filter((impact) => impactNowMs >= impact.t && impactNowMs - impact.t < IMPACT_STATUS_MS).sort((a, b) => b.t - a.t)[0]
+  // the assessment's banner, only when the strike asks a decision (impact.ts assessmentAsk), until
+  // dismissed
+  const [assessDismissed, setAssessDismissed] = useState<ReadonlySet<number>>(() => new Set())
+  const assessAsk = assessmentAsk(impacts, impactNowMs, assessDismissed)
   // Hostile acts our sensors observed (rules 9), as fire events on the map (hostileAct.ts): from
   // where our sensors placed each act's author to its victim, where this console had the victim
   // when it first saw the act. Recomputed when the inbox's acts change; the vehicles and tracks
@@ -651,15 +620,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       }
       return null
     }
-    return actDrawings(inboxActs ?? [], actsSeen.current, now(), victimAt, vehicleNamer(vs), weaponActs)
+    return actDrawings(inboxActs ?? [], actsSeen.current, now(), victimAt, weaponActs)
   }, [inboxActs, now, weaponActs])
   // Dismiss: the acts drawn so far leave the map (and the banner) before their minute is up
   const [actsDismissedAt, setActsDismissedAt] = useState<number | null>(null)
-  // a weapon's banner (INCOMING, then the strike) before an act's: it says more
-  const weaponBan = weaponBanner(weapons, impactNowMs, nameOf, weaponVictim)
-  const actBanner = weaponBan ? null : bannerAct(actDraws, impactNowMs, actsDismissedAt)
+  // the act the person viewed (its banner's View): its weapon's fixes, the evidence, on the map
+  const [viewedAct, setViewedAct] = useState<string | null>(null)
   /** frame an act: its author's fix with room for its error, and its victim */
   const focusAct = useCallback((d: ActDrawing) => {
+    setViewedAct(d.act)
     const ring = circle(d.author, Math.max(d.sigma_m * 3, 300)).filter((_, k) => k % 8 === 0)
     const points = d.victim ? [d.author, d.victim.at, ...ring] : [d.author, ...ring]
     const aloft: [number, number, number][] | undefined = d.victim && d.victim.alt > 50 ? [[d.victim.at[0], d.victim.at[1], d.victim.alt]] : undefined
@@ -667,8 +636,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   }, [dock])
   // platforms that are their own munition (catalog expended_by_effect) on their way: tagged on
   // the map, so the operator sees what is on the way (bd murmur-64z)
-  // its tag says what it is doing to which track: "ONE-WAY > T-12" on its way, "STRIKING > T-12"
-  // from the engine's release (the engagement's `effect`) to its strike
+  // its tag says what it is doing to which track, in words: "striking T-0012"
   const oneWayKey = JSON.stringify(
     (allIntents ?? [])
       .filter((i) => isEngage(i) && i.state === 'dispatched')
@@ -677,7 +645,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         const platform = allVehicles.find((v) => v.uid === uid)?.identity?.platform
         if (platform == null || !platformCatalog?.get(platform)?.expended_by_effect) return []
         const track = i.engagement?.snapshot?.track_id ?? i.engage?.track
-        return [[uid, `${i.engagement?.effect ? 'STRIKING' : 'ONE-WAY'}${track ? ` > ${track}` : ''}`]]
+        return [[uid, `striking${track ? ` ${track}` : ''}`]]
       })
       .sort((a, b) => a[0] - b[0]),
   )
@@ -708,13 +676,14 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       const phase: EngageDrawing['phase'] =
         i.state === 'pending_approval' ? 'pending' : i.state === 'effected' ? 'effected' : RUNNING.includes(i.state) ? 'running' : 'ended'
       const warn = (i.engagement?.watch && !i.engagement.watch.holds) || (i.engage?.live?.changed ?? []).some((c) => c.worse)
-      out.push({ key: `i${i.id}`, label: `ENGAGE i${i.id}`, preview: p, phase, selected: inboxSel?.kind === 'intent' && inboxSel.id === i.id, warn,
+      const pv = allVehicles.find((v) => v.uid === Number(i.uids[0]))
+      out.push({ key: `i${i.id}`, platform: pv ? callsign(pv) : undefined, track: i.engagement?.snapshot?.track_id ?? i.engage?.track, state: i.state, preview: p, phase, selected: inboxSel?.kind === 'intent' && inboxSel.id === i.id, warn,
         effect: i.engagement?.effect, impactT: i.engagement?.munition?.impact_t, assessment: i.engagement?.assessment?.result })
     }
-    if (engageDraft) out.push({ key: 'draft', label: 'NOMINATION', preview: engageDraft, phase: 'draft', selected: true })
+    if (engageDraft) out.push({ key: 'draft', track: engageForm?.track, preview: engageDraft, phase: 'draft', selected: true })
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allIntents, engageDraft, inboxSel, engageTick])
+  }, [allIntents, allVehicles, engageDraft, engageForm?.track, inboxSel, engageTick])
   // frame the form's preview when it first appears or the platform changes
   const draftKey = engageDraft ? `${engageDraft.start[0].toFixed(3)},${engageDraft.start[1].toFixed(3)}` : null
   useEffect(() => {
@@ -732,7 +701,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // in focus for the estimates: selected, or details open (both hypotheses, filled)
   const vehicleFocus = useMemo(() => (detailsUid == null ? selected : new Set([...selected, detailsUid])), [selected, detailsUid])
   // a few silent vehicles: both estimates of each, filled, as before
-  const estimateAll = showAll.estimates || silent.length <= CROWD_SILENT
+  const estimateAll = silent.length <= CROWD_SILENT
   const estimateLayers = useCallback<MapLayers>(
     (_screen, plan) => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus, showAll: estimateAll, plan }) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -749,8 +718,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     return buildKeepOutLayers(engageKeepOuts, v ? callsign(v) : `vehicle ${engageKeepOuts.platform ?? ''}`)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engageKeepOuts])
-  // rules 30: where each silent vehicle can be as the keep-out counts it, under the estimates
-  const nodeRegionLayers = useMemo(() => (nodeRows.size ? buildNodeRegionLayers(nodeRows.values(), vehicleFocus) : []), [nodeRows, vehicleFocus])
+  // rules 30: where each silent vehicle can be as the keep-out counts it, under the estimates: in
+  // focus, or every one while the nomination form (whose keep-outs count them) is open
+  const nodeRegionLayers = useMemo(() => (nodeRows.size ? buildNodeRegionLayers(nodeRows.values(), vehicleFocus, engageForm != null) : []), [nodeRows, vehicleFocus, engageForm])
   const mapLayers = useCallback<MapLayers>(
     (screen, plan) => [
       ...nodeRegionLayers,
@@ -781,67 +751,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [silent, estimateTick, detailsUid, vehicleFocus, estimateAll, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick, engageDrawings],
   )
-  const onLabelStats = useCallback((s: LabelStats) => setLabelStats(s), [])
-  const n = (x: number) => x.toLocaleString('en-US')
-  // What is hidden, counted (R3): each row only while it hides something or Show all is on
-  const hiddenRows = useMemo<HiddenRow[]>(() => {
-    const rows: HiddenRow[] = []
-    const ts = tracks?.tracks ?? []
-    const lostList = tracks?.lost ?? []
-    if (crowded && ts.length) {
-      const inFocus = ts.filter((t) => trackFocus.has(t.id)).length
-      rows.push({
-        id: 'tracks', what: 'Tracks',
-        count: showAll.tracks ? `all ${n(ts.length)} in full` : `${n(ts.length - inFocus)} of ${n(ts.length)} dimmed`,
-        how: 'A track out of focus has its ring outlined, not filled, a short stem instead of its column, and an unknown one a dimmer symbol. In focus: selected, hovered, pinned, hostile or suspect, declared, flagged, a review item\'s, an engagement\'s target or blocker.',
-        hidden: ts.length - inFocus > 0, all: showAll.tracks, onToggle: () => toggleAll('tracks'),
-      })
-    }
-    if (crowded && lostList.length) {
-      const inFocus = lostList.filter((l) => trackFocus.has(l.id)).length
-      rows.push({
-        id: 'areas', what: 'Lost areas',
-        count: showAll.areas ? `all ${n(lostList.length)} areas in full` : `${n(lostList.length - inFocus)} of ${n(lostList.length)} outlined`,
-        how: "A lost contact out of focus has its possible area (where every engagement keep-out still counts it) drawn as a faint outline, not filled. The keep-out checks count every one either way.",
-        hidden: lostList.length - inFocus > 0, all: showAll.areas, onToggle: () => toggleAll('areas'),
-      })
-    }
-    if (silent.length > CROWD_SILENT) {
-      const hid = hiddenHypotheses(silent, now(), vehicleFocus, showAll.estimates)
-      rows.push({
-        id: 'estimates', what: 'Estimates',
-        count: showAll.estimates ? `all ${silent.length} in full` : `${silent.length} outlined${hid ? `, ${hid} second hidden` : ''}`,
-        how: 'A silent vehicle out of focus (not selected, details closed) shows its leading estimate only, its region outlined. Select it for both, filled.',
-        hidden: true, all: showAll.estimates, onToggle: () => toggleAll('estimates'),
-      })
-    }
-    const foldedAny = fleetFolds.vehicles + trackFolds.tracks + orderFolds.lines > 0
-    if (foldedAny || showAll.lists) {
-      const parts = [
-        fleetFolds.vehicles ? `${n(fleetFolds.vehicles)} vehicles` : '',
-        trackFolds.tracks ? `${n(trackFolds.tracks)} tracks` : '',
-        orderFolds.lines ? `${n(orderFolds.lines)} order lines` : '',
-      ].filter(Boolean)
-      rows.push({
-        id: 'lists', what: 'Lists',
-        count: showAll.lists ? 'every fold open' : `${parts.join(', ')} folded`,
-        how: 'The fleet list shows one row per group with its members counted by state and only its exceptions (lost link, damaged, an alert of its own, selected, details open); the track list what is in focus first and the rest folded by affiliation and kind; the command log one card per order with its exceptions listed. Each fold opens with a click.',
-        hidden: foldedAny, all: showAll.lists, onToggle: () => toggleAll('lists'),
-      })
-    }
-    if (labelStats && (labelStats.none > 0 || labelStats.all)) {
-      const drawn = labelStats.full + labelStats.short
-      rows.push({
-        id: 'labels', what: 'Labels',
-        count: labelStats.all ? `all ${n(labelStats.inView)} in full` : `${n(drawn)} of ${n(labelStats.inView)} labelled`,
-        how: 'Labels never overlap: focus first in full, then group names, then ours with a lost link, then the rest by their short label where it fits. Hover a symbol for its full block.',
-        hidden: labelStats.none > 0, all: labelStats.all, onToggle: () => toggleAll('labels'),
-      })
-    }
-    return rows
-    // now: the hidden estimates are counted at this tick
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks, crowded, trackFocus, showAll, silent, estimateTick, vehicleFocus, labelStats, toggleAll, fleetFolds, trackFolds, orderFolds])
   // the fleet list's exceptions: a damaged vehicle (its inbox alert), one with an alert of its own
   const listAlerts = decisions?.inbox.alerts
   // what each damage report took (the alert's words), kept while the reports are the same
@@ -854,7 +763,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const noRoundsKey = (loadouts.data?.vehicles ?? []).filter((x) => outOfRounds(x.weapons)).map((x) => x.uid).sort((a, b) => a - b).join()
   const noRounds = useMemo(() => new Set(noRoundsKey ? noRoundsKey.split(',').map(Number) : []), [noRoundsKey])
   // each of ours' one exception slot, on its fleet row and its map symbol (vehicleException.ts)
-  const exceptions = useMemo<ExceptionContext>(() => ({ nodes: nodeLoss, damage, noRounds }), [nodeLoss, damage, noRounds])
+  const exceptions = useMemo<ExceptionContext>(() => ({ nodes: nodeLoss, damage, noRounds, platforms: platformCatalog }), [nodeLoss, damage, noRounds, platformCatalog])
   // the group strip (bd murmur-4nik): each group's state, its order's or what most of its members do
   const groupStates = useMemo(() => {
     const out = new Map<string, GroupState>()
@@ -905,6 +814,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
     [now],
   )
+  // the tutorial's card keeps its step's scene in view: where each of ours is, by callsign, and a fit
+  const placeOfCallsign = useCallback((c: string) => vehicles.find((v) => callsign(v) === c)?.position ?? null, [vehicles])
+  const fitPoints = useCallback((points: LngLat[]) => setFit((f) => ({ points, n: (f?.n ?? 0) + 1, padRight: fitPad(dock) })), [dock])
   const { mem: alertMem, hidden: hiddenAlerts } = useHiddenAlerts(decisions)
   const pending = decisions?.inbox.pending
   const pendingIds = useMemo(() => new Set((pending ?? []).map((i) => i.id)), [pending])
@@ -937,7 +849,30 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     () => shownTaskings(state?.taskings ?? [], marks.ofUid, new Set([swarmSel, hoverGroup, flashGroup].filter((x): x is string => x != null)), selected, allOrders),
     [state?.taskings, marks, swarmSel, hoverGroup, flashGroup, selected, allOrders],
   )
-  const lost = vehicles.filter(isStale).length
+  // the top bar's glance (topbar.ts): ours, the contacts, ours in trouble by the rows' own slot
+  const glance = useMemo(() => glanceOf(vehicles, tracks?.tracks ?? NO_TRACKS), [vehicles, tracks?.tracks])
+  const matters = mattersText(glance)
+  const trouble = useMemo(() => troubleOf(vehicles, exceptions), [vehicles, exceptions])
+  // a click on the trouble count shows the next one in trouble in the Fleet list
+  const troubleShown = useRef<number | null>(null)
+  const showTrouble = useCallback(() => {
+    const uid = nextTrouble(trouble.uids, troubleShown.current)
+    troubleShown.current = uid
+    if (uid != null) setRevealVeh({ ids: [String(uid)] })
+  }, [trouble])
+  const queuedN = decisions?.inbox.queued?.length ?? 0
+  const fleetSwarms = hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0
+  // the reference views behind the top bar's one Views button: Space (its timeline with the globe
+  // of satellites by class) only where the bridge has a space segment
+  const spaceSegment = !!decisions?.space?.loaded
+  const views: ViewEntry[] = [
+    { key: 'weather', label: 'Weather', title: 'The weather here and at the selected vehicle, and a colour field on the map', on: showWeather, onToggle: () => setShowWeather((v) => !v) },
+    ...(spaceSegment || showSpace
+      ? [{ key: 'space', label: 'Space', title: 'Space timeline (imaging access, SATCOM, GNSS) and the globe of satellites by class', on: showSpace, onToggle: () => (showSpace ? closeSpace() : setShowSpace(true)) }]
+      : []),
+    { key: 'links', label: 'Links', title: 'Predicted link coverage on the map: up, degraded and down for a link class at an altitude', on: showCoverage, onToggle: () => setShowCoverage((v) => !v) },
+    { key: 'platforms', label: 'Platforms', title: 'The platform catalog: each type, its speeds, endurance, sensors and weapons', on: showPlatforms, onToggle: () => setShowPlatforms((v) => !v) },
+  ]
 
   /** an inbox item was clicked: highlight its vehicles and frame them with the task's preview */
   const focusInbox = useCallback(
@@ -953,15 +888,17 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   )
   // what a person alone is holding up (blocking.ts): the strip, and the links that open its card
   const waiting = useMemo(() => waitingItems(decisions?.inbox.blocking), [decisions?.inbox.blocking])
-  // every rule declaration awaiting confirmation and open flag that holds nothing up: the calm
-  // pointer under the top bar (R4), which only opens the card
-  // open flags a person has since settled by a later declaration on their tracks (needsYou.ts):
-  // out of the strip and below the Inbox's live items, still open there for the person to resolve
-  const settled = useMemo(() => settledFlags(decisions?.inbox.review?.flags, tracks?.tracks, decisions?.inbox.blocking), [decisions?.inbox.review, decisions?.inbox.blocking, tracks])
-  const pendingReview = useMemo(
-    () => pendingItems(decisions?.inbox.review, decisions?.inbox.blocking).filter((p) => !settled.has(p.id)),
-    [decisions?.inbox.review, decisions?.inbox.blocking, settled],
+  // whom a waiting item's act was against, by name, for the strip's words
+  const actVictim = useCallback(
+    (b: { act?: string }) => {
+      const a = (inboxActs ?? []).find((x) => x.act.act === b.act)?.act.against
+      return a?.kind === 'vehicle' ? nameOf(a.uid) : null
+    },
+    [inboxActs, nameOf],
   )
+  // open flags a person has since settled by a later declaration on their tracks (needsYou.ts):
+  // below the Inbox's live items, still open there for the person to resolve
+  const settled = useMemo(() => settledFlags(decisions?.inbox.review?.flags, tracks?.tracks, decisions?.inbox.blocking), [decisions?.inbox.review, decisions?.inbox.blocking, tracks])
   const [reviewFocus, setReviewFocus] = useState<{ id: string; n: number } | null>(null)
   /** the strip's and the Situation panel's link: the item's card in the Inbox, in view (the person
    *  decides there; nothing here decides) */
@@ -1058,55 +995,73 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // a credentials run: nothing but the sign-in until an operator has signed in
   if (auth.auth === 'credentials' && !auth.signed_in) return <LoginScreen />
 
-  // the banners over the map's top: our munition in flight or its strike, an opponent weapon, a
-  // hostile act. The drawer the dock shows (430 px over the map's right edge, the Sitrep 760) takes
-  // them at its head instead, under its own header: centred on the map they sat over that
+  // the banners over the map's top, each an alarm that asks a response (R10, rule 4): an attacker's
+  // run against ours (attackEvents.ts: its act reports, its weapons' strikes and the victims'
+  // damage joined into one), a strike whose target may still be there (impact.ts), a group that
+  // stopped and waits. The drawer the dock shows (430 px over the map's right edge, the Sitrep 760)
+  // takes them at its head instead, under its own header: centred on the map they sat over that
   // header and the Review's, its urgent item included (bd murmur-76gv).
   const drawer = dock
+  const attacks = attackEvents(inboxActs ?? [], weapons, damage, (id) => tracks?.tracks.find((t) => t.id === id)?.declared ?? null, nameOf, impactNowMs, actsDismissedAt, (id) => {
+    const e = trackEngagement(decisions?.intents, id, nameOf)
+    return e?.inPlay ? e.line.replace(/^Engagement/, 'engagement') : null
+  })
+  const attack = attacks[0]
+  /** frame an attack: its newest act's author and victim, else its weapon's launch and victim */
+  const viewAttack = (e: AttackEvent) => {
+    const d = e.act ? actDraws.find((x) => x.act === e.act) : undefined
+    if (d) return focusAct(d)
+    const w = e.weapon ? weapons.find((x) => x.id === e.weapon) : undefined
+    if (!w) return
+    const at = weaponVictim(w)
+    const from = w.launch?.point ?? w.fixes[0]?.point ?? at
+    if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
+  }
+  /** where the attack's response is decided: its review item's card, else the attacker's track card */
+  const respondAttack = (e: AttackEvent) => {
+    if (e.review) return openWaiting(e.review)
+    if (!e.track) return
+    revealTrackId(e.track)
+    const t = tracks?.tracks.find((x) => x.id === e.track)
+    if (t) focusTrack(t)
+  }
   const groupBan = groupAlarms[0]
-  const bannersAbove = [flyingImpact?.munition || visibleImpact, weaponBan, actBanner].filter(Boolean).length
-  const banners = flyingImpact?.munition || visibleImpact || weaponBan || actBanner || groupBan ? (
+  const bannersAbove = [attack, assessAsk].filter(Boolean).length
+  const banners = attack || assessAsk || groupBan ? (
     <>
-      {flyingImpact?.munition && (
-        <div className="impact-status" role="status" data-tutorial="impact-status">
-          <span><strong>MUNITION IN FLIGHT</strong>
-            {' · '}{flyingImpact.munition.name} from {flyingImpact.platform ?? `ENGAGE i${flyingImpact.intentId}`}{flyingImpact.track ? ` on ${flyingImpact.track}` : ''}{' · '}
-            impact in {secondsToImpact(flyingImpact.munition, impactNowMs)} s</span>
-          <button onClick={() => focusFlight(flyingImpact)}>View flight</button>
+      {attack && (
+        <div className="act-status" role="status" data-attack={attack.key} data-tutorial="weapon-status" key={attack.key}>
+          <span>
+            <strong>{attack.line}</strong> {attack.response}
+            {attacks.length > 1 ? ` (${attacks.length - 1} more attack${attacks.length > 2 ? 's' : ''})` : ''}
+          </span>
+          <button onClick={() => viewAttack(attack)}>View</button>
+          {(attack.review || attack.track) && (
+            <button onClick={() => respondAttack(attack)} title={attack.review ? 'Open its card in the Inbox: you decide there' : "Open the attacker's track card"}>
+              {attack.review ? 'Review' : 'Track card'}
+            </button>
+          )}
+          <button className="act-dismiss" onClick={() => setActsDismissedAt(impactNowMs)} title="Take the attacks so far off the map and the banner (the Inbox's Review keeps them; a new shot raises it again)">
+            Dismiss
+          </button>
         </div>
       )}
-      {visibleImpact && (
-        <div className="impact-status" role="status" data-tutorial="impact-status">
-          <span><strong>{visibleImpact.assessment ? `ASSESSMENT: ${visibleImpact.assessment.result.toUpperCase()}` : 'STRIKE · IMPACT'}</strong>
-            {' · '}{visibleImpact.platform ?? `ENGAGE i${visibleImpact.intentId}`}{visibleImpact.track ? ` on ${visibleImpact.track}` : ''}{' · '}
-            {visibleImpact.assessment?.result === 'ceased' ? 'No target detected where expected'
-              : visibleImpact.assessment?.result === 'persists' ? 'Target still detected'
-              : visibleImpact.assessment?.result === 'unknown' ? 'Outcome unknown'
-              : 'Sensor assessment pending'}</span>
-          <button onClick={() => focusImpact(visibleImpact)}>View impact</button>
-        </div>
-      )}
-      {weaponBan && (
-        <div className={`act-status weapon-status ${weaponBan.tone}${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-weapon={weaponBan.w.id} data-tutorial="weapon-status" title={ESTIMATE_NOTE}>
-          <span><strong>{weaponBan.head}</strong>{' · '}{weaponBan.text}</span>
-          <button onClick={() => {
-            const at = weaponVictim(weaponBan.w)
-            const from = weaponBan.w.launch?.point ?? weaponBan.w.fixes[0]?.point ?? at
-            if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
-          }}>View</button>
-        </div>
-      )}
-      {actBanner && (
-        <div className={`act-status${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-act={actBanner.d.act}>
-          <span><strong>{actBanner.d.weapon ? 'HOSTILE ACT OBSERVED' : 'HOSTILE ACT REPORTED'}</strong>
-            {' · '}{bannerLine(actBanner.d)}{' · '}act {actBanner.d.act}, {span(impactNowMs - actBanner.d.observedT)} ago
-            {actBanner.others ? ` · ${actBanner.others} more in the last minute` : ''}</span>
-          <button onClick={() => focusAct(actBanner.d)}>View</button>
-          <button className="act-dismiss" onClick={() => setActsDismissedAt(impactNowMs)} title="Take the acts drawn so far off the map (the Inbox's Review keeps them)">Dismiss</button>
+      {assessAsk && (
+        <div className={`impact-status${attack ? ' below' : ''}`} role="status" data-tutorial="impact-status">
+          <span>
+            <strong>{assessAsk.text}</strong>
+          </span>
+          <button onClick={() => focusImpact(assessAsk.impact)}>View</button>
+          <button onClick={() => openEngagement(assessAsk.impact.intentId)} title="Open the engagement's card">
+            Open
+          </button>
+          <button className="impact-dismiss" onClick={() => setAssessDismissed((d) => new Set([...d, assessAsk.impact.intentId]))}>
+            Dismiss
+          </button>
         </div>
       )}
       {groupBan && (
-        <div className={`act-status group-status ${GROUP_ALARM[groupBan.seen.alarm].tone}${bannersAbove ? ` below${bannersAbove > 1 ? '2' : ''}` : ''}`} role="status" data-group={groupBan.m.id}>
+        <div className={`act-status group-status${bannersAbove ? ` below${bannersAbove > 1 ? '2' : ''}` : ''}`} role="status" data-group={groupBan.m.id}>
           <span>
             <strong>{GROUP_ALARM[groupBan.seen.alarm].head}</strong>
             {' · '}
@@ -1114,9 +1069,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               {groupBan.m.code}
             </span>{' '}
             {groupBan.m.id} {groupBan.m.doing}
-            {' · '}
-            {groupBan.seen.alarm === 'refused' ? `last re-form refused: ${groupBan.m.refused}` : groupBan.m.parts[0]?.text}
-            {' · '}seen {span(Math.max(0, (swarmFeed.doc?.t ?? 0) - groupBan.seen.since))}
+            {groupBan.m.parts[0]?.text ? ` · ${groupBan.m.parts[0].text}` : ''}: it waits for you
             {groupAlarms.length > 1 ? ` · ${groupAlarms.length - 1} more group${groupAlarms.length > 2 ? 's' : ''}` : ''}
           </span>
           <button onClick={() => showGroup(groupBan.m.id)}>View</button>
@@ -1129,7 +1082,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   ) : null
   // the head of the drawer the dock shows: the map's banners, then (in any drawer but the Inbox,
   // which holds the cards themselves) every order waiting for a person, so no drawer hides one
-  const awaitRows = dock && headsWithWaiting(dock) ? awaitingRows(pending ?? [], taskingApi.items, now(), nameOf) : []
+  const awaitRows = dock && headsWithWaiting(dock) ? awaitingRows(pending ?? [], now(), (i) => askSentence({ kind: i.kind, params: i.params as Record<string, unknown>, uids: i.uids, group: i.group }, askFleet(allVehicles))) : []
   const dockHead = banners || awaitRows.length ? (
     <>
       {banners}
@@ -1145,73 +1098,72 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   ]
   // the top bar's clock: scenario time on the bridge's clock (it re-renders twice a second)
   const clock = clockText(scenarioClock, now())
+  // in a situation (useSituation.ts), its time beside the world's: the clock once, in the top bar
+  const runTime = runClock(situation.time)
+  // a weapon situation (a situation whose fleet has an armed platform) opens in top view, once a run
+  const topView = opensInTopView(situation.s != null, allVehicles) ? (situation.s?.run.id ?? null) : null
 
   return (
-    <div className={`app${waiting.length || pendingReview.length ? ' waiting' : ''}`}>
+    <div className={`app${waiting.length ? ' waiting' : ''}`}>
       <PerfMark />
-      <header className={`topbar${onMenu ? ' has-menu' : ''}`}>
+      <header className="topbar">
         {onMenu && (
           <button className="ghost menu-btn" onClick={onMenu} title="The main menu: the scenario running, ending it, and the others to start">
             Menu
           </button>
         )}
         <span className="brand">MURMUR</span>
-        <span className="sub">multi-domain swarm C2</span>
         <span className="spacer" />
-        {(['air', 'ground', 'surface', 'subsurface'] as const).map((d) => (
-          <span className="stat" key={d} title={`${DOMAIN_LABEL[d]} vehicles`}>
-            <b>{vehicles.filter((v) => domainOf(v) === d).length}</b> <span className="stat-l">{DOMAIN_LABEL[d].toLowerCase()}</span>
-            <span className="stat-s">{STAT_SHORT[d]}</span>
+        {/* the Sitrep's bottom line (topbar.ts): ours, the one count of ours in trouble (the rows'
+            own slot), the contacts and how many matter; quiet while nothing is wrong */}
+        <span className="glance">
+          <span title={`${glance.ours} of ours in the fleet`}>
+            <b>{glance.ours}</b> vehicles
           </span>
-        ))}
-        <span className={`stat ${lost ? 'alert' : ''}`} title="vehicles with a lost link">
-          <b>{lost}</b> <span className="stat-l">lost link</span>
-          <span className="stat-s">lost</span>
+          {trouble.n > 0 && (
+            <button className={`trouble ${trouble.tone ?? ''}`} onClick={showTrouble} title={trouble.says} aria-label={trouble.says}>
+              {trouble.n} in trouble
+            </button>
+          )}
+          <span className="glance-sep" aria-hidden="true">·</span>
+          <span title={`${glance.contacts} contacts our sensors hold${matters ? `, ${matters}` : ''}`}>
+            <b>{glance.contacts}</b> contacts
+            {matters && <span className={glance.hostile ? 'bad' : 'warn'}>: {matters}</span>}
+          </span>
         </span>
-        <span className={`pill ${status}`} title={status === 'connecting' ? 'Connecting to the bridge' : `The bridge is ${status}`}>
-          {status === 'connecting' ? 'CONNECTING' : <><span className="pill-w">BRIDGE </span>{status === 'live' ? 'LIVE' : 'DOWN'}</>}
-        </span>
+        {status !== 'live' && (
+          <span className={`pill ${status}`} title={status === 'connecting' ? 'Connecting to the bridge' : 'The bridge is not answering: the console is not live'}>
+            {status === 'connecting' ? 'CONNECTING' : 'BRIDGE DOWN'}
+          </span>
+        )}
         {/* the dock's tabs (dock.ts): one drawer at a time over the map's right edge */}
         <nav className="dock-tabs" aria-label="Drawers over the map's right edge, one at a time">
-          <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} settled={settled} onClick={() => setDock((d) => toggleDock(d, 'inbox'))} />
+          <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} settled={settled} now={now} onClick={() => setDock((d) => toggleDock(d, 'inbox'))} />
           {officerVisible && <TaskingButton api={taskingApi} open={showTasking} onClick={() => setDock((d) => toggleDock(d, 'officer'))} />}
-          <QueueButton decisions={decisions} open={showQueue} onClick={() => setDock((d) => toggleDock(d, 'queue'))} />
-          <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} aria-pressed={showSitrep} onClick={() => setDock((d) => toggleDock(d, 'sitrep'))} title="The situation report: the whole picture, top-down, read-only">
-            Sitrep
-          </button>
-          {(hasSwarms || swarmFeed.status === 'ok' || groupsApi.status === 'ok') && (
-            <SwarmsButton feed={swarmFeed} mine={hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0 ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setDock((d) => toggleDock(d, 'swarms'))} />
+          {/* the Queue only while something is held for a link (or its drawer is open) */}
+          {(queuedN > 0 || showQueue) && <QueueButton decisions={decisions} now={now} open={showQueue} onClick={() => setDock((d) => toggleDock(d, 'queue'))} />}
+          {/* the Sitrep only at group scale (topbar.ts GROUP_SCALE): below it the lists are the report */}
+          {(groupScale(vehicles.length) || showSitrep) && (
+            <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} aria-pressed={showSitrep} onClick={() => setDock((d) => toggleDock(d, 'sitrep'))} title="The situation report: the whole picture, top-down, read-only">
+              Sitrep
+            </button>
+          )}
+          {/* Groups only when the fleet has swarms or the person made a group (the Fleet list makes one) */}
+          {(fleetSwarms || groupsApi.groups.length > 0 || showSwarms) && (
+            <SwarmsButton feed={swarmFeed} mine={fleetSwarms ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setDock((d) => toggleDock(d, 'swarms'))} />
           )}
         </nav>
-        <button className={`ghost platforms-btn ${showWeather ? 'on' : ''}`} onClick={() => setShowWeather(v => !v)}>Weather</button>
-        <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
-          Space
-        </button>
-        <button className={`ghost platforms-btn ${showGlobe ? 'on' : ''}`} onClick={() => setShowGlobe((v) => !v)} title="Globe inset: satellites by class">
-          Globe
-        </button>
-        <button
-          className={`ghost platforms-btn ${showCoverage ? 'on' : ''}`}
-          aria-pressed={showCoverage}
-          onClick={() => setShowCoverage((v) => !v)}
-          title="Predicted link coverage on the map: up, degraded and down for a link class at an altitude (the link emulator's geometry; its random loss and scripted events are not in it)"
-        >
-          Links
-        </button>
-        <button className="ghost platforms-btn" onClick={() => setShowPlatforms((v) => !v)}>
-          Platforms
-        </button>
+        <ViewsMenu entries={views} />
         <OperatorBadge />
-        <span className="clock" title={clock.title}>{clock.text}</span>
+        <span className="clock" title={runTime ? `${clock.title}. The situation: ${runTime}` : clock.title}>
+          {clock.text}
+          {runTime && <span className="clock-run">{runTime}</span>}
+        </span>
       </header>
-      {(waiting.length > 0 || pendingReview.length > 0) && (
-        <div className="wait-rows">
-          {waiting.length > 0 && <WaitingStrip items={waiting} now={now} onOpen={openWaiting} />}
-          <PendingStrip items={pendingReview} now={now} onOpen={openWaiting} />
-        </div>
-      )}
+      {/* the one strip: only while something alone holds up a step (R8) */}
+      <WaitingStrip items={waiting} onOpen={openWaiting} victim={actVictim} />
       <ErrorBoundary name="Fleet list" className="slot fleet">
-      <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle} reachBadges={reachBadges}
+      <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle}
         onDeselect={deselect}
         detailsUid={detailsUid}
         onDetails={(uid) => {
@@ -1227,14 +1179,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         reveal={revealVeh}
         swarms={swarmFeed.doc?.swarms}
         taskings={state?.taskings}
+        intents={allIntents}
         damaged={damagedUids}
         alerted={alertedUids}
         exceptions={exceptions}
-        expandAll={showAll.lists}
-        onFolded={setFleetFolds}
       />
       </ErrorBoundary>
-      <main className={`mapwrap ${showSpace ? 'space-open' : ''}${dock ? ` docked${dock === 'sitrep' ? ' dock-wide' : ''}` : ''}`}>
+      <main className={`mapwrap ${showSpace ? 'space-open' : ''}${dock ? ' docked' : ''}`}>
         <ErrorBoundary name="Map" className="floating">
         <MapView
           vehicles={allVehicles}
@@ -1250,6 +1201,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           weapons={weapons}
           weaponVictim={weaponVictim}
           nameOf={nameOf}
+          viewedAct={viewedAct}
           taskings={mapTaskings}
           selected={selected}
           draft={mapDraft}
@@ -1272,8 +1224,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           onHover={onMapHover}
           labels={mapLabels}
           tooltip={mapTooltip}
-          allLabels={showAll.labels}
-          onLabelStats={onLabelStats}
+          topView={topView}
           groups={groupsOnMap}
         />
         </ErrorBoundary>
@@ -1287,36 +1238,38 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             />
           </ErrorBoundary>
         )}
-        <WeatherLegend mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }}
+        <WeatherLegend mode={weatherMode}
           effects={weatherEffects} onEffects={fx => { setWeatherEffects(fx); saveEffects(fx); setShowCoverage(false) }}
-          grid={weatherField.grid} error={showCoverage ? 'Links layer shown; turn on a weather effect to show the weather' : weatherField.error} onDetails={() => setShowWeather(true)}
-          reach={{ mode: reachMode, onMode: setReachMode, domain: reachDomain, onDomain: setReachDomain, answer: reach.data, error: reach.error, selected: selected.size }} />
+          grid={weatherField.grid} error={showCoverage ? 'Hidden while the Links layer is on' : weatherField.error}
+          reach={{ mode: reachMode, onMode: setReachMode, answer: reach.data, error: reach.error, selected: selected.size }} />
         {showWeather && <ErrorBoundary name="Weather" className="floating">
-          <WeatherPanel center={mapView?.center ?? [-122.4783, 37.8199]} vehicle={selected.size === 1 ? vehicles.find(v => selected.has(v.uid)) ?? null : null} onClose={() => setShowWeather(false)} />
+          <WeatherPanel optical={spaceSegment} center={mapView?.center ?? [-122.4783, 37.8199]} vehicle={selected.size === 1 ? vehicles.find(v => selected.has(v.uid)) ?? null : null} onClose={() => setShowWeather(false)}
+            mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }} grid={weatherField.grid} />
         </ErrorBoundary>}
         {/* a situation runner's status (make situation): shown only while one has posted it */}
-        <ErrorBoundary name="Situation" className="floating">
-          <SituationPanel decisions={decisions} now={now} onWaiting={openWaiting} onAi={setSituationAi} nameOf={nameOf} />
-        </ErrorBoundary>
+        {situation.s && situation.time && (
+          <ErrorBoundary name="Situation" className="floating">
+            <SituationPanel s={situation.s} time={situation.time} decisions={decisions} nameOf={nameOf} />
+          </ErrorBoundary>
+        )}
         {/* the tutorial's coach card (sim/situations/tutorial.toml): only while the situation running is the tutorial */}
         <ErrorBoundary name="Tutorial" className="floating">
-          <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} nameOf={nameOf} />
+          <Tutorial situation={situation.s ?? null} decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} placeOf={placeOfCallsign} onFit={fitPoints} />
         </ErrorBoundary>
         {!drawer && banners}
-        <HiddenLegend rows={hiddenRows} drawer={drawer != null} />
         {groupsOnMap && (
           <ErrorBoundary name="Group strip" className="floating">
             <GroupStrip marks={marks.list} states={groupStates} selected={swarmSel} hovered={hoverGroup ?? flashGroup} onHover={setHoverGroup} onShow={showGroup} drawer={drawer != null} />
           </ErrorBoundary>
         )}
-        {showGlobe && (
+        {showSpace && (
           <ErrorBoundary name="Globe" className="floating">
           <GlobeInset
             center={mapView?.center ?? null}
             area={catalog.data?.area ?? null}
             links={linksNow.data?.links ?? []}
             norad={spaceSel.norad}
-            onClose={() => setShowGlobe(false)}
+            onClose={closeSpace}
           />
           </ErrorBoundary>
         )}
@@ -1334,11 +1287,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             space={spaceRuns}
             bridgeNow={now}
             onIntent={openIntent}
-            onClose={() => {
-              setShowSpace(false)
-              setDrawing(null)
-              setSpaceSel({ scene: null, norad: null })
-            }}
+            onClose={closeSpace}
           />
           </ErrorBoundary>
         )}
@@ -1364,6 +1313,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               const link = turnOf(i, taskingApi.items)
               return link ? <TurnCause link={link} onShow={() => setDock('officer')} /> : null
             }}
+            taskings={state?.taskings}
+            tracks={tracks?.tracks}
             onTrack={(id) => {
               setDock((d) => closeDock(d, 'inbox'))
               revealTrackId(id)
@@ -1419,10 +1370,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               swarms={swarmFeed.doc?.swarms ?? NO_SWARMS}
               marks={marks}
               groups={groupsApi.groups}
-              tracks={tracks?.tracks ?? NO_TRACKS}
-              decisions={decisions}
               damaged={damagedUids}
-              now={now}
               onVehicle={(uid) => {
                 // its details, as a click on its fleet row opens them (the map flies there); they
                 // open over the map's left edge, under this wide drawer, so the report gives way
@@ -1431,10 +1379,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
                 setFollowing(true)
                 setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
               }}
-              // the card is in the Inbox, which takes the dock's place from this report
-              onWaiting={openWaiting}
-              onIntent={openIntent}
-              onTrack={revealTrackId}
               onSelect={(uids) => {
                 setSelected(new Set(uids))
                 revealVehicles(uids)
@@ -1486,6 +1430,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           <VehicleDetailsWhenFull
             v={byUidDetails(vehicles, detailsUid)!}
             taskings={taskings}
+            intents={allIntents}
+            reach={reach.data}
+            exceptions={exceptions}
             now={now}
             selected={selected.has(detailsUid)}
             onToggleSelect={() => toggleOutside(detailsUid)}
@@ -1518,7 +1465,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           </ErrorBoundary>
         )}
         {status !== 'live' && (
-          <div className="banner">Bridge not reachable at /ws. Start it with <code>make bridge</code>. Retrying…</div>
+          <div className="banner" role="status">Lost contact with the bridge: reconnecting</div>
         )}
         {PERF_ON && <PerfOverlay />}
       </main>
@@ -1539,17 +1486,14 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             intents={allIntents}
             onOpenEngagement={openEngagement}
             blocking={decisions?.inbox.blocking}
-            pinned={pinnedTracks}
-            onPin={togglePin}
+            settled={settled}
             focus={trackFocus}
             crowded={crowded}
-            expandAll={showAll.lists}
-            onFolded={setTrackFolds}
           />
           </ErrorBoundary>
         </div>
         <ErrorBoundary name="Task panel" className="slot tasking">
-        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} groupLabel={groupLabel} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} expandAll={showAll.lists} onFolded={setOrderFolds} />
+        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} groupLabel={groupLabel} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} />
         </ErrorBoundary>
         {/* the nomination form (Phase E) takes the rail while open: the map keeps its preview and the inbox stays clear */}
         {engageForm && (

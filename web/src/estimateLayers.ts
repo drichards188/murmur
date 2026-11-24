@@ -8,23 +8,25 @@
 //   estimate-bands     a patrol route the vehicle could be anywhere on (a wide path)
 //   estimate-leaders   last known position to the estimate
 //   estimate-symbols   the 2525 frame again, faded, at the estimate
-//   estimate-labels    "EST on its orbit · silent 47 s"
+//   estimate-labels    "probably on its orbit; silent 47 s"
 //
 // and, once the platform's lost-link timer has fired, the same in violet for the failsafe
-// branch ("RTL if it lost us too · 12 s"): a second hypothesis, not a second vehicle.
+// branch ("probably returning (lost-link RTL); silent 47 s"): a second hypothesis, not a second
+// vehicle; the task model then reads "if it kept its task: on its orbit".
 //
 // Dim, don't paint (docs/research/saturation-display.md R1): a jamming silences hundreds at
 // once, and two filled regions, two symbols and two boxed labels each flood the map. Out of focus
 // (not selected, details not open) a silent vehicle shows its leading hypothesis only, its region
-// outlined, not filled; in focus, both, filled, as before. `showAll` (the map legend's Show all)
-// draws every one in full.
+// outlined, not filled; in focus, both, filled, as before. `showAll` (a few silent at once:
+// App.tsx) draws every one in full.
 //
-// Their labels go through the one label budget (declutter.ts, R2): "EST SKY 12" short, the full
-// line ("EST on its orbit · silent 47 s") in focus, where it fits, or on hover.
+// Their labels go through the one label budget (declutter.ts, R2): its callsign short, the full
+// line in words (mapWords.ts estimateWords) in focus, where it fits, or on hover.
 import { IconLayer, LineLayer, PathLayer, PolygonLayer, TextLayer } from '@deck.gl/layers'
 import type { MapScreen } from './aloft'
 import { ALL_FULL, centred, type LabelCandidate, type LabelPlan } from './declutter'
-import { bandPath, BASIS_LABEL, estimateAt, FAILSAFE_LABEL, failsafeAt, regionRings, type Evaluated } from './estimate'
+import { bandPath, estimateAt, failsafeAt, regionRings, type Evaluated } from './estimate'
+import { estimateWords } from './mapWords'
 import { drawnHeight } from './map3d'
 import { frameIcon } from './symbols'
 import type { LngLat, Vehicle } from './types'
@@ -39,7 +41,7 @@ export interface EstimateLayerInput {
   focus: number | null
   /** the vehicles in focus (selected, details open): both hypotheses, filled */
   inFocus?: ReadonlySet<number>
-  /** the map legend's Show all: every silent vehicle as if in focus */
+  /** a few silent at once: every silent vehicle as if in focus */
   showAll?: boolean
   /** the label budget's plan (declutter.ts) */
   plan?: LabelPlan
@@ -71,24 +73,11 @@ interface Drawn {
   band: LngLat[] | null
   label: string
   focus: boolean
-  /** drawn in full: in focus, or Show all */
+  /** drawn in full: in focus, or a few silent at once */
   full: boolean
 }
 
-function fmtS(s: number) {
-  const n = Math.max(0, Math.floor(s))
-  return n < 60 ? `${n} s` : `${Math.floor(n / 60)} m ${String(n % 60).padStart(2, '0')} s`
-}
-
 const NO_UIDS: ReadonlySet<number> = new Set()
-
-/** How many second hypotheses a build leaves out (out of focus): for the map legend. */
-export function hiddenHypotheses(vehicles: Vehicle[], nowMs: number, inFocus: ReadonlySet<number> = NO_UIDS, showAll = false): number {
-  if (showAll) return 0
-  let n = 0
-  for (const v of vehicles) if (v.estimate?.failsafe && v.position && !inFocus.has(v.uid) && failsafeAt(v.estimate, nowMs)) n++
-  return n
-}
 
 /** A hypothesis's label key for the budget: `e:<uid>:t` the task model, `e:<uid>:b` the branch. */
 const keyOf = (d: Pick<Drawn, 'v' | 'branch'>) => `e:${d.v.uid}:${d.branch ? 'b' : 't'}`
@@ -111,16 +100,16 @@ export function estimateLabelCandidates(input: EstimateLayerInput, screen: MapSc
   })
 }
 
-/** "EST SKY 12", "EST RTL SKY 12": the short label */
+/** its callsign: the short label */
 function shortLabel(d: Drawn) {
-  return d.branch && d.v.estimate?.failsafe ? `EST ${FAILSAFE_LABEL[d.v.estimate.failsafe.action]} ${callsign(d.v)}` : `EST ${callsign(d.v)}`
+  return callsign(d.v)
 }
 
 /** The full block of an estimate under the pointer (MapView's tooltip). */
 export function estimateTooltip(layerId: string, object: unknown): { key: string; text: string } | null {
   if (layerId !== 'estimate-symbols') return null
   const d = object as Drawn
-  return { key: keyOf(d), text: `${callsign(d.v)} · ${d.label}` }
+  return { key: keyOf(d), text: `${callsign(d.v)}: ${d.label}` }
 }
 
 /** The hypotheses drawn: in focus both, else the leading one. */
@@ -146,7 +135,7 @@ function hypotheses({ vehicles, nowMs, focus, inFocus = NO_UIDS, showAll = false
       from: v.position,
       rings: regionRings(at.region),
       band: bandPath(at.region),
-      label: fired ? `EST ${BASIS_LABEL[e.basis]} if it kept its task · silent ${fmtS(silent)}` : `EST ${BASIS_LABEL[e.basis]} · silent ${fmtS(silent)}`,
+      label: estimateWords({ basis: e.basis, second: fired }, silent),
       focus: v.uid === focus,
       full,
     })
@@ -161,7 +150,7 @@ function hypotheses({ vehicles, nowMs, focus, inFocus = NO_UIDS, showAll = false
         from,
         rings: regionRings(fs.region),
         band: bandPath(fs.region),
-        label: `EST ${FAILSAFE_LABEL[e.failsafe.action]} on lost link · ${fmtS(nowMs / 1000 - e.failsafe.fires_t)} · silent ${fmtS(silent)}`,
+        label: estimateWords({ failsafe: e.failsafe.action }, silent),
         focus: v.uid === focus,
         full,
       })

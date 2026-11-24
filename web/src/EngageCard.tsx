@@ -5,9 +5,9 @@ import { fmtDuration, getOperator, intentAction, StepUpNeeded, stepsUp, useOpera
 import { reportView } from './operatorView'
 import { ChecksFold } from './Bluf'
 import { checkLabel, checksLine, checkTitle, declarationLine, declFactsOf, span } from './engageSteps'
-import { againstPlan, plainText, relWords, waitingWords } from './plainText'
+import { againstPlan, plainText, relWords, sensorList, waitingWords } from './plainText'
 import { focusInView } from './reveal'
-import { scriptedBadge } from './situationIds'
+import { Proposer } from './Proposer'
 import { RationaleText } from './Rationale'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
@@ -23,14 +23,12 @@ import {
   salvoLine,
   firing,
   fmtDist,
-  isEngage,
   LAPSE_LABEL,
   previewOf,
   requestPicture,
   revokeBehaving,
   revokeLost,
   revokeUnknown,
-  RUNNING,
   STATE_LABEL,
   tokenBehavingKey,
   type BehavingInfo,
@@ -95,6 +93,16 @@ function plain(text: string, vehicles: Vehicle[], nowMs: number) {
   return plainText(text, { nameOf: (uid) => nameOf(vehicles, uid), when: (ms) => relWords(ms, nowMs) })
 }
 
+/** The long explanation of an acceptance, behind a click. */
+function Why({ children }: { children: string }) {
+  return (
+    <details className="eg-why" onClick={(e) => e.stopPropagation()}>
+      <summary>What it means</summary>
+      {children}
+    </details>
+  )
+}
+
 /** Rules 6: the lost vehicles an operator accepted for this engagement, shown to every signer
  *  (and while it is under way), each with a button to withdraw it (any operator may). */
 function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardProps, 'intent' | 'vehicles' | 'now' | 'onDone'> & { signing?: boolean }) {
@@ -138,8 +146,8 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
       {accepted.map((a) => (
         <p key={a.engine_uid} className="eg-alarm" role="status">
           Accepted as lost by {a.by}: {a.uid == null ? a.engine_uid : nameOf(vehicles, a.uid)}, position unknown{' '}
-          {a.since == null ? '(it never reported one)' : `for ${span(now() - a.since)}`}. The friendly keep-out leaves it out while it stays lost since then
-          {signing ? '; your signature covers this acceptance.' : '.'}{' '}
+          {a.since == null ? '(it never reported one)' : `for ${span(now() - a.since)}`}.{signing ? ' Your signature covers this.' : ''}{' '}
+          <Why>The friendly keep-out leaves it out while it stays lost since then.</Why>{' '}
           {a.uid != null && (
             <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); void withdraw(a.uid as number) }}>
               Withdraw
@@ -152,9 +160,10 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
         return (
           <div key={`behaving-${a.track}`} className="eg-alarm eg-behaving" role="status">
             <b>Accepted as behaving now</b> by {a.by} {rel(a.t - now())}: {a.track} ({a.identity ?? 'unclassified'}, {a.affiliation}, {a.domain}),{' '}
-            {courseText(a.velocity_mps, a.velocity_sigma_mps)} on its estimate at {fmtWorldZ(a.estimate_t)}. The keep-out counts it along that course, not anywhere it
-            could turn or speed up to; the acceptance lapses on its own if it departs from that course beyond its uncertainty or goes out of view
-            {signing ? '; your signature covers this acceptance.' : '.'}{' '}
+            {courseText(a.velocity_mps, a.velocity_sigma_mps)} on its estimate at {fmtWorldZ(a.estimate_t)}.{signing ? ' Your signature covers this.' : ''}{' '}
+            <Why>
+              The keep-out counts it along that course, not anywhere it could turn or speed up to; the acceptance lapses on its own if it departs from that course beyond its uncertainty or goes out of view.
+            </Why>{' '}
             <button
               type="button"
               className="ghost mini"
@@ -172,9 +181,8 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
       })}
       {lost.map((a) => (
         <p key={`lost-${a.track}`} className="eg-alarm" role="status">
-          Accepted as a lost contact by {a.by}: {a.track}, dropped by the tracker, out of view {a.since == null ? '' : `for ${span(now() - a.since)}`}. The keep-out
-          on tracks leaves it out while it stays lost since then (a track an operator confirms as it counts as any track in its place)
-          {signing ? '; your signature covers this acceptance.' : '.'}{' '}
+          Accepted as a lost contact by {a.by}: {a.track}, dropped by the tracker, out of view {a.since == null ? '' : `for ${span(now() - a.since)}`}.{signing ? ' Your signature covers this.' : ''}{' '}
+          <Why>The keep-out on tracks leaves it out while it stays lost since then (a track an operator confirms as it counts as any track in its place).</Why>{' '}
           <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); void withdrawLost(a.track) }}>
             Withdraw
           </button>
@@ -398,7 +406,7 @@ function ChecksList({ checks, live, vehicles, now }: { checks: Check[]; live?: C
             <span className="ix-mark">{MARK[c.outcome]}</span>
             <span className="ix-text">
               <span className="ix-rule">
-                {checkTitle(c.rule)} <code className="eg-code">{c.rule}</code>
+                {checkTitle(c.rule)}
                 {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
                 {changed && <em className="eg-was"> was {MARK[then.outcome].toLowerCase()} at nomination</em>}
               </span>
@@ -412,25 +420,15 @@ function ChecksList({ checks, live, vehicles, now }: { checks: Check[]; live?: C
   )
 }
 
-function PreviewFacts({ p, now, platform }: { p: EngagePreview; now: () => number; platform: string }) {
+function PreviewFacts({ p }: { p: EngagePreview }) {
   return (
     <dl className="eg-facts">
-      <dt>Effect</dt>
-      <dd>
-        <b>{rel(p.effect_t - now())}</b> at {ll(p.effect_point)}, radius {Math.round(p.effect_radius_m)} m
-      </dd>
-      <dt>Platform</dt>
-      <dd>
-        {platform}: {km(p.distance_m)} at {p.cruise_mps.toFixed(0)} m/s, straight line, starts {span(p.start_t - p.t)} after the decision
-      </dd>
       <dt>Track</dt>
       <dd>
         {p.track_speed_mps < 0.3 ? 'holding' : `${p.track_speed_mps.toFixed(1)} m/s`}, 1-sigma {Math.round(p.track_sigma_m)} m now, {Math.round(p.ellipse.semi_major_m)} by {Math.round(p.ellipse.semi_minor_m)} m at the effect time
       </dd>
       <dt>Keep-out</dt>
       <dd>{Math.round(p.keep_out_m)} m around the effect point (no vehicle of ours, no protected track)</dd>
-      <dt>Window</dt>
-      <dd>closes {rel(p.window.until - now())}</dd>
     </dl>
   )
 }
@@ -441,7 +439,7 @@ function WindowCountdown({ until, start, now }: { until: number; start: number; 
   const frac = Math.min(1, Math.max(0, left / total))
   return (
     <span className={`ix-count ${left <= 0 ? 'out' : left < 60 ? 'urgent' : ''}`} title="time left in the engagement window">
-      <b>{left <= 0 ? 'window closed' : `window ${fmtDuration(left)}`}</b>
+      <b>{left <= 0 ? 'window closed' : `decide within ${fmtDuration(left)}`}</b>
       <span className="ix-count-bar">
         <span style={{ width: `${frac * 100}%` }} />
       </span>
@@ -474,7 +472,7 @@ function Changes({ view, now, vehicles }: { view: Intent['engage']; now: () => n
   const drifted = drift != null && drift > 25
   const reset = view?.reset ?? null
   if (!live && !reset) return null
-  if (!worse.length && !reset && !better.length && !drifted) return <p className="eg-nochange">Nothing changed since the nomination.</p>
+  if (!worse.length && !reset && !better.length && !drifted) return null
   return (
     <div className={worse.length || reset ? 'eg-alarm' : 'eg-changes'} role={worse.length || reset ? 'alert' : undefined}>
       <b>Changed since the nomination</b>
@@ -542,6 +540,7 @@ function Signatures({ view, needed, now, agent }: { view: Intent['engage']; need
  *  inside it, never where the first button was. */
 export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone, onReplace }: CardProps) {
   const [note, setNote] = useState('')
+  const [noting, setNoting] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // rules 8: every engagement signature re-enters the signer's credential (credentials run),
@@ -690,17 +689,8 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
       aria-label={`Engagement nomination i${i.id}: ${p.track} with ${platform}`}
     >
       <header className="ix-head">
-        <strong className="ix-kind eg-kind">ENGAGE</strong>
+        <Proposer source={i.source} what="nominated" />
         <span className="ix-id">i{i.id}</span>
-        {scriptedBadge(i.source.id) ? (
-          <span className="ix-src scripted" title={`${i.source.id}: a situation's script, not a person and not the AI`}>
-            {scriptedBadge(i.source.id)} {i.source.id}
-          </span>
-        ) : (
-          <span className={`ix-src ${i.source.kind}`} title={i.source.kind === 'agent' ? 'nominated by an AI agent' : 'nominated by a human operator'}>
-            {i.source.kind === 'agent' ? 'AI agent' : 'operator'} {i.source.id}
-          </span>
-        )}
         {p.window && <WindowCountdown until={Math.min(p.window.until, i.expires_t ?? p.window.until)} start={i.created_t} now={now} />}
       </header>
 
@@ -729,7 +719,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           </li>
           <li>
             <span className="eg-k">Point</span>
-            <span>{point ? `${Math.round(radiusM)} m around ${ll(point)} (on the map)` : 'no intercept: see the checks'}</span>
+            <span title={point ? ll(point) : undefined}>{point ? `${Math.round(radiusM)} m around the point drawn on the map` : 'no intercept: see the checks'}</span>
           </li>
           <li>
             <span className="eg-k">Time</span>
@@ -738,12 +728,16 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
               {windowUntil != null ? `; window closes ${rel(windowUntil - now())}` : ''}
             </span>
           </li>
-          {pv?.salvo && (
+          {pv?.salvo && pv.salvo.rounds > 1 && (
             <li>
               <span className="eg-k">Rounds</span>
               <span>
-                {pv.salvo.rounds} on this one plan, at least {Math.round(pv.salvo.spacing_s)} s apart, the ceiling {pv.salvo.ceiling}
-                {ceilingWhy ? ` (raised: ${ceilingWhy})` : ''}. Each round is checked at its own release, any operator may cease the salvo, and rounds in flight cannot be recalled.
+                {pv.salvo.rounds} on this one plan, at least {Math.round(pv.salvo.spacing_s)} s apart; your signature covers every round.{' '}
+                <details className="eg-why" onClick={(e) => e.stopPropagation()}>
+                  <summary>More</summary>
+                  The ceiling is {pv.salvo.ceiling}
+                  {ceilingWhy ? ` (raised: ${ceilingWhy})` : ''}. Each round is checked at its own release, any operator may cease the salvo, and rounds in flight cannot be recalled.
+                </details>
               </span>
             </li>
           )}
@@ -756,7 +750,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           <details className="bluf-more" onClick={(e) => e.stopPropagation()}>
             <summary>Preview details</summary>
             <div className="bluf-detail rich">
-              <PreviewFacts p={pv} now={now} platform={platform} />
+              <PreviewFacts p={pv} />
               <p className="muted">
                 {live?.preview ? `On the world now, computed ${Math.max(0, Math.round(ageS ?? 0))} s ago${stale ? ' (stale)' : ''}.` : 'At the nomination.'}
               </p>
@@ -773,18 +767,6 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
       <Changes view={view} now={now} vehicles={vehicles} />
       <BehavingLapses intent={i} now={now} />
 
-      <section className="eg-sec">
-        <span className="ix-label">Checks</span>
-        <ChecksList checks={i.checks} live={live?.checks} vehicles={vehicles} now={now()} />
-      </section>
-
-      {i.rationale && (
-        <blockquote className="ix-rationale">
-          <span className="ix-label">{i.source.kind === 'agent' ? `Rationale from ${i.source.id} (an agent)` : `${i.source.id}'s rationale`}</span>
-          <RationaleText rationale={i.rationale} source={i.source} />
-        </blockquote>
-      )}
-
       <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} signing />
       {signed.length === 0 && <AcceptLostHere intent={i} now={now} onDone={onDone} />}
       <AcceptBehavingHere intent={i} onDone={onDone} />
@@ -796,9 +778,27 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         <Signatures view={view} needed={needed} now={now} agent={i.source.kind === 'agent'} />
       </section>
 
+      <section className="eg-sec">
+        <span className="ix-label">Checks</span>
+        <ChecksList checks={i.checks} live={live?.checks} vehicles={vehicles} now={now()} />
+      </section>
+
+      {i.rationale && (
+        <blockquote className="ix-rationale">
+          <span className="ix-label">{i.source.kind === 'agent' ? `Their reasons (AI ${i.source.id}), word for word` : `Their reasons (${i.source.id}), word for word`}</span>
+          <RationaleText rationale={i.rationale} source={i.source} />
+        </blockquote>
+      )}
+
       <footer className="eg-decision" onClick={(e) => e.stopPropagation()}>
         <p className={canApprove ? 'eg-you' : 'eg-you eg-hint'}>{signHint}</p>
-        <input className="ix-note" placeholder="Note (optional, logged with your decision)" value={note} maxLength={300} disabled={busy} onChange={(e) => setNote(e.target.value)} aria-label="Decision note" />
+        {noting ? (
+          <input className="ix-note" placeholder="Note (optional, logged with your decision)" value={note} maxLength={300} disabled={busy} onChange={(e) => setNote(e.target.value)} aria-label="Decision note" autoFocus />
+        ) : (
+          <button type="button" className="ghost mini ap-addnote" onClick={() => setNoting(true)}>
+            Add a note
+          </button>
+        )}
         {canSign && stepUp && (
           <StepUpField
             passwordLabel="Your password, to sign"
@@ -812,12 +812,15 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         )}
         <div className="eg-decide">
           <button type="button" className="eg-btn reject" disabled={busy || expired} onClick={() => void act('reject')}>
-            Reject
+            Reject the engagement
+          </button>
+          <button type="button" className="eg-btn sign" disabled={busy || expired || !canApprove || shown != null} onClick={() => void look()} title="The engine shows exactly the plan your signature would be on (valid a few seconds)">
+            {shown ? 'Plan shown below' : 'Review the plan to sign'}
           </button>
           {onReplace && !expired && i.state === 'pending_approval' && (
             <button
               type="button"
-              className={`eg-btn replace ${blocksNow ? 'primary' : ''}`}
+              className={`eg-btn replace ${blocksNow ? 'primary' : 'quiet'}`}
               disabled={busy}
               onClick={() => onReplace(i)}
               title={`Open the nomination form with i${i.id}'s plan to change; submitting it rejects i${i.id} and nominates the new plan in its place`}
@@ -825,9 +828,6 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
               Replace…
             </button>
           )}
-          <button type="button" className="eg-btn sign" disabled={busy || expired || !canApprove || shown != null} onClick={() => void look()} title="The engine shows exactly the plan your signature would be on (valid a few seconds)">
-            {shown ? 'Plan shown below' : 'Show the plan to sign'}
-          </button>
         </div>
         {shown && (
           <div
@@ -848,7 +848,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
             </p>
             <ul>
               <li>
-                Effect {Math.round(shown.plan.effect_radius_m)} m around {ll(shown.plan.effect_point)}, {rel(shown.plan.effect_t - now())}
+                Effect {Math.round(shown.plan.effect_radius_m)} m around <span title={ll(shown.plan.effect_point)}>the point drawn on the map</span>, {rel(shown.plan.effect_t - now())}
               </li>
               <li>
                 {platform}; if it stops before the effect: {FALLBACK_LABEL[p.fallback]}
@@ -893,7 +893,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
 
 /** A running (or just finished) engagement: where the platform is, the watch verdict, the
  *  countdown to the predicted effect, Abort; then the effect and the assessment. */
-function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardProps) {
+export function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone, onTrack }: CardProps & { onTrack?: (id: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const e = i.engagement
@@ -922,17 +922,16 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
   return (
     <article className={`ix-card eg-run ${i.state} ${selected ? 'sel' : ''} ${lapses ? 'eg-warn' : ''}`} tabIndex={0} onClick={onFocus} data-tutorial="engage-run" data-intent-id={i.id}>
       <header className="ix-head">
-        <strong className="ix-kind eg-kind">ENGAGE</strong>
+        <strong className="ix-kind eg-kind">
+          {nameOf(vehicles, i.uids[0] ?? '?')} on {engageParams(i).track}
+        </strong>
         <span className="ix-id">i{i.id}</span>
         <span className={`eg-state ${i.state}`}>{STATE_LABEL[i.state] ?? i.state}</span>
         {p && abortable && <span className="eg-eta">effect {rel(p.effect_t - now())}</span>}
       </header>
       <div className="eg-target">
-        <b>{engageParams(i).track}</b>
         <span>
-          {nameOf(vehicles, i.uids[0] ?? '?')}
-          {toPoint != null && abortable ? `, ${km(toPoint)} from the effect point` : ''}; approved by{' '}
-          {[...(i.concurrences ?? []).map((a) => a.by), i.approval?.by].filter(Boolean).join(' and ')}
+          {toPoint != null && abortable ? `${km(toPoint)} from the effect point; ` : ''}approved by {[...(i.concurrences ?? []).map((a) => a.by), i.approval?.by].filter(Boolean).join(' and ')}
         </span>
       </div>
       {abortable && watch && (
@@ -945,22 +944,22 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
         </p>
       )}
       <BehavingLapses intent={i} now={now} />
-      {abortable && <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} />}
-      {e?.effect && (
-        <p className="eg-effect">
-          Effect released {rel(e.effect.t - now())} at {ll(e.effect.point)} (radius {Math.round(e.effect.radius_m)} m; released {againstPlan(e.effect.planned_t, e.effect.t)})
+      {abortable &&
+        (watch?.holds ? (
+          (i.engage?.accepted?.length || i.engage?.accepted_lost?.length || i.engage?.accepted_behaving?.length) ? (
+            <details className="eg-why" onClick={(ev) => ev.stopPropagation()}>
+              <summary>What the signatures covered</summary>
+              <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} />
+            </details>
+          ) : null
+        ) : (
+          <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} />
+        ))}
+      {e?.munition && now() < e.munition.impact_t && (
+        <p className="eg-munition flying">
+          <b>{e.munition.name} in flight</b>: impact in {secondsToImpact(e.munition, now())} s
         </p>
       )}
-      {e?.munition &&
-        (now() < e.munition.impact_t ? (
-          <p className="eg-munition flying">
-            <b>{e.munition.name} in flight</b>: impact in {secondsToImpact(e.munition, now())} s
-          </p>
-        ) : (
-          <p className="eg-munition">
-            <b>Impact at {fmtWorldZ(e.munition.impact_t)}</b> ({e.munition.name}, {Math.round(e.munition.tof_s)} s from its launch at {fmtWorldZ(e.munition.launch_t)})
-          </p>
-        ))}
       {e?.fire && (
         <p className={`eg-fire ${e.fire.ended ? '' : 'firing'}`} title={e.fire.ended?.detail}>
           <b>{fireLine(e.fire)}</b>
@@ -968,7 +967,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
         </p>
       )}
       {e?.fire?.salvo && (
-        <p className="eg-salvo" title="One plan, two signatures, up to the ceiling's rounds: each round is checked at its own release, and rounds in flight cannot be recalled">
+        <p className="eg-salvo">
           {salvoLine(e.fire, now())}
           {e.fire.salvo.held && !e.fire.ended && (
             <span className="eg-alarm"> Round {e.fire.salvo.held.round} is held: {e.fire.salvo.held.reasons.join('; ')}</span>
@@ -978,13 +977,35 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       )}
       {i.state === 'effected' && !(e?.munition && now() < e.munition.impact_t) && (
         <p className="muted">
-          Assessing: the effect point covered for {e?.covered_s.toFixed(0) ?? 0} s{e?.observe?.covered_by.length ? ` by ${plain(e.observe.covered_by.join(', '), vehicles, now())}` : ' (no sensor of ours covers it)'}
+          Assessing: {e?.observe?.covered_by.length ? `${sensorList(e.observe.covered_by, (u) => nameOf(vehicles, u))} cover the effect point` : 'no sensor of ours covers the effect point'}
         </p>
       )}
       {e?.assessment && (
         <p className={`eg-assess ${e.assessment.result}`}>
-          <b>Assessed {e.assessment.result}</b>: {plain(e.assessment.evidence, vehicles, now())}
+          <b>{engageParams(i).track} {e.assessment.result === 'persists' ? 'persists' : e.assessment.result === 'ceased' ? 'has ceased' : 'could not be assessed'}.</b> {plain(e.assessment.evidence, vehicles, now())}
         </p>
+      )}
+      {(e?.assessment?.result === 'persists' || e?.assessment?.result === 'unknown') && onTrack && (
+        <p className="eg-follow">
+          <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); onTrack(engageParams(i).track) }}>
+            Decide again on {engageParams(i).track}
+          </button>
+        </p>
+      )}
+      {(e?.effect || (e?.munition && now() >= e.munition.impact_t)) && (
+        <details className="eg-why" onClick={(ev) => ev.stopPropagation()}>
+          <summary>Details</summary>
+          {e?.effect && (
+            <p className="eg-effect">
+              Effect released at {fmtWorldZ(e.effect.t)} (radius {Math.round(e.effect.radius_m)} m; released {againstPlan(e.effect.planned_t, e.effect.t)})
+            </p>
+          )}
+          {e?.munition && now() >= e.munition.impact_t && (
+            <p className="eg-munition">
+              <b>Impact at {fmtWorldZ(e.munition.impact_t)}</b> ({e.munition.name}, {Math.round(e.munition.tof_s)} s from its launch at {fmtWorldZ(e.munition.launch_t)})
+            </p>
+          )}
+        </details>
       )}
       {e?.stop && (
         <p className="eg-stop">
@@ -997,11 +1018,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       {abortable && (
         <footer className="ix-actions" onClick={(ev) => ev.stopPropagation()}>
           <span className="muted">
-            {gunFiring
-              ? e?.fire?.salvo
-                ? 'Any operator may cease the salvo: no further round is released; rounds in flight go on and are assessed.'
-                : 'Any operator may stop the fire; the assessment goes on.'
-              : 'Any operator may abort until the effect.'}
+            {gunFiring ? (e?.fire?.salvo ? 'Any operator may cease it: rounds in flight go on.' : 'Any operator may stop the fire.') : 'Any operator may abort until the effect.'}
           </span>
           <button className="eg-abort" disabled={busy} onClick={abort}>
             {gunFiring ? (e?.fire?.salvo ? 'Cease salvo' : 'Cease fire') : 'Abort'}
@@ -1010,41 +1027,5 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
         </footer>
       )}
     </article>
-  )
-}
-
-/** The engagements in play (approved, en route, assessing) and the last few that ended. */
-export function EngagementsSection({
-  intents,
-  vehicles,
-  now,
-  selection,
-  onFocus,
-  onDone,
-}: {
-  intents: Intent[]
-  vehicles: Vehicle[]
-  now: () => number
-  selection: { kind: 'intent'; id: number } | { kind: 'alert'; id: string } | null
-  onFocus: (i: Intent) => void
-  onDone: (text: string, tone: 'ok' | 'bad') => void
-}) {
-  const engagements = intents.filter(isEngage)
-  const running = engagements.filter((i) => RUNNING.includes(i.state))
-  const ended = engagements.filter((i) => ['aborted', 'done', 'voided'].includes(i.state) && i.engagement?.snapshot).slice(0, 3)
-  if (!running.length && !ended.length) return null
-  // the heading counts what the section shows, and says how many of them are in play
-  return (
-    <>
-      <h3 className="ix-h">
-        Engagements <span>{running.length + ended.length}</span>
-        <small>
-          {running.length} in play{ended.length ? `, then the last ${ended.length === 1 ? 'one' : ended.length} that ended` : ''}
-        </small>
-      </h3>
-      {[...running, ...ended].map((i) => (
-        <RunCard key={i.id} intent={i} vehicles={vehicles} now={now} selected={selection?.kind === 'intent' && selection.id === i.id} onFocus={() => onFocus(i)} onDone={onDone} />
-      ))}
-    </>
   )
 }

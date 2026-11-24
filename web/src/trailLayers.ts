@@ -1,4 +1,4 @@
-// Trails of our vehicles while display smoothing is on (drawn.ts). The symbol is drawn up to a
+// Trails of our vehicles (display smoothing, drawn.ts). The symbol is drawn up to a
 // second behind the vehicle's last report, so a trail that ends at the report would run past
 // it. Two deck.gl layers, each twice (what is under water, drawn seen through the water's tint,
 // and the rest): the body (the trail but its newest few points) and the head (those few points
@@ -8,12 +8,12 @@
 // The body's data array is kept while no trail changed (keyed on the trail arrays, which the
 // console replaces only when a point is added), so a bridge update that only moved vehicles
 // does not tessellate every trail again.
-// With smoothing off the trails are trails-3d and trails-3d-under (map3d.ts), split the same way.
 // A vehicle without an altitude now keeps its trail: it ends where the symbol is drawn (drawn.ts
-// shownAlt), as every trail does.
+// shownAlt), as every trail does. Each is drawn thin and only its last stretch (glide.ts
+// trailWithin, about 500 m): the direction of travel, not an aircraft's last ten kilometres.
 import { PathLayer } from '@deck.gl/layers'
 import { drawnPose, drawnTick, shownAlt } from './drawn'
-import { trailHeadPath, type Pt } from './glide'
+import { trailHeadPath, trailWithin, type Pt } from './glide'
 import { colour, z } from './map3d'
 import { belowOf, seenThroughWater, splitUnder, type UnderSplit } from './sea'
 import type { Vehicle } from './types'
@@ -21,6 +21,8 @@ import type { Vehicle } from './types'
 /** trail points kept in the head: the trail gets a point a second, the symbol is at most about
  *  a second behind the report */
 export const HEAD_POINTS = 5
+/** a trail's width, px: thin, a direction rather than a mark */
+const WIDTH = 1.5
 
 let memo: { vehicles: Vehicle[]; head: Vehicle[]; body: Vehicle[]; key: string } | null = null
 
@@ -56,9 +58,9 @@ export function buildTrailLayers(vehicles: Vehicle[]) {
     new PathLayer<Vehicle>({
       id: `trail-body${suffix}`,
       data: bodyData,
-      getPath: (v) => v.trail.slice(0, 1 - HEAD_POINTS).map(point),
+      getPath: (v) => trailWithin(v.trail).slice(0, 1 - HEAD_POINTS).map(point),
       getColor,
-      getWidth: 2,
+      getWidth: WIDTH,
       widthUnits: 'pixels',
       updateTriggers: { getPath: key },
     }),
@@ -67,13 +69,14 @@ export function buildTrailLayers(vehicles: Vehicle[]) {
       data: headData,
       getPath: (v) => {
         const p = drawnPose(v)
-        const tail = v.trail.slice(-HEAD_POINTS).map(point)
+        // the last points of the drawn stretch (the same as capping the whole trail first)
+        const tail = trailWithin(v.trail.slice(-HEAD_POINTS)).map(point)
         const reported: Pt = [v.position![0], v.position![1], z(shownAlt(v))]
         const drawn: Pt = p ? [p.lon, p.lat, z(p.alt)] : reported
         return trailHeadPath(tail, reported, drawn)
       },
       getColor,
-      getWidth: 2,
+      getWidth: WIDTH,
       widthUnits: 'pixels',
       updateTriggers: { getPath: `${key}:${drawnTick()}` },
     }),

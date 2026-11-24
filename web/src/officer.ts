@@ -77,32 +77,28 @@ export function excerpt(text: string, max = 90): string {
 /** One order waiting for a person, as the head of a drawer lists it. */
 export interface AwaitRow {
   id: number
-  kind: string
-  /** a group order's group and size ("CRISSY (8)"), one vehicle's callsign, or a count */
-  what: string
+  /** the ask, as the approval card says it (approvalText.ts) */
+  ask: string
   source: Intent['source']
   /** seconds left to decide, or null for an order that does not expire */
   left_s: number | null
   engage: boolean
-  turn: TurnLink | null
 }
 
 /** Everything that waits for a person's approval (the Inbox's `pending`), soonest expiry first as
- *  the Inbox orders it (one that does not expire last, then by number), each with its turn link. */
-export function awaitingRows(pending: readonly Intent[], items: readonly TaskingItem[], nowMs: number, nameOf: (uid: string) => string): AwaitRow[] {
-  const rows = pending.map((i): AwaitRow => {
-    const n = i.uids.length
-    const what = i.group?.swarm ? `${i.group.swarm} (${n})` : n === 1 ? nameOf(i.uids[0]) : `${n} vehicles`
-    return {
+ *  the Inbox orders it (one that does not expire last, then by number). `ask`: an order as one
+ *  sentence. The request an order was proposed for is on its card and in the Officer drawer, not
+ *  on this line. */
+export function awaitingRows(pending: readonly Intent[], nowMs: number, ask: (i: Intent) => string): AwaitRow[] {
+  const rows = pending.map(
+    (i): AwaitRow => ({
       id: i.id,
-      kind: i.kind,
-      what,
+      ask: ask(i),
       source: i.source,
       left_s: i.expires_t == null ? null : (i.expires_t - nowMs) / 1000,
       engage: i.kind === 'engage',
-      turn: turnOf(i, items),
-    }
-  })
+    }),
+  )
   return rows.sort((a, b) => (a.left_s ?? Infinity) - (b.left_s ?? Infinity) || a.id - b.id)
 }
 

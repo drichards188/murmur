@@ -3,7 +3,7 @@
 //   node web/src/sensorReach.check.ts
 // Throws on the first failure, prints "sensorReach: ok" otherwise. Not part of the bundle.
 import assert from 'node:assert/strict'
-import { circle, lightState, pickDomain, reachBadge, reachFeatures, type ReachAnswer, type VehicleReach } from './sensorReach.ts'
+import { circle, conditionsText, lightState, pickDomain, reachFeatures, sensorLines, type ReachAnswer, type VehicleReach } from './sensorReach.ts'
 import { distanceM } from './geo.ts'
 import { RingCache, ringSet, shiftLimitM } from './reachCache.ts'
 import type { LngLat } from './types.ts'
@@ -22,15 +22,15 @@ const puma = (detect: number, limited: string | null): VehicleReach => ({
 
 // --- the domain each sensor shows
 const s = puma(2600, 'fog').sensors[0]
-assert.equal(pickDomain(s, 'auto')?.domain, 'surface', 'auto is the bridge\'s primary domain')
-assert.equal(pickDomain(s, 'air')?.domain, 'air')
-assert.equal(pickDomain(s, 'subsurface'), null, 'a camera draws nothing for under water')
+assert.equal(pickDomain(s)?.domain, 'surface', 'each sensor shows the bridge\'s primary domain')
 
-// --- badges: only under half the clear-day reach, the worst sensor, its reason
-assert.deepEqual(reachBadge(puma(2600, 'fog'), 'auto')?.text, 'EO 18% · fog')
-assert.equal(reachBadge(puma(9000, null), 'auto'), null, 'at 62% there is no badge')
-assert.equal(reachBadge(puma(2600, 'fog'), 'air'), null, 'the air reach is not degraded')
-assert.equal(reachBadge(puma(2600, null), 'auto')?.text, 'EO 18%', 'no reason given, none shown')
+// --- the details' Sensors lines: each sensor in its own domain, now against the clear day, what limits it
+assert.deepEqual(sensorLines(puma(2600, 'fog')), [{ name: 'EO/IR', text: "surface contact: detects to 2.6 km of a clear day's 14 km, identifies to 650 m; limited by fog", low: true }])
+assert.equal(sensorLines(puma(9000, null))[0].low, false, 'at 62% it is not a loss')
+assert.equal(sensorLines(puma(0, null))[0].text, 'surface contact: cannot detect one now', 'no reach said in words, not "detects to 0 m"')
+assert.equal(sensorLines(puma(9000, null))[0].text, "surface contact: detects to 9.0 km of a clear day's 14 km, identifies to 2.3 km", 'no reason given, none shown')
+assert.equal(conditionsText(puma(2600, 'fog').conditions), 'visibility 50 m, sea state 2', 'day and clear air say nothing')
+assert.equal(conditionsText({ ...puma(2600, 'fog').conditions, visibility_m: 20_000, light: 'night' }), 'night, sea state 2')
 
 // --- the sun
 assert.equal(lightState(10), 'day')
@@ -44,15 +44,15 @@ assert.ok(ring.every((p) => Math.abs(distanceM(at, p) - 1000) < 10), 'a ring is 
 assert.deepEqual(ring[0], ring[ring.length - 1], 'closed')
 const answer: ReachAnswer = { available: true, model: 'physical', vehicles: [puma(2600, 'fog'), { ...puma(14_000, null), uid: 8 }], note: '' }
 const positions = new Map<number, LngLat>([[7, at], [8, [-122.5, 37.8]]])
-const fc = reachFeatures(answer, positions, new Set([7]), 'auto')
+const fc = reachFeatures(answer, positions, new Set([7]))
 assert.deepEqual(fc.features.map((f) => f.properties?.kind), ['clear', 'detect', 'identify'])
 assert.ok(fc.features.every((f) => f.properties?.uid === 7), 'only the selected vehicle')
 const detect = fc.features.find((f) => f.properties?.kind === 'detect')!.geometry as GeoJSON.LineString
 assert.ok(Math.abs(distanceM(at, detect.coordinates[10] as LngLat) - 2600) < 30, 'the detection ring at the reach now')
-assert.equal(reachFeatures(answer, positions, null, 'auto').features.length, 6, 'every vehicle')
-assert.equal(reachFeatures({ ...answer, stale: true }, positions, null, 'auto').features.length, 0, 'stale answers draw nothing')
-assert.equal(reachFeatures({ available: true, model: 'legacy', vehicles: [], note: '' }, positions, null, 'auto').features.length, 0, 'legacy: no rings')
-assert.equal(reachFeatures(answer, new Map(), null, 'auto').features.length, 0, 'no position, no ring')
+assert.equal(reachFeatures(answer, positions, null).features.length, 6, 'every vehicle')
+assert.equal(reachFeatures({ ...answer, stale: true }, positions, null).features.length, 0, 'stale answers draw nothing')
+assert.equal(reachFeatures({ available: true, model: 'legacy', vehicles: [], note: '' }, positions, null).features.length, 0, 'legacy: no rings')
+assert.equal(reachFeatures(answer, new Map(), null).features.length, 0, 'no position, no ring')
 
 // --- a ring is lifted once and moved with its vehicle (reachCache.ts; bd murmur-yfp6)
 {
@@ -82,10 +82,10 @@ assert.equal(reachFeatures(answer, new Map(), null, 'auto').features.length, 0, 
 }
 // --- the ring set is the same while the vehicles only move
 {
-  const a = reachFeatures(answer, positions, null, 'auto')
-  const b = reachFeatures(answer, new Map<number, LngLat>([[7, [at[0] + 0.001, at[1]]], [8, [-122.5, 37.8]]]), null, 'auto')
+  const a = reachFeatures(answer, positions, null)
+  const b = reachFeatures(answer, new Map<number, LngLat>([[7, [at[0] + 0.001, at[1]]], [8, [-122.5, 37.8]]]), null)
   assert.equal(ringSet(a), ringSet(b), 'moved a little: the same set')
-  assert.notEqual(ringSet(a), ringSet(reachFeatures(answer, positions, new Set([7]), 'auto')), 'another selection: another set')
+  assert.notEqual(ringSet(a), ringSet(reachFeatures(answer, positions, new Set([7]))), 'another selection: another set')
   assert.ok(a.features.every((f) => f.properties?.id && f.properties?.at && f.properties?.m > 0), 'each ring says its id, centre and radius')
 }
 

@@ -7,7 +7,7 @@
 import type { Intent } from './decisions'
 import type { ObservedAct, Review } from './ident'
 import type { Track } from './tracks'
-import { ATTACK_READ_MS, CARD_BOTTOM, CARD_GAP, coachPlace, CONSOLE_OPERATOR, findBoat, HOLD, identityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
+import { ATTACK_READ_MS, CARD_BOTTOM, CARD_GAP, coachPlace, CONSOLE_OPERATOR, findBoat, HOLD, identityCheck, resumeAt, stepScene, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
 import type { WeaponTrack } from './weapon.ts'
 
 function eq(a: unknown, b: unknown, what: string) {
@@ -85,7 +85,7 @@ const settled = tutorialFacts([ferry, ruled], undefined, undefined, [], 5000 + A
 eq([at(settled), settled.attack?.id, settled.attacks], ['confirm', 'W-1', 1], 'then on to the confirmation')
 const confirmed = { ...ruled, declared: { ...ruled.declared!, confirmed_by: 'op-1' } } as Track
 f = facts([ferry, confirmed])
-eq([at(f), f.confirmedBy], ['nominate', 'op-1'], 'confirmed: on to the nomination')
+eq([at(f), f.confirmed], ['nominate', true], 'confirmed: on to the nomination')
 eq(resumeAt(f), STEPS.findIndex((s) => s.id === 'nominate'), 'a reload after the confirmation resumes at the nomination')
 
 // the nomination form blocks on the target's identity: the card reads the form's own check, says
@@ -109,7 +109,7 @@ eq(at(f), 'nominate', "a script's nomination is not the person's")
 f = facts([confirmed], [engage(8, 'rejected')])
 eq([at(f), f.nominationEnded?.state], ['nominate', 'rejected'], 'a rejected nomination: nominate again')
 f = facts([confirmed], [engage(8, 'rejected'), engage(9, 'pending_approval')])
-eq([at(f), f.nomination?.id, f.livePassed], ['sign', 9, true], 'the latest nomination waits for its signatures')
+eq([at(f), f.nomination?.id], ['sign', 9], 'the latest nomination waits for its signatures')
 
 // the inbox's view of a waiting nomination is the one its card shows (the first signature)
 const listed = engage(9, 'pending_approval')
@@ -122,7 +122,7 @@ const blocked = engage(9, 'pending_approval', {
   engage: { signed: ['op-2'], approvers_needed: 2, live: { t: 0, passed: false, checks: [{ rule: 'keep_out_tracks', uid: null, outcome: 'fail', detail: '' }], preview: null, changed: [], track_drift_m: null } },
 } as unknown as Partial<Intent>)
 f = facts([confirmed], [blocked])
-eq([at(f), f.signed, f.livePassed, f.failing], ['sign', ['op-2'], false, ['keep_out_tracks']], 'one signature, the picture failing')
+eq([at(f), f.signed], ['sign', ['op-2']], 'one signature: still at the signatures')
 
 // signed and dispatched, then released with a munition in flight, then the impact, then the assessment
 const flying = engage(9, 'effected', {
@@ -153,5 +153,13 @@ for (const mapH of [856, 724]) {
   eq(mapH - open.bottom <= mapH - 50 - 260 - CARD_GAP, true, `above the bar opened too at ${mapH}`)
 }
 eq(coachPlace(724, null), { bottom: CARD_BOTTOM, maxHeight: 724 - CARD_BOTTOM - 86 }, 'no weather bar: where it always was')
+
+// each step keeps its scene in view (the cutdown's change 39): the attack frames the boat and the
+// ship it fires on, the nomination the boat and the drone; welcome and done leave the view alone
+eq(stepScene('act'), { boat: true, ours: ['HUNTER 1'] }, 'the attack: the boat and HUNTER 1')
+eq(stepScene('nominate'), { boat: true, ours: ['REAPER 1'] }, 'the nomination: the boat and REAPER 1')
+eq(stepScene('map'), { boat: false, ours: ['HUNTER 1', 'REAPER 1'] }, 'the fleet: both of ours')
+eq([stepScene('welcome'), stepScene('done')], [{ boat: false, ours: [] }, { boat: false, ours: [] }], 'nothing to frame')
+for (const s of STEPS) if (s.id !== 'welcome' && s.id !== 'done') eq(stepScene(s.id).boat || stepScene(s.id).ours.length > 0, true, `${s.id} has a scene`)
 
 console.log('tutorial: ok')

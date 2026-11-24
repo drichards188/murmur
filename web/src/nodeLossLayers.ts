@@ -2,10 +2,12 @@
 // engagement's friendly keep-out counts it (the bridge's `GET /api/nodes`, stage 2's regions),
 // through MapView's `layers` prop, at the surface and under the vehicle symbols. Each part of a
 // region (its orders' corridors and circles, its failsafe's way home, a drift, its top speed's
-// reach) is its padded outline; a vehicle presumed lost is drawn warmer. Dim, don't paint
-// (docs/research/saturation-display.md R1): out of focus only the outline, faint; in focus (selected,
-// details open) or presumed lost, filled, and the reach that caps it dashed. A vehicle confirmed lost
-// has no region: it is out of every keep-out. Display only: the engine's checks decide.
+// reach) is its padded outline; a vehicle presumed lost is drawn warmer. Folded (ledger 1, the
+// map's vehicles: beside the estimate it was a second region at a glance): a vehicle's region is
+// drawn while it is in focus (selected, details open), filled, the reach that caps it dashed; and
+// every one while the nomination form is open (`all`), whose keep-outs count them, out of focus
+// only the outline, faint (a presumed lost one filled). A vehicle confirmed lost has no region:
+// it is out of every keep-out. Display only: the engine's checks decide.
 //
 //   node-region-fill     the parts, faintly filled
 //   node-region-outline  their outlines, and the reach dashed
@@ -28,13 +30,14 @@ interface Path {
   width: number
 }
 
-export function buildNodeRegionLayers(rows: Iterable<NodeRow>, focus: ReadonlySet<number>) {
+export function buildNodeRegionLayers(rows: Iterable<NodeRow>, focus: ReadonlySet<number>, all = false) {
   const fills: { ring: LL[]; color: RGBA }[] = []
   const paths: Path[] = []
   for (const n of rows) {
     if (!n.region || n.state === 'lost') continue
     const color = n.state === 'presumed_lost' ? PRESUMED : SILENT
     const near = focus.has(n.uid)
+    if (!near && !all) continue
     const r = regionRings(n.region)
     for (const p of r.parts) {
       if (near || n.state === 'presumed_lost') fills.push({ ring: p.ring, color: a(color, near ? 0.12 : 0.06) })

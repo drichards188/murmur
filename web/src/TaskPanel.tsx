@@ -3,9 +3,9 @@ import { EMPTY_ROUTE, planDrawing, routeDrawing, type LinkRouteDrawing } from '.
 import { DryRun } from './DryRun'
 import { useDryRun } from './useDryRun'
 import type { Draft } from './MapView'
-import type { TaskKind, Tasking, Vehicle } from './types'
-import { callsign, LIFECYCLE, opEnding } from './types'
-import { Bluf, BlufReason } from './Bluf'
+import type { OpState, TaskKind, Tasking, Vehicle } from './types'
+import { callsign, opEnding } from './types'
+import { BlufReason } from './Bluf'
 import { Lazy } from './Lazy'
 import { reasonBluf } from './bluf'
 import { TaskResult, type TaskOutcome } from './TaskResult'
@@ -22,8 +22,9 @@ import { defaultMin, excludedMarks, memberClasses, reforms, slotMarks, SPREAD_WO
 import { drawnHeight } from './map3d'
 import './command.css'
 import { sameFleet } from './stableFleet'
-import { routing, selectionLine, stage, STAGE_WORDS } from './commandModel'
-import { orderCard } from './orderCard'
+import { routing, selectionLine, sendWords } from './commandModel'
+import { oneCardPerOrder, orderCard } from './orderCard'
+import { opWord, opWordIsBad, orderOver } from './orderWords'
 
 interface Props {
   vehicles: Vehicle[]
@@ -46,10 +47,6 @@ interface Props {
   onLinkRoute?: (d: LinkRouteDrawing | null) => void
   /** the run's latest intents: how an identify order's look ended (rules 21) */
   intents?: Intent[]
-  /** the map legend's Show all for lists: every order's vehicles listed one by one */
-  expandAll?: boolean
-  /** how many vehicle lines the summarised orders do not list (the map legend counts them) */
-  onFolded?: (n: { lines: number; cards: number }) => void
 }
 
 /** The task buttons' kinds: the task layer's, and (rules 21) identify, one vehicle sent to
@@ -58,56 +55,26 @@ type PanelKind = TaskKind | 'identify'
 
 const TASKS: { kind: PanelKind; label: string; hint: string }[] = [
   { kind: 'orbit', label: 'Orbit', hint: 'Click the map to set the orbit center.' },
-  { kind: 'patrol', label: 'Patrol', hint: 'Click the map to add waypoints. The route loops.' },
-  {
-    kind: 'transit',
-    label: 'Transit',
-    hint: 'Click the map to add points. It flies the route once and holds at its end by its type (a copter hovers, a fixed wing loiters, a boat holds station). A group takes stations along the route, or a block round its end.',
-  },
+  { kind: 'patrol', label: 'Patrol', hint: 'Click the map to add waypoints; the route loops.' },
+  { kind: 'transit', label: 'Transit', hint: 'Click the map to add points: it flies the route once and holds at its end.' },
   { kind: 'hold', label: 'Hold', hint: 'Planes loiter in place, boats hold position.' },
-  { kind: 'rtl', label: 'RTL', hint: 'Return to launch.' },
+  { kind: 'rtl', label: 'Return', hint: 'Each returns to where it launched.' },
   { kind: 'track', label: 'Track', hint: 'Select one antenna tracker and the one vehicle it should point at.' },
-  {
-    kind: 'identify',
-    label: 'Identify',
-    hint: "Click a ringed contact on the map (the ones not identified yet). The vehicle orbits it at its camera's standoff, following it, until it is identified, then goes back to what it was doing.",
-  },
+  { kind: 'identify', label: 'Identify', hint: "Click a ringed contact on the map: the vehicle orbits it at its camera's standoff until it is identified, then goes back to what it was doing." },
 ]
-
-/** How long ago `t` (the bridge's clock, s) was, at `nowMs` (the bridge's clock as the
- *  console keeps it, ms: `useBridgeClock`), not the browser's clock, which can differ. */
-function age(t: number, nowMs: number) {
-  const s = Math.max(0, Math.round(nowMs / 1000 - t))
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
-}
-
-function Lifecycle({ state }: { state: string }) {
-  const failed = state === 'failed' || state === 'superseded' || state === 'requeued' || state === 'unconfirmed'
-  const idx = LIFECYCLE.indexOf(state as never)
-  return (
-    <span className={`steps ${failed ? 'failed' : ''}`}>
-      {LIFECYCLE.slice(1).map((s, i) => (
-        <span key={s} className={`step ${!failed && idx >= i + 1 ? 'on' : ''} ${!failed && idx === i + 1 ? 'cur' : ''}`}>
-          {s}
-        </span>
-      ))}
-    </span>
-  )
-}
 
 interface CardProps {
   t: Tasking
   /** what the card's content rests on (see `sigs`): equal signatures, same card */
   sig: string
   label: string
-  /** the order's number (`i2`, orderCard.ts), what it is, and how the task layer flies it */
+  /** the order's number (`i2`, orderCard.ts) and what it is */
   num: string
   numTitle: string
-  flown: string | null
-  moved: number
+  /** how an identify order's look ended */
   ended: string | null
-  authorized: string | null
-  ago: string
+  /** the order is over though its task goes on (an engagement after its release: orderOver) */
+  over?: string | null
   nameOf: (uid: number) => Vehicle | undefined
   /** an order to more than OPS_FOLD vehicles: summarised unless open */
   open: boolean
@@ -116,36 +83,28 @@ interface CardProps {
   minute: number
 }
 
-/** an op state counted on a summarised card, in words */
-const COUNT_WORDS: Record<string, string> = {
-  queued: 'waiting for a fix',
-  sent: 'sent',
-  starting: 'starting',
-  acked: 'acked',
-  active: 'active',
-  done: 'done',
-  requeued: 'back to the queue',
-  unconfirmed: 'unconfirmed',
-  superseded: 'superseded',
-  failed: 'failed',
-}
-const ALERT_STATES = new Set(['failed', 'unconfirmed', 'requeued'])
-
-/** A summarised order (R6): its vehicles counted by state, and every exception (failed,
- *  superseded, may be running, back to the queue, stuck) listed, grouped by reason with the
- *  vehicles named; "show all" lists them one by one as before. */
+/** A summarised order (R6): its vehicles counted by their state word (opWord: starting, running,
+ *  done...; colour only on a failure), and every exception (failed, superseded, may be running,
+ *  back to the queue, stuck) listed, grouped by reason with the vehicles named; "show all" lists
+ *  them one by one as before. */
 function OrderSummary({ t, nameOf, minute, onOpen }: Pick<CardProps, 't' | 'nameOf' | 'minute' | 'onOpen'>) {
   const s = orderSummary(t.ops, minute)
   const name = (uid: number) => {
     const v = nameOf(uid)
     return v ? callsign(v) : String(uid)
   }
+  // the states counted in lifecycle order, as their words (sent, starting and acked are one: starting)
+  const words = new Map<string, number>()
+  for (const [state, n] of s.counts) {
+    const w = opWord({ state: state as OpState, detail: '' }, t.task)
+    words.set(w, (words.get(w) ?? 0) + n)
+  }
   return (
     <>
       <p className="tcard-sum">
-        {s.counts.map(([state, n]) => (
-          <span key={state} className={`ts ts-${state}${ALERT_STATES.has(state) ? ' bad' : ''}`}>
-            {n} {COUNT_WORDS[state] ?? state}
+        {[...words].map(([w, n]) => (
+          <span key={w} className={opWordIsBad(w) ? 'bad' : undefined}>
+            {n} {w}
           </span>
         ))}
       </p>
@@ -168,11 +127,12 @@ function OrderSummary({ t, nameOf, minute, onOpen }: Pick<CardProps, 't' | 'name
   )
 }
 
-/** One command log card: a tasking and each vehicle's op in it. A tasking to a swarm has a
- *  hundred ops, so it is built only while it is near the log's view (Lazy) and only re-rendered
- *  when its ops changed or its age text did. */
+/** One command log card: the order, its number, and each vehicle's op in it in one word (and on a
+ *  failure, why, the bridge's own words a click away). A tasking to a swarm has a hundred ops, so
+ *  it is built only while it is near the log's view (Lazy) and only re-rendered when its ops
+ *  changed. */
 const TaskingCard = memo(
-  function TaskingCard({ t, label, num, numTitle, flown, moved, ended, authorized, ago, nameOf, open, onOpen, minute }: CardProps) {
+  function TaskingCard({ t, label, num, numTitle, ended, over, nameOf, open, onOpen, minute }: CardProps) {
     const summarised = t.ops.length > OPS_FOLD && !open
     return (
       <Lazy as="section" className="tcard" estimate={summarised ? 90 : 36 + t.ops.length * 26}>
@@ -183,17 +143,13 @@ const TaskingCard = memo(
           <span className="muted" title={numTitle}>
             {num}
           </span>
-          {flown && <span className="muted">{flown}</span>}
           {t.ops.length > OPS_FOLD && <span className="muted">{t.ops.length} vehicles</span>}
           {t.ops.length > OPS_FOLD && open && (
             <button className="ghost mini tcard-fold" onClick={() => onOpen(t.id)}>
               summarise
             </button>
           )}
-          {moved > 0 && <span className="muted">moved {moved}x with it</span>}
-          <span className="muted right">{ago} ago</span>
         </div>
-        {authorized && <p className="muted">authorized by you ({authorized})</p>}
         {ended && (
           <BlufReason
             className="tcard-ended"
@@ -204,17 +160,25 @@ const TaskingCard = memo(
         {summarised && <OrderSummary t={t} nameOf={nameOf} minute={minute} onOpen={onOpen} />}
         {!summarised && t.ops.map((o) => {
           const v = nameOf(o.uid)
-          const ending = opEnding(o)
-          const parts = reasonBluf(o.detail, { who: v ? callsign(v) : undefined })
-          if (ending) parts.headline = !parts.headline ? ending : parts.headline.toLowerCase().includes(ending.toLowerCase()) ? parts.headline : `${ending}: ${parts.headline}`
-          if (o.progress && o.progress !== o.detail) parts.bullets = [...parts.bullets, o.progress]
+          const w = opWord(o, t.task)
+          const word = over && w === 'running' ? over : w
+          const bad = opWordIsBad(word)
+          const phrase = reasonBluf(o.detail, { who: v ? callsign(v) : undefined }).headline
           return (
             <div key={o.id} className={`op ${o.state}`}>
               <span className="op-name" title={v?.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
                 {v ? callsign(v) : o.uid}
               </span>
-              <Lifecycle state={o.state} />
-              <Bluf className="op-detail compact" parts={parts} />
+              <span className="op-detail">
+                <b className={`op-word${bad ? ' bad' : ''}`}>{word}</b>
+                {phrase && phrase.toLowerCase() !== word ? `: ${phrase}` : ''}
+                {bad && o.detail && phrase !== o.detail && (
+                  <details className="bluf-more" onClick={(e) => e.stopPropagation()}>
+                    <summary>More</summary>
+                    <div className="bluf-detail">{o.detail}</div>
+                  </details>
+                )}
+              </span>
             </div>
           )
         })}
@@ -224,21 +188,19 @@ const TaskingCard = memo(
     )
   },
   (a, b) =>
-    a.sig === b.sig && a.label === b.label && a.num === b.num && a.numTitle === b.numTitle && a.flown === b.flown && a.moved === b.moved && a.ended === b.ended && a.authorized === b.authorized && a.ago === b.ago && a.nameOf === b.nameOf && a.t.id === b.t.id &&
+    a.sig === b.sig && a.label === b.label && a.num === b.num && a.numTitle === b.numTitle && a.ended === b.ended && a.over === b.over && a.nameOf === b.nameOf && a.t.id === b.t.id &&
     a.open === b.open && a.onOpen === b.onOpen && a.minute === b.minute,
 )
 
-export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = null, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents, expandAll = false, onFolded }: Props) {
+export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = null, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents }: Props) {
   const runs = space?.runs ?? []
   const scen = now ? scenarioNow(space, now) : null
   // rules 21: an identify order's taskings (its orbit each time it moved with its track, then the
   // order it went back to) as one card, the newest, saying how its look ended
-  const identify = new Map<number, { track: string; newest: number; moved: number; ended: string | null }>()
+  const identify = new Map<number, { track: string; newest: number; ended: string | null }>()
   for (const t of taskings) {
     if (t.intent_id == null || !t.params.look) continue
-    const e = identify.get(t.intent_id) ?? { track: t.params.look, newest: t.id, moved: -1, ended: null }
-    e.moved += 1
-    identify.set(t.intent_id, e)
+    if (!identify.has(t.intent_id)) identify.set(t.intent_id, { track: t.params.look, newest: t.id, ended: null })
   }
   for (const t of taskings) {
     const e = t.intent_id != null ? identify.get(t.intent_id) : undefined
@@ -265,7 +227,11 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
     if (e) c.label = t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
     return c
   }
-  const shownTaskings = taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id)
+  // one card per order: an identify's newest tasking, a group order's members as one (orderCard.ts)
+  const shownTaskings = oneCardPerOrder(
+    taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id),
+    (id) => intentById.get(id),
+  )
   // R6: an order to many vehicles is one card with its vehicles counted, exceptions listed; the
   // person opens one to list its vehicles (a view setting of this console)
   const [openCards, setOpenCards] = useState<ReadonlySet<number>>(() => new Set())
@@ -279,14 +245,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
       }),
     [],
   )
-  const cardOpen = (id: number) => expandAll || openCards.has(id)
-  const foldedLines = shownTaskings.reduce((n, t) => n + (t.ops.length > OPS_FOLD && !cardOpen(t.id) ? t.ops.length : 0), 0)
-  const foldedCards = shownTaskings.filter((t) => t.ops.length > OPS_FOLD && !cardOpen(t.id)).length
-  const foldedRef = useRef(onFolded)
-  foldedRef.current = onFolded
-  useEffect(() => {
-    foldedRef.current?.({ lines: foldedLines, cards: foldedCards })
-  }, [foldedLines, foldedCards])
+  const cardOpen = (id: number) => openCards.has(id)
   // what makes an op stuck, read at the minute (the cards re-render no more often for it)
   const minute = Math.floor((now ? now() : Date.now()) / 60_000) * 60
   const [kind, setKind] = useState<PanelKind>('orbit')
@@ -299,8 +258,6 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<TaskOutcome | null>(null)
-  /** command log notes: tasking id -> the human tier its sender authorized */
-  const [authorized, setAuthorized] = useState<Map<number, string>>(new Map())
   // the selected vehicles by uid (all an order form looks up), not the fleet's thousands each render
   const byUid = new Map(vehicles.filter((v) => selected.has(v.uid)).map((v) => [v.uid, v]))
   // the fleet as the dry run reads it (names only): the same list while it is the same fleet
@@ -475,9 +432,11 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
   }, [linkRoute, onLinkRoute])
   useEffect(() => () => onLinkRoute?.(null), [onLinkRoute])
 
-  // where the order stands, and where the dry run says it goes (read from its answer, never guessed)
-  const phase = stage({ complete: request != null, loading: dry.loading, answered: dry.answer != null, passed: dry.answer?.passed ?? false, sent: outcome != null && outcome.kind !== 'refused' && request == null })
-  const sendRoute = dry.answer && request ? routing(dry.answer, tierLabel).short : null
+  // whether the dry run is out, and where it says the order goes (read from its answer, never
+  // guessed): on the Send button, the routing's reason in its title
+  const route = dry.answer && request ? routing(dry.answer, tierLabel) : null
+  const sendRoute = sendWords({ complete: request != null, loading: dry.loading, routing: route })
+  const kindWord = (TASKS.find((t) => t.kind === kind)?.label ?? kind).toUpperCase()
 
   const submit = async () => {
     if (!request) return
@@ -505,9 +464,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
       } else if (answer.status === 202 && answer.intent_id != null) {
         setOutcome({ kind: 'wait', intentId: answer.intent_id, detail: answer.detail ?? '', expires_t: answer.expires_t ?? null })
       } else if (answer.authorization && answer.intent_id != null) {
-        const a = answer.authorization
-        setOutcome({ kind: 'authorized', intentId: answer.intent_id, authorization: a })
-        if (answer.id != null) setAuthorized((m) => new Map(m).set(answer.id!, tierLabel(a.tier)))
+        setOutcome({ kind: 'authorized', intentId: answer.intent_id, authorization: answer.authorization })
       }
       setDraft({ ...draft, center: null, route: [] })
     } catch (e) {
@@ -582,7 +539,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
               )}
               {kind === 'orbit' && orbit.limitedBy && (
                 <p className={`hint ${radiusOk ? '' : 'error'}`}>
-                  Minimum {orbit.min} m ({orbit.limitedBy} x {1.1}).
+                  Minimum {orbit.min.toLocaleString('en-US')} m: {sel.length === 1 ? 'its' : `${orbit.limitedBy}'s`} turning circle
                 </p>
               )}
               {(kind === 'patrol' || kind === 'transit') && (
@@ -601,9 +558,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
               )}
               {grouped && (
                 <fieldset className="grp" aria-label="Group order">
-                  <legend>
-                    One group order to {groupLabel ? `${groupLabel} (${sel.length})` : sel.length} <span className="muted">laid out by the engine, member by member</span>
-                  </legend>
+                  <legend>One group order to {groupLabel ? `${groupLabel} (${sel.length})` : sel.length}</legend>
                   {spreads.length > 1 && (
                     <div className="seg">
                       {spreads.map((s) => (
@@ -626,33 +581,39 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
                         onChange={(e) => setGrp({ ...grp, min_members: e.target.value === '' ? undefined : Math.max(1, Math.min(sel.length, Math.round(Number(e.target.value)))) })}
                       />
                     </label>
-                    <label title="how long the order waits for a member not heard yet to join it, s (empty: the engine's default)">
-                      <span>Wait</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={3600}
-                        placeholder="auto"
-                        value={grp.wait_s ?? ''}
-                        onChange={(e) => setGrp({ ...grp, wait_s: e.target.value === '' ? undefined : Math.max(0, Math.min(3600, Math.round(Number(e.target.value)))) })}
-                      />
-                      <span className="muted">s</span>
-                    </label>
-                    {kind !== 'hold' && kind !== 'rtl' && (
-                      <label title="the lowest layer, m above home (a depth below the surface for a sub); empty: each type's own cruise altitude">
-                        <span>Layer base</span>
+                  </div>
+                  {/* the engine's defaults fit most orders: how long it waits for a member, its lowest layer */}
+                  <details className="grp-more">
+                    <summary>More group settings</summary>
+                    <div className="grp-row">
+                      <label title="how long the order waits for a member not heard yet to join it, s (empty: the engine's default)">
+                        <span>Wait</span>
                         <input
                           type="number"
                           min={0}
-                          max={10000}
-                          placeholder="type's own"
-                          value={grp.alt_m ?? ''}
-                          onChange={(e) => setGrp({ ...grp, alt_m: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                          max={3600}
+                          placeholder="auto"
+                          value={grp.wait_s ?? ''}
+                          onChange={(e) => setGrp({ ...grp, wait_s: e.target.value === '' ? undefined : Math.max(0, Math.min(3600, Math.round(Number(e.target.value)))) })}
                         />
-                        <span className="muted">m</span>
+                        <span className="muted">s</span>
                       </label>
-                    )}
-                  </div>
+                      {kind !== 'hold' && kind !== 'rtl' && (
+                        <label title="the lowest layer, m above home (a depth below the surface for a sub); empty: each type's own cruise altitude">
+                          <span>Layer base</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={10000}
+                            placeholder="type's own"
+                            value={grp.alt_m ?? ''}
+                            onChange={(e) => setGrp({ ...grp, alt_m: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                          />
+                          <span className="muted">m</span>
+                        </label>
+                      )}
+                    </div>
+                  </details>
                   {spread === 'lanes' && (
                     <div className="grp-row">
                       <label>
@@ -676,19 +637,16 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
                   )}
                 </fieldset>
               )}
-              <p className={`stage ${phase}`} aria-live="polite">
-                <b>{phase === 'compose' ? '1 Compose' : phase === 'checking' || phase === 'ready' || phase === 'blocked' ? '2 Check' : '3 Sent'}</b> {STAGE_WORDS[phase]}
-              </p>
-              <button className="primary" disabled={!ready || busy} onClick={submit}>
+              <button className="primary" disabled={!ready || busy} onClick={submit} title={route?.text} aria-live="polite">
                 {kind === 'track'
                   ? trackPair
                     ? `Point ${callsign(byUid.get(trackers[0])!)} at ${callsign(byUid.get(others[0])!)}`
                     : 'Select 1 tracker + 1 vehicle'
                   : kind === 'identify'
                     ? draft.track
-                      ? `Send IDENTIFY ${draft.track} to ${callsign(byUid.get(sel[0]) ?? { uid: sel[0], kind: null })}`
+                      ? `Send IDENTIFY ${draft.track} to ${callsign(byUid.get(sel[0]) ?? { uid: sel[0], kind: null })}${sendRoute ? ` (${sendRoute})` : ''}`
                       : 'Click a contact first'
-                    : `${grouped ? `Send ${kind.toUpperCase()} to ${groupLabel ?? `${sel.length} vehicles`} as one group` : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}${sendRoute ? ` (${sendRoute})` : ''}`}
+                    : `${grouped ? `Send ${kindWord} to ${groupLabel ?? `${sel.length} vehicles`} as one group` : `Send ${kindWord} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}${sendRoute ? ` (${sendRoute})` : ''}`}
               </button>
               </>
             )}
@@ -709,13 +667,12 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
 
       <header className="panel-head sub">
         <h2>Command log</h2>
-        <span className="muted">sent → acked → active → done</span>
       </header>
       <div className="log">
-        {taskings.length === 0 && runs.length === 0 && <p className="empty">Commands you send show up here and track each vehicle through to completion.</p>}
+        {taskings.length === 0 && runs.length === 0 && <p className="empty">Orders you send appear here</p>}
         {space &&
           scen != null &&
-          runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} map={space.clock} scen={scen} onOpen={onInbox} cancellable={space.cancellable ?? false} />)}
+          runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} scen={scen} onOpen={onInbox} cancellable={space.cancellable ?? false} />)}
         {shownTaskings.map((t) => {
           const e = identify.get(t.intent_id ?? -1)
           const c = cardOf(t)
@@ -723,15 +680,12 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, groupLabel = n
             <TaskingCard
               key={t.id}
               t={t}
-              sig={sigs.get(t) ?? ''}
+              sig={sigs.get(t) ?? t.ops.map((o) => `${o.id}:${o.uid}:${o.state}:${o.detail}:${o.progress}`).join('|')}
               label={c.label}
               num={c.id}
               numTitle={c.idTitle}
-              flown={c.flown}
-              moved={e?.moved ?? 0}
               ended={e?.ended ?? null}
-              authorized={authorized.get(t.id) ?? null}
-              ago={age(t.created, now ? now() : Date.now())}
+              over={(() => { const i = t.intent_id != null ? intentById.get(t.intent_id) : undefined; return orderOver(i?.kind, i?.state) })()}
               nameOf={nameOf}
               open={cardOpen(t.id)}
               onOpen={toggleCard}

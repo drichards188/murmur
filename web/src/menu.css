@@ -3,10 +3,8 @@
    starts and what runs; the four domain colours for fleets (and the backdrop, SwarmBackdrop.tsx,
    which reads them, space's and its own from here); green for running, red for ending and failing. */
 .boot { height: 100vh; background: var(--bg); }
-.menu-btn { padding: 4px 8px; margin-right: -8px; font: 600 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); border-color: #4a3a1f; }
-.menu-btn:hover { background: #2a2214; }
-/* the button takes the subtitle's room: the top bar is full already */
-.topbar.has-menu .sub { display: none; }
+/* the top bar's way back to the menu: quiet, a control like the others */
+.menu-btn { padding: 4px 8px; margin-right: -8px; font: 600 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
 
 .mm {
   --dom-air: #7fb8ff;

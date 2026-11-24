@@ -18,9 +18,8 @@
 // (from the measured line, or with a class from its reach and nominal speed), dashed, with a
 // countdown; or, with a measured velocity and no target, its heading a few seconds ahead. The
 // weapon's own fixes are solid; the strike is drawn at the victim when the victim reports it.
-// Pure functions, no DOM and no framework (weapon.check.ts); weaponLayers.ts draws, App.tsx shows
-// the banner, Tutorial.tsx the timeline. Times are engine ms (the bridge's clock).
-import { sensorsText } from './engageSteps.ts'
+// Pure functions, no DOM and no framework (weapon.check.ts); weaponLayers.ts draws, attackEvents.ts
+// joins its strikes into the attack's banner. Times are engine ms (the bridge's clock).
 import type { Munition } from './munition.ts'
 import type { LngLat } from './types.ts'
 
@@ -113,8 +112,6 @@ export interface WeaponTrack {
 export const FLY_ALT_M = 4
 /** a weapon track is drawn this long after it ended (the bridge forgets it then too), ms */
 export const SHOWN_MS = 60_000
-/** the banner holds the strike this long, ms */
-export const STRUCK_BANNER_MS = 45_000
 /** the strike's flash at the victim, ms */
 export const STRIKE_FLASH_MS = 1500
 /** a measured velocity with no target is drawn this far ahead of its last point, ms */
@@ -123,28 +120,6 @@ export const HEADING_AHEAD_MS = 3000
 /** "ATGM-class" -> "ATGM", "Air missile-class" -> "AIR MISSILE"; no class, "WEAPON" */
 export function weaponShort(name: string | null): string {
   return name ? (name.trim().replace(/-class$/i, '') || name).toUpperCase() : 'WEAPON'
-}
-
-/** "ATGM-class: 250 m/s, from T-0004" (the class with its evidence); null below the class stage */
-export function classText(w: WeaponTrack): string | null {
-  if (!w.class) return null
-  const ev = w.evidence.map((e) => e.short).join(', ')
-  return ev ? `${w.class}: ${ev}` : w.class
-}
-
-/** what the stage says of it, in a few words: "launch, bearing 270° from HUNTER 1",
- *  "weapon, type unknown, 243 m/s", "ATGM-class: 243 m/s, from T-0004" */
-export function stageText(w: WeaponTrack, nameOf: (uid: string) => string): string {
-  if (w.stage === 'class') return classText(w) ?? 'weapon'
-  if (w.stage === 'weapon') {
-    const v = w.speed_mps != null ? `, ${Math.round(w.speed_mps)} m/s` : ''
-    return `weapon, type unknown${v}${w.track ? ` (track ${w.track})` : ''}`
-  }
-  if (w.stage === 'launch') {
-    const l = w.launch
-    return l?.observer && l.bearing_deg != null ? `launch, bearing ${Math.round(l.bearing_deg)}° from ${nameOf(l.observer.uid)}` : 'launch'
-  }
-  return 'a fix, not yet a weapon'
 }
 
 /** The estimated flight as a munition-shaped line (munition.ts draws and moves it), only on a
@@ -184,52 +159,31 @@ export function countdownS(est: Munition | null, w: WeaponTrack, now: number): n
   return Math.max(0, Math.round((est.impact_t - now) / 100) / 10)
 }
 
-/** the map's label on the estimate: "EST. ATGM · 2.1 s", "EST. WEAPON · due" */
-export function estimateMapLabel(est: Munition, w: WeaponTrack, now: number): string {
+/** what a launch was told as, for the map's line */
+const LOOK_WORDS: Record<LaunchLook, string> = { missile: 'missile launch', rocket: 'rocket launch', muzzle: 'muzzle flash', transient: 'launch transient' }
+
+/** a class in words for the map: "ATGM" (an acronym stays), "air missile", "gun"; "weapon" without */
+function classWords(name: string | null): string {
+  if (!name) return 'weapon'
+  const bare = name.trim().replace(/-class$/i, '')
+  return /^[A-Z0-9]+$/.test(bare) ? weaponShort(name) : weaponShort(name).toLowerCase()
+}
+
+/** A weapon's one line on the map, in words, as far as its stage has come (ledger 1, change 24):
+ *  "missile launch" (a launch: its look when told), "ATGM at HUNTER 1, 2 s" (a class, heading for
+ *  one of ours, with its countdown), "weapon at HUNTER 1, due", "weapon, 243 m/s" (no target). */
+export function weaponLine(w: WeaponTrack, est: Munition | null, now: number, nameOf: (uid: string) => string): string {
+  if (w.stage === 'launch') return w.launch?.look ? LOOK_WORDS[w.launch.look] : 'launch'
+  const what = w.stage === 'class' ? classWords(w.class) : 'weapon'
   const c = countdownS(est, w, now)
-  return `EST. ${weaponShort(w.class)} · ${c == null ? 'struck' : c > 0 ? `${c.toFixed(1)} s` : 'due'}`
+  if (w.aimed_at && c != null) return `${what} at ${nameOf(w.aimed_at)}, ${c > 0 ? `${Math.max(1, Math.round(c))} s` : 'due'}`
+  if (w.aimed_at) return `${what} at ${nameOf(w.aimed_at)}`
+  return w.speed_mps != null ? `${what}, ${Math.round(w.speed_mps)} m/s` : what
 }
-
-/** what an estimate rests on, as a sentence: "heading for HUNTER 1 on its measured line, strike
- *  expected in about 4 s", "heading for HUNTER 1, the only one of ours within the ATGM-class's reach
- *  of the launch, at its nominal 250 m/s" */
-export function estimateText(w: WeaponTrack, est: Munition | null, nameOf: (uid: string) => string): string {
-  if (!est || !w.aimed_at) return ''
-  const who = nameOf(w.aimed_at)
-  return w.aim_basis === 'reach'
-    ? `heading for ${who}, the only one of ours within the ${w.class ?? 'class'}'s reach of the launch, at its nominal ${w.nominal_mps ?? '?'} m/s`
-    : `heading for ${who} on its measured line, strike expected about ${Math.max(1, Math.round(est.tof_s))} s after the first cue`
-}
-
-/** what the drawing rests on (the banner's tooltip) */
-export const ESTIMATE_NOTE =
-  'Known by stages, as a crew learns it: a launch (a camera saw the flash: where, and the bearing), then a weapon (fixes whose measured speed and origin say so: type unknown), then a class only on named evidence (its measured speed fitting a class, or a shooter identified as a kind known to carry it). The exact type is out of reach. The dashed flight is drawn only on a basis: the target and strike time derived from the measured line, or from the class\'s reach and nominal speed. Solid marks are the weapon\'s own fixes. A fast aircraft running at one of ours can be taken for a weapon.'
 
 /** The weapon tracks to draw at `now`: in flight, or ended within SHOWN_MS. */
 export function shownWeapons(ws: WeaponTrack[], now: number): WeaponTrack[] {
   return ws.filter((w) => w.ended_t == null || now - w.ended_t < SHOWN_MS)
-}
-
-/** The strikes on one vehicle of ours, as the map labels them: once, however many weapons struck it
- *  (a gun's every burst is a weapon of its own). `newest` is the latest strike's weapon (the label
- *  sits where it struck), `n` how many of `ws` struck; the label names each class once, in the order
- *  they first struck: "GUN STRUCK HUNTER 1 ×3", "ATGM + GUN STRUCK HUNTER 1 ×4". */
-export interface StruckGroup {
-  uid: string
-  newest: WeaponTrack
-  n: number
-  label: string
-}
-
-export function struckGroups(ws: WeaponTrack[], nameOf: (uid: string) => string): StruckGroup[] {
-  const by = new Map<string, WeaponTrack[]>()
-  for (const w of ws) if (w.struck) by.set(w.struck.uid, [...(by.get(w.struck.uid) ?? []), w])
-  return [...by].map(([uid, hits]) => {
-    hits.sort((a, b) => a.struck!.t - b.struck!.t)
-    const classes = [...new Set(hits.map((w) => weaponShort(w.class)))].join(' + ')
-    const n = hits.length
-    return { uid, newest: hits[n - 1], n, label: `${classes} STRUCK ${nameOf(uid)}${n > 1 ? ` ×${n}` : ''}` }
-  })
 }
 
 /** the strike flash's progress at the victim, 0 to 1; null outside it */
@@ -237,79 +191,6 @@ export function strikeFlash(w: WeaponTrack, now: number): number | null {
   if (!w.struck) return null
   const p = (now - w.struck.t) / STRIKE_FLASH_MS
   return p >= 0 && p < 1 ? p : null
-}
-
-/** "1:20.4" from a run's start (engine ms) */
-export function clockText(t: number, start: number | null): string {
-  if (start == null) return new Date(t).toISOString().slice(11, 21) + 'Z'
-  const s = Math.max(0, (t - start) / 1000)
-  const m = Math.floor(s / 60)
-  return `${m}:${(s - m * 60).toFixed(1).padStart(4, '0')}`
-}
-
-/** who fixed it: "REAPER 1 radar", each sensor once, in the order they first fixed it */
-export function fixedBy(w: WeaponTrack, nameOf: (uid: string) => string): string {
-  const seen: string[] = []
-  for (const f of w.fixes) if (!seen.includes(f.sensor)) seen.push(f.sensor)
-  return sensorsText(seen, nameOf)
-}
-
-/** One attack's cues as a person reads them: "launch seen by HUNTER 1 EO/IR at 1:20.4; weapon fixed
- *  by REAPER 1 radar from 1:22.0; assessed ATGM-class: 250 m/s, from T-0004; HUNTER 1 struck at
- *  1:24.4; 4.0 s of warning". `start`: the run's start (engine ms), for the clock. */
-export function timeline(w: WeaponTrack, nameOf: (uid: string) => string, start: number | null): string {
-  const parts: string[] = []
-  parts.push(w.launch ? `launch seen by ${sensorsText(w.launch.sensors, nameOf)} at ${clockText(w.launch.t, start)}` : 'launch not seen')
-  parts.push(w.fixes.length ? `weapon fixed by ${fixedBy(w, nameOf)} from ${clockText(w.fixes[0].t, start)}` : 'weapon not fixed in flight')
-  const c = classText(w)
-  if (c) parts.push(`assessed ${c}`)
-  if (w.struck) parts.push(`${nameOf(w.struck.uid)} struck at ${clockText(w.struck.t, start)}`)
-  else if (w.status === 'in_flight') parts.push('strike to come')
-  if (w.warning_s != null) parts.push(`${w.warning_s.toFixed(1)} s of warning`)
-  return parts.join('; ')
-}
-
-export interface WeaponBanner {
-  tone: 'incoming' | 'struck'
-  w: WeaponTrack
-  head: string
-  text: string
-}
-
-/** The banner while one of ours may be under attack, then its strike: the newest track in flight at
- *  the launch stage or above (LAUNCH with its bearing; INCOMING with what the stage knows and the
- *  countdown when there is an estimate), else the newest strike within STRUCK_BANNER_MS.
- *  `victimOf`: the estimate's end for a weapon. */
-export function weaponBanner(ws: WeaponTrack[], now: number, nameOf: (uid: string) => string, victimOf: (w: WeaponTrack) => LngLat | null): WeaponBanner | null {
-  const flying = ws
-    .filter((w) => w.status === 'in_flight' && !w.struck && w.stage !== 'plot')
-    .sort((a, b) => (b.first_cue_t ?? 0) - (a.first_cue_t ?? 0))[0]
-  if (flying) {
-    const seen = flying.launch ? `seen by ${sensorsText(flying.launch.sensors, nameOf)}` : 'launch not seen'
-    if (flying.stage === 'launch') {
-      const from = flying.shooter ? ` from ${flying.shooter}` : ''
-      return { tone: 'incoming', w: flying, head: 'LAUNCH', text: `${stageText(flying, nameOf)}${from} · ${seen} · weapon not yet tracked: type, speed and target unknown` }
-    }
-    const est = estimate(flying, victimOf(flying))
-    const c = countdownS(est, flying, now)
-    const at = flying.aimed_at ? ` at ${nameOf(flying.aimed_at)}` : ''
-    const when = c == null ? '' : c > 0 ? `, strike expected in ${c.toFixed(1)} s` : ', strike due'
-    const fixed = flying.fixes.length ? `fixed by ${fixedBy(flying, nameOf)}` : 'not tracked in flight'
-    return { tone: 'incoming', w: flying, head: 'INCOMING', text: `${stageText(flying, nameOf)}${at}${when} · ${seen} · ${fixed}` }
-  }
-  const struck = ws.filter((w) => w.struck && now - w.struck.t >= 0 && now - w.struck.t < STRUCK_BANNER_MS).sort((a, b) => b.struck!.t - a.struck!.t)[0]
-  if (struck) {
-    const who = nameOf(struck.struck!.uid)
-    const how = struck.launch
-      ? `launch seen by ${sensorsText(struck.launch.sensors, nameOf)}`
-      : struck.fixes.length
-        ? `launch not seen; weapon fixed by ${fixedBy(struck, nameOf)}`
-        : 'no sensor saw the launch or the weapon'
-    const c = classText(struck)
-    const warning = struck.warning_s != null ? ` · ${struck.warning_s.toFixed(1)} s of warning` : ''
-    return { tone: 'struck', w: struck, head: `${who.toUpperCase()} STRUCK`, text: `${how}${c ? ` · ${c}` : ''}${warning} · any damage is its own report (Inbox)` }
-  }
-  return null
 }
 
 /** The act reports that launched a weapon (their drawing is the weapon's, not an arrow). */

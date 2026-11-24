@@ -1,6 +1,6 @@
 // Checks for commandModel.ts: node web/src/commandModel.check.ts (prints "commandModel: ok").
 import assert from 'node:assert/strict'
-import { cardLabel, kindsOf, orderPhrase, rangeBetween, routing, selectionLine, stage } from './commandModel.ts'
+import { cardLabel, domainChoices, kindsOf, orderPhrase, rangeBetween, routing, ruleName, selectionLine, sendWords } from './commandModel.ts'
 
 assert.equal(orderPhrase('orbit', { radius: 400.4 }), 'Orbit 400 m')
 assert.equal(orderPhrase('patrol', { points: 1 }), 'Patrol 1 waypoint')
@@ -18,12 +18,16 @@ assert.equal(routing({ ...base, submission_authorizes: true, would_reach: 'x' },
 assert.equal(routing({ ...base, passed: false }, tier).tone, 'fail')
 assert.equal(routing({ ...base, would_reach: 'queued' }, tier).short, 'reaches queued', 'anything else is said as it came')
 
-// the steps
-assert.equal(stage({ complete: false, loading: false, answered: false, passed: false, sent: false }), 'compose')
-assert.equal(stage({ complete: true, loading: true, answered: false, passed: false, sent: false }), 'checking')
-assert.equal(stage({ complete: true, loading: false, answered: true, passed: true, sent: false }), 'ready')
-assert.equal(stage({ complete: true, loading: false, answered: true, passed: false, sent: false }), 'blocked')
-assert.equal(stage({ complete: true, loading: false, answered: true, passed: true, sent: true }), 'sent')
+// the send button carries the dry run: checking, then where it goes
+assert.equal(sendWords({ complete: false, loading: false, routing: null }), null, 'nothing to check yet')
+assert.equal(sendWords({ complete: true, loading: true, routing: null }), 'checking...')
+assert.equal(sendWords({ complete: true, loading: true, routing: routing(base, tier) }), 'goes at once', 'a new check keeps the last answer')
+assert.equal(sendWords({ complete: true, loading: false, routing: routing({ ...base, passed: false }, tier) }), 'the rules would refuse it')
+
+// a check's rule in words
+assert.equal(ruleName('domain'), 'land or water on the way')
+assert.equal(ruleName('platform_limits'), 'platform limits')
+assert.equal(ruleName('some_new_rule'), 'some new rule', 'an unknown rule: its name without underscores')
 
 // the selection in a line: not 100 callsigns
 const air = { kind: 'copter' as const, identity: null }
@@ -43,6 +47,11 @@ assert.deepEqual(rangeBetween(order, 99, 7), [7], 'an anchor no longer listed: j
 const id = (uid: number, platform: string, short: string) => ({ uid, identity: { platform, short } as never })
 const kinds = kindsOf([id(1, 'puma', 'Puma'), id(2, 'magura', 'Magura'), id(3, 'puma', 'Puma'), { uid: 4, identity: null }])
 assert.deepEqual(kinds.map((k) => [k.id, k.uids]), [['puma', [1, 3]], ['magura', [2]]], 'most numerous first; no identity, no kind')
+
+// the Select menu's domains: all, then each present, sea for water and under water
+const fleet = [{ uid: 1, kind: 'copter' as const, identity: null }, { uid: 2, kind: 'boat' as const, identity: null }, { uid: 3, kind: 'sub' as const, identity: null }]
+assert.deepEqual(domainChoices(fleet).map((c) => [c.id, c.uids]), [['all', [1, 2, 3]], ['air', [1]], ['sea', [2, 3]]], 'no ground vehicle: no Ground')
+assert.deepEqual(domainChoices([]), [], 'no fleet: nothing to select')
 
 assert.equal(cardLabel('orbit', 'North picket'), 'ORBIT · North picket')
 assert.equal(cardLabel('orbit', null), 'ORBIT')

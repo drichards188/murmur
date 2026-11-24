@@ -4,7 +4,7 @@
 // (the reason is said wherever it is used, and the affiliation stays the tracker's and the
 // person's).
 //
-// In focus, a track is: selected or hovered; pinned by the person; hostile or suspect; declared
+// In focus, a track is: selected or hovered; hostile or suspect; declared
 // (by anyone, the engine's rule included); flagged for review, or named by a review item waiting
 // on the person; an engagement's target or a blocker of its keep-out (in play, waiting, or on the
 // nomination form). A lost contact the same, by its last affiliation. Our vehicle: selected, or
@@ -23,12 +23,11 @@ export const CROWD = 40
 /** At most this many silent vehicles: both estimates of each, filled, as before. */
 export const CROWD_SILENT = 10
 
-export type FocusReason = 'selected' | 'pinned' | 'hostile' | 'suspect' | 'declared' | 'flagged' | 'review' | 'engagement' | 'hovered'
+export type FocusReason = 'selected' | 'hostile' | 'suspect' | 'declared' | 'flagged' | 'review' | 'engagement' | 'hovered'
 
 /** In words, for a label's or a legend's title: why it is drawn in full. */
 export const FOCUS_WORDS: Record<FocusReason, string> = {
   selected: 'selected',
-  pinned: 'pinned by you',
   hostile: 'hostile',
   suspect: 'suspect',
   declared: 'declared',
@@ -41,7 +40,6 @@ export const FOCUS_WORDS: Record<FocusReason, string> = {
 export interface FocusInput {
   selected: string | null
   hovered?: string | null
-  pinned: ReadonlySet<string>
   /** tracks a review item names (declarations to confirm or revoke, open flags, what holds up a nomination) */
   review: ReadonlySet<string>
   /** tracks an engagement in play or on the form rests on: its target, its keep-out's blockers */
@@ -51,7 +49,6 @@ export interface FocusInput {
 /** Why a track is in focus, the first reason that holds, or null (drawn dim). */
 export function trackFocus(t: Pick<Track, 'id' | 'affiliation' | 'declared' | 'review'>, f: FocusInput): FocusReason | null {
   if (t.id === f.selected) return 'selected'
-  if (f.pinned.has(t.id)) return 'pinned'
   if (t.affiliation === 'hostile') return 'hostile'
   if (t.affiliation === 'suspect') return 'suspect'
   if (t.declared) return 'declared'
@@ -65,7 +62,6 @@ export function trackFocus(t: Pick<Track, 'id' | 'affiliation' | 'declared' | 'r
 /** Why a lost contact (rules 16) is in focus, or null: its possible area then drawn faint. */
 export function lostFocus(l: Pick<LostContact, 'id' | 'affiliation' | 'declared_by'>, f: FocusInput): FocusReason | null {
   if (l.id === f.selected) return 'selected'
-  if (f.pinned.has(l.id)) return 'pinned'
   if (l.affiliation === 'hostile') return 'hostile'
   if (l.affiliation === 'suspect') return 'suspect'
   if (l.declared_by) return 'declared'

@@ -4,8 +4,7 @@
 // on top of each other, and the one shown is the one its button marks. What waits for a person
 // stays in sight whichever is shown (Awaiting.tsx at the head of every drawer but the Inbox, the
 // Inbox button's badges, the waiting strip across the top), and everything else anchored to the
-// map's right edge (the hidden legend, the group strip, the weather details, the globe, the map's
-// zoom buttons) sits beside the dock, `--dock-w` from that edge. The vehicle details, the
+// map's right edge (the group strip, the weather details, the globe, the map's zoom buttons) sits beside the dock, `--dock-w` from that edge. The vehicle details, the
 // Situation panel and the tutorial's card keep to the map's left and give way to the dock rather
 // than lie under it. The Officer tab is there only where the run's AI takes requests (officer.ts
 // `officerShown`): a situation's model officer, or in the open world one that has read the tasking.
@@ -26,8 +25,8 @@ export function closeDock(shown: DockId | null, id: DockId): DockId | null {
   return shown === id ? null : shown
 }
 
-/** The dock's width in px for each drawer (the Sitrep is the wide one), at most the map's. */
-export const DOCK_WIDTH: Readonly<Record<DockId, number>> = { inbox: 430, officer: 430, queue: 430, sitrep: 760, swarms: 430 }
+/** The dock's width in px for each drawer (one width for all, the Sitrep no wider), at most the map's. */
+export const DOCK_WIDTH: Readonly<Record<DockId, number>> = { inbox: 430, officer: 430, queue: 430, sitrep: 430, swarms: 430 }
 
 /** The room a fit of the map leaves on its right (MapView's `fit.padRight`) with nothing docked. */
 export const FIT_PAD = 70

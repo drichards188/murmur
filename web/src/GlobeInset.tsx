@@ -192,18 +192,11 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
     })
   }, [area, links, ready])
 
-  const counts = positions.data?.classes.map((c) => `${c.class_id} ${c.shown}${c.shown < c.total ? `/${c.total}` : ''}`).join(' · ')
   return (
     <div className={`globe${big ? ' big' : ''}`} aria-label="Globe inset">
       <div ref={container} className="globe-map" />
       {lost && <div className="globe-lost">Globe paused: graphics context lost</div>}
       <div className="globe-head">
-        <span>GLOBE</span>
-        {positions.data?.time_shifted && (
-          <span className="shifted" title={positions.data.time_note}>
-            +{positions.data.time_map.shift_days} d
-          </span>
-        )}
         <span className="globe-tools">
           {!follow && (
             <button className="ghost mini" onClick={recenter} title="Follow the theater map again (resets tilt and rotation)">
@@ -217,11 +210,6 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
         <button className="ghost mini" onClick={onClose} aria-label="Hide globe">
           ✕
         </button>
-      </div>
-      <div className="globe-foot" title={counts}>
-        {positions.error ? positions.error : counts ? 'satellites by class, subsampled' : 'loading…'}
-        {track && norad === track.norad_id ? ` · track: ${track.satellite}` : ''}
-        {' · drag to spin, right-drag to tilt'}
       </div>
     </div>
   )

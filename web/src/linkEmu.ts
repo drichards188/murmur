@@ -109,11 +109,6 @@ export function emuCause(cause: string | null | undefined, downWhen?: string | n
   }
 }
 
-export function fmtBps(bps: number): string {
-  if (!bps) return 'unlimited'
-  return bps >= 1e6 ? `${(bps / 1e6).toFixed(bps % 1e6 ? 1 : 0)} Mbps` : bps >= 1e3 ? `${(bps / 1e3).toFixed(0)} kbps` : `${bps} bps`
-}
-
 export function fmtDuration(s: number): string {
   if (s < 90) return `${Math.round(s)} s`
   if (s < 5400) return `${Math.round(s / 60)} min`

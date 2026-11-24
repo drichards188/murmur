@@ -4,6 +4,7 @@
 // bridge or the engine (resolving one stays the person's act, on its card); a settled flag only
 // moves out of the pending strip and below the Inbox's live items, as a quiet line that still opens
 // its card. Pure: needsYou.check.ts.
+import { engagementRank, NEEDS_UP_TO, type EngageLike } from './inboxOrder.ts'
 import { unfolded } from './swarmsModel.ts'
 import type { Alert } from './decisions'
 import type { SwarmAlert } from './swarmsModel'
@@ -98,22 +99,24 @@ export interface NeedsYou {
   waiting: number
   high: number
   medium: number
+  /** engagements under way or assessed that ask something: the picture changed, a gun firing, a
+   *  verdict of persists or unknown (inboxOrder.ts `engagementRank`) */
+  engagements: number
   /** not counted: informational alerts, flags settled by a later decision, alerts acknowledged
-   *  or snoozed in this browser */
+   *  in this browser */
   info: number
   settled: number
   muted: number
-  /** the badge's tone: the most urgent kind counted */
-  tone: 'wait' | 'high' | 'pend' | 'med' | 'rev' | null
   /** what the total counts, and what it leaves out, in a sentence for a title */
   says: string
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
-/** The one count of what needs the person. `hidden`: alerts acknowledged or snoozed here;
- *  `settled`: settledFlags' ids. An alert folded into a swarm's counts once, as the swarm's. */
-export function needsYou(inbox: InboxLike | null | undefined, hidden: ReadonlySet<string>, settled: ReadonlySet<string>): NeedsYou {
+/** The one count of what needs the person. `hidden`: alerts acknowledged here; `settled`:
+ *  settledFlags' ids; `engagements`: the run's engagements (the intents' engage kinds), of which
+ *  those that ask something count. An alert folded into a swarm's counts once, as the swarm's. */
+export function needsYou(inbox: InboxLike | null | undefined, hidden: ReadonlySet<string>, settled: ReadonlySet<string>, engagements: readonly EngageLike[] = []): NeedsYou {
   const approvals = inbox?.pending.length ?? 0
   const r = inbox?.review
   const openFlags = (r?.flags ?? []).filter((f) => statusOf(f) === 'open')
@@ -127,10 +130,11 @@ export function needsYou(inbox: InboxLike | null | undefined, hidden: ReadonlySe
   const medium = sev.filter((s) => s === 'medium').length
   const info = sev.length - high - medium
   const muted = all.length - live.length
-  const total = approvals + review + high + medium
-  const tone: NeedsYou['tone'] = waiting ? 'wait' : high ? 'high' : approvals ? 'pend' : medium ? 'med' : review ? 'rev' : null
+  const asking = engagements.filter((e) => engagementRank(e) <= NEEDS_UP_TO).length
+  const total = approvals + review + high + medium + asking
   const counted = [
     approvals ? plural(approvals, 'approval or signature', 'approvals or signatures') : '',
+    asking ? plural(asking, 'engagement') + ' to look at' : '',
     review ? `${plural(review, 'item')} for review${waiting ? ` (${waiting} holding up a nomination)` : ''}` : '',
     high ? plural(high, 'high alert') : '',
     medium ? plural(medium, 'medium alert') : '',
@@ -138,8 +142,8 @@ export function needsYou(inbox: InboxLike | null | undefined, hidden: ReadonlySe
   const left = [
     info ? `${plural(info, 'alert')} for information` : '',
     settledN ? `${plural(settledN, 'flag')} a later declaration settled` : '',
-    muted ? `${plural(muted, 'alert')} acknowledged or snoozed here` : '',
+    muted ? `${plural(muted, 'alert')} acknowledged here` : '',
   ].filter(Boolean)
   const says = `${total ? `${total} need${total === 1 ? 's' : ''} you: ${counted.join(', ')}` : 'Nothing needs you'}${left.length ? `. Not counted: ${left.join(', ')}` : ''}.`
-  return { total, approvals, review, waiting, high, medium, info, settled: settledN, muted, tone, says }
+  return { total, approvals, review, waiting, engagements: asking, high, medium, info, settled: settledN, muted, says }
 }

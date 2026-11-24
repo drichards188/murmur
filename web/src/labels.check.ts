@@ -4,8 +4,8 @@
 // full, the rest short, except while few labels are in view (then everyone in full, as before);
 // a full block that does not fit falls back to the short label, then to none; ties keep the
 // caller's order; each priority's zoom floor holds; an obstacle (a cluster marker) takes room and
-// is never counted; labels off the screen are not counted; Show all draws every one in full; the
-// counts add up. Throws on the first failure, prints "labels: ok" otherwise.
+// is never a label; labels off the screen are not placed. Throws on the first failure, prints
+// "labels: ok" otherwise.
 import { centred, FEW, LABEL_MIN_ZOOM, planLabels, rightOf, textBox, textWidth, type Box, type LabelCandidate, type Priority } from './declutter.ts'
 
 function check(cond: unknown, what: string) {
@@ -26,7 +26,6 @@ function cand(key: string, x: number, y: number, priority: Priority = 4, extra: 
 {
   const p = planLabels([cand('a', 100, 100), cand('b', 600, 100), cand('c', 100, 400)], opts)
   check(['a', 'b', 'c'].every((k) => p.level(k) === 'full'), 'few labels, all in full')
-  check(!p.stats.budgeted && p.stats.full === 3 && p.stats.inView === 3, `few labels: counts ${JSON.stringify(p.stats)}`)
 }
 // two in full would overlap: the second falls back to short where that fits, else none
 {
@@ -45,7 +44,7 @@ crowd.push(cand('v:sel', 600, 400, 1, { force: true }))
 crowd.push(cand('v:sel2', 605, 402, 1, { force: true }))
 {
   const p = planLabels(crowd, opts)
-  check(p.stats.budgeted, 'over FEW labels the budget is in force')
+  check(crowd.some((c) => c.priority !== 1 && p.level(c.key) === 'short'), 'over FEW labels the budget is in force: the rest go short')
   check(p.level('v:sel') === 'full' && p.level('v:sel2') === 'full', 'forced labels are placed in full, even overlapping each other')
   const boxes: { key: string; b: number[]; force: boolean }[] = []
   for (const c of crowd) {
@@ -63,7 +62,6 @@ crowd.push(cand('v:sel2', 605, 402, 1, { force: true }))
       check(!over, `labels ${a.key} and ${b.key} overlap`)
     }
   check(boxes.length < 200, `the budget is bounded by the screen, not the crowd (${boxes.length} placed of ${crowd.length})`)
-  check(p.stats.full + p.stats.short + p.stats.none === p.stats.inView && p.stats.inView === crowd.length, `the counts add up ${JSON.stringify(p.stats)}`)
 }
 // priority before order: a priority-1 label wins its place over an earlier priority-4 one
 {
@@ -84,21 +82,16 @@ crowd.push(cand('v:sel2', 605, 402, 1, { force: true }))
   check(p.level('rest') === 'none' && p.level('alert') === 'none', 'below the floor, priorities 3 and 4 go bare')
   check(p.level('group') !== 'none' && p.level('focus') === 'full', 'group names and focus keep their labels at any zoom')
 }
-// an obstacle takes room, is never counted and never drawn as a label
+// an obstacle takes room and is never drawn as a label
 {
   const p = planLabels([cand('c:1', 300, 100, 2, { obstacle: true, short: [-40, -40, 40, 40], full: [-40, -40, 40, 40] }), cand('near', 310, 100)], opts)
   check(p.level('near') === 'none', 'a label under a cluster marker is not drawn')
-  check(p.stats.inView === 1 && p.level('c:1') === 'none', `the marker is not a label (${JSON.stringify(p.stats)})`)
+  check(p.level('c:1') === 'none', 'the marker is not a label')
 }
-// off the screen: not counted
+// off the screen: not placed
 {
   const p = planLabels([cand('in', 100, 100), cand('out', -500, 100), { ...cand('behind', 0, 0), at: null }], opts)
-  check(p.stats.inView === 1 && p.level('out') === 'none' && p.level('behind') === 'none', 'labels off the screen are not counted')
-}
-// Show all: every label in view in full
-{
-  const p = planLabels(crowd, { ...opts, all: true })
-  check(crowd.every((c) => p.level(c.key) === 'full') && p.stats.full === crowd.length && p.stats.all, 'Show all draws every label in full')
+  check(p.level('in') === 'full' && p.level('out') === 'none' && p.level('behind') === 'none', 'labels off the screen are not placed')
 }
 
 // one budget across layers (bd murmur-iobd.3): an event's label and a callsign beside it

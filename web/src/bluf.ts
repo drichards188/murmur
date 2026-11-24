@@ -182,6 +182,7 @@ export function watchParts(w: { text: string; headline?: string; bullets?: strin
 /** What an alert asks of the operator, by its kind, in plain words (the card's header already
  *  names the kind and the vehicle). The bridge's own detail follows as bullets, whole under More. */
 const ALERT_HEADLINE: Record<string, string> = {
+  damaged: 'Damaged: look at what it can still do',
   lost_link: 'No telemetry: its link is down',
   not_moving: 'Not moving as ordered: look at it',
   left_task: 'Left its task: look at it, re-order or let it go',
@@ -205,8 +206,14 @@ const ALERT_HEADLINE: Record<string, string> = {
 
 /** An alert as headline (what it asks), the bridge's detail as up to three bullets, and the
  *  detail whole under More when it was cut. `lost_link` says how long, from the age. */
-export function alertParts(a: { kind: string; detail: string }, ageText?: string): BlufParts {
-  const headline = (a.kind === 'lost_link' && ageText ? `No telemetry for ${ageText}: its link is down` : ALERT_HEADLINE[a.kind]) ?? ''
+export function alertParts(a: { kind: string; detail: string }, ageText?: string, who?: string): BlufParts {
+  // the consequence first, naming the vehicle (R10): what it can no longer do
+  if (a.kind === 'damaged' && who) {
+    const cannot = [/cannot move/.test(a.detail) ? 'move' : '', /weapons can't be used/.test(a.detail) ? 'fire' : ''].filter(Boolean)
+    return { headline: cannot.length ? `${who} cannot ${cannot.join(' or ')}` : `${who} is damaged`, bullets: [], more: a.detail }
+  }
+  if (a.kind === 'lost_link' && ageText) return { headline: `${who ? `${who} has had no` : 'No'} telemetry for ${ageText}: its link is down`, bullets: [], more: '' }
+  const headline = ALERT_HEADLINE[a.kind] ?? ''
   if (a.kind === 'lost_link') return { headline, bullets: [], more: '' }
   const d = reasonBluf(a.detail)
   if (!headline) return d

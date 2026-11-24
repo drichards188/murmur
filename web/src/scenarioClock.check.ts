@@ -3,7 +3,7 @@
 // bridge's time since it times the rate, whatever the browser's clock says; without a start it is
 // the bridge's own clock; before the bridge answers it shows no time. Throws on the first failure,
 // prints "scenarioClock: ok" otherwise.
-import { clockText, scenarioMs, type ScenarioClockAnswer, fmtWorldZ, setWorldClock } from './scenarioClock.ts'
+import { clockText, fmtWorldZ, runClock, scenarioMs, setWorldClock, type ScenarioClockAnswer } from './scenarioClock.ts'
 
 function check(cond: unknown, what: string) {
   if (!cond) throw new Error(`scenarioClock: ${what}`)
@@ -34,5 +34,10 @@ check(fmtWorldZ(started + 10 * 60_000) === '15:10:00Z', "before the map: the bri
 setWorldClock(situation.map)
 check(fmtWorldZ(started + 10 * 60_000) === '17:10:00Z', `a card's impact time agrees with the top bar (${fmtWorldZ(started + 10 * 60_000)})`)
 setWorldClock(null)
+
+// a situation's time beside it, once (new piece 8)
+check(runClock({ elapsed: 207, left: 513 }) === 'T+3:27 · 8:33 left', 'T+ and time left')
+check(runClock({ elapsed: null, left: null }) === 'T+--:--', 'before the situation clock starts')
+check(runClock(null) === null, 'no situation: nothing beside the clock')
 
 console.log('scenarioClock: ok')

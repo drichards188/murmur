@@ -349,3 +349,21 @@ export function trailHeadPath(tail: Pt[], report: Pt, drawn: Pt): Pt[] {
 
 /** how close to the nearest trail segment another, newer one must be to be taken instead */
 export const TRAIL_CUT_TOLERANCE_M = 3
+
+/** How much of a trail the map draws, metres along it back from its newest point: the direction
+ *  of travel, not ten kilometres of an aircraft's last two minutes (ledger 1, the map's trails). */
+export const TRAIL_DRAWN_M = 500
+
+/** The newest stretch of `trail` (oldest first, [lon, lat, height m]) about `maxM` long, measured
+ *  along it as `hopM` measures (height too): the newest point always, back to the point that
+ *  crosses the limit. The whole trail when it is shorter. The same suffix whether given the whole
+ *  trail or its last few points, when the limit falls within them. */
+export function trailWithin<T extends Pt>(trail: readonly T[], maxM = TRAIL_DRAWN_M): T[] {
+  let along = 0
+  for (let i = trail.length - 1; i > 0; i--) {
+    const [a, b] = [trail[i - 1], trail[i]]
+    along += hopM({ lon: a[0], lat: a[1], alt: a[2], hdg: null }, { lon: b[0], lat: b[1], alt: b[2], hdg: null })
+    if (along >= maxM) return trail.slice(i - 1)
+  }
+  return trail.slice()
+}

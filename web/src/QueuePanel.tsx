@@ -1,5 +1,7 @@
 import { type ReactNode, useState } from 'react'
-import { fmtDuration, intentAction, type Decisions, type Intent } from './decisions'
+import { intentAction, type Decisions, type Intent } from './decisions'
+import { askSentence, type AskFleet } from './approvalText'
+import { leftWords, queueShown, RECENT_MS, whyLine } from './queueWords'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 import './queue.css'
@@ -11,8 +13,6 @@ import './queue.css'
  *  can be reached its checks run again on the world then: it is sent, comes back to the
  *  inbox (a human's picture changed), or is voided; past its wait it expires. The last such
  *  outcomes are listed too. */
-
-const RECENT_MS = 10 * 60_000
 
 interface Props {
   decisions: Decisions | null
@@ -26,8 +26,20 @@ interface Props {
   banners?: ReactNode
 }
 
-export function QueueButton({ decisions, open, onClick }: { decisions: Decisions | null; open: boolean; onClick: () => void }) {
+/** The orders that left the queue in the last ten minutes: how, and what the re-check found. */
+function recentOf(decisions: Decisions | null, nowMs: number): Intent[] {
+  return (decisions?.intents ?? []).filter((i) => {
+    if (!outcomeOf(i)) return false
+    const last = i.history[i.history.length - 1]?.t ?? 0
+    return nowMs - last < RECENT_MS
+  })
+}
+
+/** The Queue's button: only while an order is held or one just left (an empty queue is a button to
+ *  nothing); the open drawer keeps its button so it can be closed. */
+export function QueueButton({ decisions, open, onClick, now }: { decisions: Decisions | null; open: boolean; onClick: () => void; now: () => number }) {
   const n = decisions?.inbox.queued?.length ?? 0
+  if (!queueShown(n, recentOf(decisions, now()).length, open)) return null
   const title = `${n} order${n === 1 ? '' : 's'} held for vehicles the link can't reach now`
   return (
     <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={title} aria-label={`Queue: ${title}`}>
@@ -37,21 +49,24 @@ export function QueueButton({ decisions, open, onClick }: { decisions: Decisions
   )
 }
 
+function fleetOf(vehicles: Vehicle[]): AskFleet {
+  const by = (u: string) => vehicles.find((x) => String(x.uid) === u)
+  return {
+    callsign: (u) => {
+      const v = by(u)
+      return v ? callsign(v) : `vehicle ${u}`
+    },
+    model: (u) => by(u)?.identity?.short ?? null,
+    swarm: (u) => by(u)?.swarm ?? by(u)?.identity?.swarm ?? null,
+  }
+}
+
 function names(vehicles: Vehicle[], uids: string[]) {
-  return uids.map((u) => {
-    const v = vehicles.find((x) => String(x.uid) === u)
-    return v ? callsign(v) : `vehicle ${u}`
-  })
+  const f = fleetOf(vehicles)
+  return uids.map((u) => f.callsign(u))
 }
 
-function what(i: Intent) {
-  const p = i.params
-  if (i.kind === 'orbit' && p.center) return `orbit ${Math.round(p.radius_m ?? 0)} m`
-  if (i.kind === 'patrol' && p.route) return `patrol ${p.route.length} waypoints`
-  if (i.kind === 'transit' && p.route) return `transit ${p.route.length} point${p.route.length === 1 ? '' : 's'}, held at the end`
-  return i.kind
-}
-
+/** Who authorized it: folded under the card, the vehicles are what the card is for. */
 function who(i: Intent) {
   if (i.handed_over) return `the previous watch: handed over at the start by ${i.handed_over.fleet}`
   const a = i.approval
@@ -80,11 +95,8 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners
   const [busy, setBusy] = useState<number | null>(null)
   const [notice, setNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null)
   const nowMs = now()
-  const recent = (decisions?.intents ?? []).filter((i) => {
-    if (!outcomeOf(i)) return false
-    const last = i.history[i.history.length - 1]?.t ?? 0
-    return nowMs - last < RECENT_MS
-  })
+  const recent = recentOf(decisions, nowMs)
+  const fleet = fleetOf(vehicles)
   const cancel = async (i: Intent) => {
     setBusy(i.id)
     try {
@@ -100,7 +112,6 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners
     <aside className="ix q" aria-label="Queue">
       <div className="ix-top">
         <h2>Queue</h2>
-        <span className="q-sub">orders held for unreachable vehicles</span>
         <button className="ghost close" onClick={onClose} aria-label="Close the queue">
           ×
         </button>
@@ -114,40 +125,21 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners
         </div>
       )}
       <div className="ix-scroll">
-        <h3 className="ix-h">
-          Waiting <span>{queued.length}</span>
-          <small>re-checked on the world when they can be reached</small>
-        </h3>
-        {queued.length === 0 && <p className="empty muted">Nothing waits: every approved order reached its vehicles.</p>}
         {queued.map((i) => {
           const left = i.queue ? (i.queue.expires_t - nowMs) / 1000 : null
           const total = i.queue ? (i.queue.expires_t - i.queue.t) / 1000 : null
           const frac = left != null && total ? Math.max(0, Math.min(1, left / total)) : 0
           const reach = i.reach_now ?? i.queue?.reach ?? []
+          const waiting = reach.filter((r) => !r.reachable)
+          const heard = reach.filter((r) => r.reachable)
+          const why = whyLine(i)
           return (
             <article key={i.id} className="ix-card q-card" tabIndex={0} onClick={() => onFocus(i.uids.map(Number).filter(Number.isFinite))}>
               <div className="ix-head">
-                <span className="ix-kind">{what(i).toUpperCase()}</span>
+                <span className="ix-kind" title={i.handed_over ? `the previous watch's order, handed over at the start by ${i.handed_over.fleet}` : undefined}>
+                  {askSentence(i, fleet)}
+                </span>
                 <span className="ix-id">i{i.id}</span>
-                <span className="ix-tag q-tag">queued</span>
-                {i.handed_over && (
-                  <span className="ix-tag" title={`the previous watch's order, handed over at the start by ${i.handed_over.fleet}`}>
-                    handed over
-                  </span>
-                )}
-                {i.resumed && (
-                  <span className="ix-tag warn" title={`carried over from ${i.resumed.from.log} (${i.resumed.from.was})`}>
-                    after restart
-                  </span>
-                )}
-                {i.dispatched_before && (
-                  <span
-                    className="ix-tag warn"
-                    title="it was sent before its link was lost: when it goes again, the vehicle is asked what it holds first"
-                  >
-                    sent before
-                  </span>
-                )}
                 {left != null && (
                   <span
                     className={`ix-count ${left < 60 ? 'urgent' : ''}`}
@@ -157,7 +149,7 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners
                         : 'it expires when its wait runs out'
                     }
                   >
-                    <b>{fmtDuration(left)}</b>
+                    <b>{leftWords(left)}</b>
                     <span className="ix-count-bar">
                       <span style={{ width: `${frac * 100}%` }} />
                     </span>
@@ -165,16 +157,31 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners
                 )}
               </div>
               <div className="q-for">
-                for <b>{names(vehicles, i.uids).join(', ')}</b> · {who(i)}
+                waiting for <b>{names(vehicles, i.uids).join(', ')}</b>
               </div>
-              <ul className="q-reach">
-                {reach.map((r) => (
-                  <li key={r.uid} className={r.reachable ? 'ok' : 'wait'}>
-                    <b>{names(vehicles, [r.uid])[0]}</b> {r.reachable ? 'reachable: ' : 'waiting: '}
-                    {r.detail}
-                  </li>
-                ))}
-              </ul>
+              {why && <div className="q-why">{why}</div>}
+              {waiting.length > 0 && (
+                <ul className="q-reach">
+                  {waiting.map((r) => (
+                    <li key={r.uid} className="wait">
+                      <b>{names(vehicles, [r.uid])[0]}</b>: {r.detail}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <details className="q-fold" onClick={(e) => e.stopPropagation()}>
+                <summary>Details</summary>
+                <p className="q-for">{who(i)}</p>
+                {heard.length > 0 && (
+                  <ul className="q-reach">
+                    {heard.map((r) => (
+                      <li key={r.uid} className="ok">
+                        <b>{names(vehicles, [r.uid])[0]}</b> reachable: {r.detail}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </details>
               <div className="q-actions">
                 <button
                   className="ghost"
@@ -194,20 +201,17 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners
           <>
             <h3 className="ix-h">
               Left the queue <span>{recent.length}</span>
-              <small>last 10 min</small>
             </h3>
             {recent.map((i) => {
               const o = outcomeOf(i)!
               return (
-                <article key={i.id} className={`ix-card q-card q-done ${o.tone}`} tabIndex={0} onClick={() => onFocus(i.uids.map(Number).filter(Number.isFinite))}>
+                <article key={i.id} className={`ix-card q-card q-done${o.tone === 'ok' ? '' : ` ${o.tone}`}`} tabIndex={0} onClick={() => onFocus(i.uids.map(Number).filter(Number.isFinite))}>
                   <div className="ix-head">
-                    <span className="ix-kind">{what(i).toUpperCase()}</span>
+                    <span className="ix-kind">{askSentence(i, fleet, true)}</span>
                     <span className="ix-id">i{i.id}</span>
                     <span className={`ix-tag q-out ${o.tone}`}>{o.label}</span>
                   </div>
-                  <div className="q-for">
-                    for <b>{names(vehicles, i.uids).join(', ')}</b> · now {i.state.replace('_', ' ')}
-                  </div>
+                  <div className="q-for">now {i.state.replace('_', ' ')}</div>
                   {o.lines.filter(Boolean).length > 0 && (
                     <ul className="q-changes">
                       {o.lines.filter(Boolean).map((l, k) => (

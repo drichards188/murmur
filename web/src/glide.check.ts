@@ -2,7 +2,7 @@
 // strips the types itself (make check does this):
 //   node web/src/glide.check.ts
 // Throws on the first failure, prints "glide: ok" otherwise. Not part of the bundle.
-import { arcDelta, glideMs, Glider, implausibleHop, lerpHeading, MAX_GLIDE_MS, trailHeadPath, type Context, type Pt, type Report } from './glide.ts'
+import { arcDelta, glideMs, Glider, implausibleHop, lerpHeading, MAX_GLIDE_MS, TRAIL_DRAWN_M, trailHeadPath, trailWithin, type Context, type Pt, type Report } from './glide.ts'
 
 function check(cond: boolean, what: string) {
   if (!cond) throw new Error(`glide check failed: ${what}`)
@@ -205,6 +205,22 @@ for (const gap of [0.5, 0.9, 1.5]) {
     [0.0012, dy, 0],
   )
   check(turn.length === 5 && turn[3][0] === 0.002, `the U-turn keeps its turn at ${gap} m`)
+}
+
+// the map draws about the last 500 m of a trail: an aircraft's two minutes were ten kilometres
+{
+  const step = 101 / 111_320 // 101 m of latitude a point
+  const jet: Pt[] = Array.from({ length: 120 }, (_, i) => [0, i * step, 7600])
+  const drawn = trailWithin(jet)
+  check(drawn.length === 6, `500 m of a 101 m-a-point trail is its last six points (got ${drawn.length})`)
+  check(drawn[drawn.length - 1] === jet[jet.length - 1], 'it ends at the newest point')
+  check(TRAIL_DRAWN_M === 500, 'about 500 m')
+  const boat: Pt[] = Array.from({ length: 30 }, (_, i) => [0, i * (3 / 111_320), 0])
+  check(trailWithin(boat).length === 30, 'a slow boat keeps its whole (short) trail')
+  check(trailWithin([] as Pt[]).length === 0 && trailWithin([[0, 0, 0]] as Pt[]).length === 1, 'empty and one point')
+  // height counts as distance too: a climb of 600 m is past the limit
+  const climb: Pt[] = [[0, 0, 0], [0, 0, 600], [0, 0, 700]]
+  check(trailWithin(climb).length === 3 && trailWithin(climb, 50).length === 2, 'a climb is measured along its height')
 }
 
 console.log('glide: ok')

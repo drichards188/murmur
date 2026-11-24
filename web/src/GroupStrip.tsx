@@ -1,5 +1,7 @@
 // The group strip (bd murmur-4nik): every group in one row at the map's foot, each its colour, code,
-// name, its state as an icon and a word, what it does and its strength against its minimum. In the
+// name, its state as an icon and a word (coloured only on trouble), what it does in words and its
+// strength against its minimum: the home of a group's numbers (its map chip shows an exception
+// only). In the
 // manner of a strategy game's control-group bar, but a view, not a command: a click centres the map
 // on the group and lights it up for a moment; it selects nothing and sends nothing (orders go
 // through the order form and the engine). Folds away to one button, remembered in this browser.

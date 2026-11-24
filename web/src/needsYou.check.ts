@@ -39,22 +39,31 @@ const at333 = {
 }
 const n = needsYou(at333, new Set(), new Set())
 assert.equal(n.total, 2, 'the flag once (not again as waiting) and the high alert')
-assert.deepEqual([n.review, n.waiting, n.high, n.info, n.tone], [1, 1, 1, 1, 'wait'])
+assert.deepEqual([n.review, n.waiting, n.high, n.info], [1, 1, 1, 1])
 assert.equal(n.says, '2 need you: 1 item for review (1 holding up a nomination), 1 high alert. Not counted: 1 alert for information.')
 // T+8:00: the flag settled, an engagement awaiting signatures
 const at800 = { ...at333, pending: [{}], blocking: [] }
 const m = needsYou(at800, new Set(), new Set(['F-1']))
-assert.deepEqual([m.total, m.approvals, m.review, m.settled, m.tone], [2, 1, 0, 1, 'high'])
+assert.deepEqual([m.total, m.approvals, m.review, m.settled], [2, 1, 0, 1])
 assert.match(m.says, /Not counted: 1 alert for information, 1 flag a later declaration settled\.$/)
-// acknowledged in this browser: not counted, said
+// acknowledged in this browser: not counted, said (there is no snooze)
 const k = needsYou(at333, new Set(['damaged:1']), new Set())
 assert.deepEqual([k.total, k.high, k.muted], [1, 0, 1])
 // a swarm's member alerts count once, as the swarm's
 const folded = { pending: [], alerts: [alert('link:1', 'high', { folded_into: 'sw:PICKET' } as Partial<Alert>), alert('link:2', 'high', { folded_into: 'sw:PICKET' } as Partial<Alert>)], swarm_alerts: [{ severity: 'high' as const }] }
 assert.equal(needsYou(folded, new Set(), new Set()).total, 1)
-assert.deepEqual(needsYou(null, new Set(), new Set()), { total: 0, approvals: 0, review: 0, waiting: 0, high: 0, medium: 0, info: 0, settled: 0, muted: 0, tone: null, says: 'Nothing needs you.' })
+assert.deepEqual(needsYou(null, new Set(), new Set()), { total: 0, approvals: 0, review: 0, waiting: 0, engagements: 0, high: 0, medium: 0, info: 0, settled: 0, muted: 0, says: 'Nothing needs you.' })
 // lost-contact claims and presumed losses are review items too; a confirmed flag is not pending
 const rest = needsYou({ pending: [], alerts: [], review: { declarations: [{}], flags: [flag('F-5', ['T-1'], 1, 'confirmed')], lost_claims: [{}], node_losses: [{}] } }, new Set(), new Set())
-assert.deepEqual([rest.total, rest.review, rest.tone], [3, 3, 'rev'])
+assert.deepEqual([rest.total, rest.review], [3, 3])
+
+// an engagement under way counts only when it asks: its picture changed, or a verdict of persists
+const running = (holds: boolean) => ({ state: 'dispatched', engagement: { watch: { holds } } })
+assert.equal(needsYou({ pending: [], alerts: [] }, new Set(), new Set(), [running(true)]).total, 0, 'a running engagement whose picture holds is for information')
+const changed = needsYou({ pending: [], alerts: [] }, new Set(), new Set(), [running(false)])
+assert.deepEqual([changed.total, changed.engagements], [1, 1])
+assert.match(changed.says, /1 engagement to look at/)
+assert.equal(needsYou({ pending: [], alerts: [] }, new Set(), new Set(), [{ state: 'done', engagement: { assessment: { result: 'persists' } } }]).total, 1, 'assessed and persists asks')
+assert.equal(needsYou({ pending: [], alerts: [] }, new Set(), new Set(), [{ state: 'done', engagement: { assessment: { result: 'ceased' } } }]).total, 0, 'assessed and ceased is for information')
 
 console.log('needsYou: ok')

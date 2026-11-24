@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Intent, SpaceRun, SpaceRuns } from './decisions'
 import { fmtZ, hasProduct, scenarioAt, submitIntent } from './decisions'
 import type { AccessWindow, AreaInfo, Catalog, Gnss, Links, Passes, SatClassInfo, TaskingResult, TaskOption, TaskQuery } from './space'
-import { classColor, dayLabel, hhmm, offsetLabel, productTime, requestOptions, usePoll, useScenarioNow } from './space'
+import { classColor, hhmm, offsetLabel, productTime, requestOptions, usePoll, useScenarioNow } from './space'
 import { ProductList, SpaceRunCard } from './SpaceRuns'
 import type { LngLat } from './types'
 
@@ -194,7 +194,7 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
     rows.push(
       <div className="tl-group" key={`g-${g.cap}`}>
         {g.title}
-        {g.cap === 'optical' && <span className="muted"> daylight only; shaded where the sun is too low</span>}
+        {g.cap === 'optical' && <span className="muted"> daylight only; hatched = too dark</span>}
       </div>,
     )
     for (const id of ids) {
@@ -218,7 +218,6 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
             <span className="tl-caret">{sats.length ? (open ? '▾' : '▸') : ' '}</span>
             <span className="tl-swatch" style={{ background: classColor(id) }} />
             {cls?.name.replace(/ .*$/, '') ?? id}
-            <span className="tl-count">{ws.filter((w) => w.daylight_ok !== false).length}</span>
           </button>
           <div className="tl-track">
             {g.cap === 'optical' && shade.map((s, i) => <span key={i} className={`tl-shade ${s.cls}`} style={span(s.a, s.b)} />)}
@@ -270,11 +269,10 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
   const g = gnss.data
   const gnssRow = g && (
     <Fragment key="gnss">
-      <div className="tl-label" title="GPS satellites in view and PDOP at the area's centre (geometry only: no jamming or masking)">
+      <div className="tl-label" title={`GPS satellites in view at the area's centre (geometry only: no jamming or masking)${g.pdop_max != null ? `; PDOP up to ${g.pdop_max.toFixed(1)}` : ''}`}>
         <span className="tl-caret"> </span>
         <span className="tl-swatch" style={{ background: classColor('gps') }} />
         GPS
-        <span className="tl-count">{g.pdop_max != null ? `PDOP ≤ ${g.pdop_max.toFixed(1)}` : ''}</span>
       </div>
       <div className="tl-track">
         {g.samples.map((s, i) => {
@@ -338,7 +336,7 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
           <div className="tl-label" title={`i${r.intent_id}: ${cv.summary}`}>
             <span className="tl-caret"> </span>
             <span className="tl-swatch" style={{ background: classColor(cv.service.class) }} />
-            i{r.intent_id} {name}
+            {name}
             <span className="tl-count">{r.outcome === 'cancelled' ? 'cancelled' : r.outcome ? 'ended' : r.state}</span>
           </div>
           <div className="tl-track">
@@ -357,7 +355,6 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
     })
   const products = runs.filter(hasProduct).length
 
-  const shifted = catalog?.time_shifted
   const error = catalogError ?? passes.error
 
   return (
@@ -369,18 +366,7 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
             {area.title}
           </span>
         )}
-        {shifted && (
-          <span className="shifted" title={catalog?.time_note}>
-            TIME-SHIFTED {catalog!.time_map.shift_days > 0 ? '+' : ''}
-            {catalog!.time_map.shift_days} d
-          </span>
-        )}
         <span className="spacer" />
-        {now != null && (
-          <span className="scen-clock" title={`scenario clock (${catalog?.scenario.source}, rate ${catalog?.scenario.rate})`}>
-            {dayLabel(now, off)} {hhmm(now, off, true)} <span className="muted">{offsetLabel(off)}</span>
-          </span>
-        )}
         <div className="seg">
           <button onClick={() => setPanH((h) => h - spanH / 2)} title="earlier">
             ◀
@@ -419,7 +405,6 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
               </div>
               <div className="tl-label strong" title="union of usable imaging windows (optical in daylight, SAR any time)">
                 <span className="tl-caret"> </span>Imaging access
-                <span className="tl-count">{usable.length}</span>
               </div>
               <div className="tl-track summary">
                 {usable.map((w, i) => (
@@ -441,12 +426,6 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
               {watchRows}
               {now != null && now >= t0 && now <= t1 && <span className="tl-now" style={{ left: `calc(170px + (100% - 170px) * ${(now - t0) / (t1 - t0)})` }} />}
             </div>
-          )}
-          {p && (
-            <p className="tl-foot muted">
-              {p.windows.length} windows · {p.classes.reduce((a, c) => a + c.night_excluded, 0)} optical in darkness (hatched) · computed in {p.compute_ms} ms ·
-              times {offsetLabel(off)}
-            </p>
           )}
         </div>
         <aside className="space-side">
@@ -503,7 +482,7 @@ export function SpacePanel({ catalog, catalogError, mapBounds, box, drawing, onD
 }
 
 function Details({ item, classes, off, onClear }: { item: Item | null; classes: Map<string, SatClassInfo>; off: number; onClear: () => void }) {
-  if (!item) return <p className="hint pad">Click a bar on the timeline for the pass details; its scene is outlined on the map.</p>
+  if (!item) return null
   if (item.kind === 'option') return <OptionCard o={item.o} off={off} onClear={onClear} />
   const w = item.w
   const cls = classes.get(w.class_id)
@@ -530,21 +509,14 @@ function Details({ item, classes, off, onClear }: { item: Item | null; classes: 
         </dd>
         <dt>Collect</dt>
         <dd>{hhmm(w.best_time, off, true)} (best geometry)</dd>
-        <dt>Off-nadir</dt>
-        <dd>{deg(w.best.off_nadir_deg)}</dd>
-        <dt>Incidence</dt>
-        <dd>{deg(w.best.incidence_deg)}</dd>
-        <dt>Elevation</dt>
-        <dd>
-          {deg(w.best.elevation_deg)} · range {Math.round(w.best.range_km)} km
-        </dd>
         <dt>Resolution</dt>
         <dd>{w.resolution_m != null ? `${w.resolution_m.toFixed(2)} m` : 'unknown'}</dd>
-        <dt>Sun</dt>
-        <dd>
-          {deg(w.sun_elevation_deg)}
-          {w.daylight_ok === false ? ' (too dark for optical)' : ''}
-        </dd>
+        {w.daylight_ok === false && (
+          <>
+            <dt>Light</dt>
+            <dd>too dark for optical</dd>
+          </>
+        )}
         <dt>Product</dt>
         <dd>
           {product ? `~${hhmm(product, off)}` : 'unknown'}
@@ -553,7 +525,21 @@ function Details({ item, classes, off, onClear }: { item: Item | null; classes: 
         <dt>Tasking</dt>
         <dd>{w.taskable ? 'taskable' : 'routine collect, not taskable'}</dd>
       </dl>
-      {!w.scene && <p className="hint">No swath figure for this satellite: the map outlines the target area instead.</p>}
+      <details>
+        <summary>Geometry</summary>
+        <dl>
+          <dt>Off-nadir</dt>
+          <dd>{deg(w.best.off_nadir_deg)}</dd>
+          <dt>Incidence</dt>
+          <dd>{deg(w.best.incidence_deg)}</dd>
+          <dt>Elevation</dt>
+          <dd>
+            {deg(w.best.elevation_deg)} · range {Math.round(w.best.range_km)} km
+          </dd>
+          <dt>Sun</dt>
+          <dd>{deg(w.sun_elevation_deg)}</dd>
+        </dl>
+      </details>
     </div>
   )
 }
@@ -578,15 +564,20 @@ function OptionCard({ o, off, onClear }: { o: TaskOption; off: number; onClear?:
         <dd>{hhmm(o.collect_time, off, true)}</dd>
         <dt>Product</dt>
         <dd>{o.product_time ? `~${hhmm(o.product_time, off)}` : 'unknown'}</dd>
-        <dt>Geometry</dt>
-        <dd>
-          off-nadir {deg(o.geometry.off_nadir_deg)} · incidence {deg(o.geometry.incidence_deg)}
-        </dd>
         <dt>Resolution</dt>
         <dd>{o.resolution_m != null ? `${o.resolution_m.toFixed(2)} m` : 'unknown'}</dd>
-        <dt>Notes</dt>
-        <dd>{o.notes.join('; ') || 'none'}</dd>
       </dl>
+      <details>
+        <summary>Geometry and notes</summary>
+        <dl>
+          <dt>Geometry</dt>
+          <dd>
+            off-nadir {deg(o.geometry.off_nadir_deg)} · incidence {deg(o.geometry.incidence_deg)}
+          </dd>
+          <dt>Notes</dt>
+          <dd>{o.notes.join('; ') || 'none'}</dd>
+        </dl>
+      </details>
     </div>
   )
 }
@@ -745,27 +736,30 @@ function RequestForm({
             ))}
           </select>
         </label>
-        <label>
-          Rank
-          <select value={rank} onChange={(e) => setRank(e.target.value as TaskQuery['rank'])}>
-            <option value="earliest_product">earliest product</option>
-            <option value="best_resolution">best resolution</option>
-          </select>
-        </label>
-        <label title="leave empty for any resolution">
-          Max res. m
-          <input type="number" min={0.1} step={0.1} value={maxRes} placeholder="any" onChange={(e) => setMaxRes(e.target.value)} />
-        </label>
       </div>
+      <details className="reqmore">
+        <summary>More</summary>
+        <div className="reqrow">
+          <label>
+            Rank
+            <select value={rank} onChange={(e) => setRank(e.target.value as TaskQuery['rank'])}>
+              <option value="earliest_product">earliest product</option>
+              <option value="best_resolution">best resolution</option>
+            </select>
+          </label>
+          <label title="leave empty for any resolution">
+            Max res. m
+            <input type="number" min={0.1} step={0.1} value={maxRes} placeholder="any" onChange={(e) => setMaxRes(e.target.value)} />
+          </label>
+        </div>
+      </details>
       <button className="primary" disabled={!area || !capList.length || busy || now == null} onClick={submit}>
         {busy ? 'Computing…' : 'Find options'}
       </button>
       {error && <p className="error">{error}</p>}
       {result && (
         <div className="options">
-          <p className="muted small">
-            {result.options.length} feasible · {result.exclusions_total} passes excluded · cloud model: {result.cloud_model} · {result.compute_ms} ms
-          </p>
+          <p className="muted small">{result.options.length} feasible</p>
           {result.options.length === 0 && <p className="hint">No feasible collection before the deadline. See the exclusions below.</p>}
           <ol className="optlist">
             {result.options.slice(0, 25).map((o) => (
@@ -778,7 +772,7 @@ function RequestForm({
                   <span className="opt-num">{o.resolution_m != null ? `${o.resolution_m.toFixed(2)} m` : '?'}</span>
                   <span className="opt-num">→ {o.product_time ? hhmm(o.product_time, off) : '?'}</span>
                   <span className="opt-notes">
-                    {o.capability} · off-nadir {o.geometry.off_nadir_deg.toFixed(0)}°{o.covers_area === false ? ' · partial area' : ''}
+                    {o.capability}{o.covers_area === false ? ' · partial area' : ''}
                     {o.taskable ? '' : ' · routine, not taskable'}
                   </span>
                 </button>
@@ -805,6 +799,9 @@ function RequestForm({
             <button className="ghost mini" onClick={() => setShowExcl((s) => !s)}>
               {showExcl ? '▾' : '▸'} Why not the others ({result.exclusions_total})
             </button>
+            <p className="muted small">
+              {result.exclusions_total} passes excluded · cloud model: {result.cloud_model} · {result.compute_ms} ms
+            </p>
             <ul>
               {[...summary].map(([cid, reasons]) => (
                 <li key={cid}>
@@ -963,11 +960,14 @@ function CoverageForm({
             ))}
           </select>
         </label>
+      </div>
+      <details className="reqmore">
+        <summary>More</summary>
         <label title={gnss ? 'satellites in view at every sample (default 4, a 3D fix)' : 'percent of the window covered (default 99%)'}>
           {gnss ? 'Min sats' : 'Min %'}
           <input type="number" min={0} max={gnss ? 40 : 100} value={level} placeholder={gnss ? '4' : '99'} onChange={(e) => setLevel(e.target.value)} />
         </label>
-      </div>
+      </details>
       <fieldset>
         <legend>Area (service at its centre)</legend>
         <label>
@@ -1002,7 +1002,7 @@ function CoverageForm({
       {space && scen != null && watches.length > 0 && (
         <div className="sr-watches">
           {watches.map((r) => (
-            <SpaceRunCard key={r.intent_id} run={r} map={space.clock} scen={scen} onOpen={onIntent} cancellable={space.cancellable ?? false} />
+            <SpaceRunCard key={r.intent_id} run={r} scen={scen} onOpen={onIntent} cancellable={space.cancellable ?? false} />
           ))}
         </div>
       )}

@@ -135,13 +135,13 @@ export function rgba(hex: string, alpha = 255): RGBA {
 
 const KIND_VERB: Record<string, string> = { orbit: 'orbit', patrol: 'patrol', hold: 'hold', rtl: 'return home', track: 'track', identify: 'identify', transit: 'transit' }
 
-/** "orbit i12" for each task its members run, the largest first, with how many when not all;
- *  "no task" without one. */
+/** "orbit" for each task its members run, the largest first, with how many when not all;
+ *  "no task" without one. The order's number is on its card, not on the line. */
 export function taskLine(s: Swarm): string {
   const tasks = [...(s.tasks ?? [])].sort((a, b) => b.count - a.count)
   if (!tasks.length) return 'no task'
   return tasks
-    .map((t) => `${KIND_VERB[t.kind] ?? t.kind}${t.intent != null ? ` i${t.intent}` : ''}${t.count !== s.count ? ` (${t.count})` : ''}`)
+    .map((t) => `${KIND_VERB[t.kind] ?? t.kind}${t.count !== s.count ? ` (${t.count})` : ''}`)
     .join(', ')
 }
 
@@ -253,7 +253,7 @@ export interface GroupMark {
   ink: string
   rgb: RGBA
   members: number[]
-  /** what it does: "orbit i1", "patrol i100", "no order" */
+  /** what it does, in words, never the order's raw id: "orbit", "patrol", "no order" */
   doing: string
   /** its strength, honestly: on its share of the group order against its selection and minimum,
    *  members unheard, back, dropped; else how many run its task */
@@ -306,7 +306,7 @@ export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pic
     const whole = inForce.find((x) => x.intent === g.intent)
     const sel = whole?.selection ?? g.members_here
     intent = g.intent
-    doing = `${KIND_VERB[g.kind] ?? g.kind} i${g.intent}`
+    doing = KIND_VERB[g.kind] ?? g.kind
     if (g.suspended) {
       suspended = true
       tone = 'bad'
@@ -331,7 +331,7 @@ export function chipStatus(s: Swarm, inForce: readonly GroupInForce[] = []): Pic
   } else {
     const t = [...(s.tasks ?? [])].sort((a, b) => b.count - a.count)[0]
     if (t) {
-      doing = `${KIND_VERB[t.kind] ?? t.kind}${t.intent != null ? ` i${t.intent}` : ''}`
+      doing = KIND_VERB[t.kind] ?? t.kind
       parts.push({ text: t.count === s.count ? `${s.count}` : `${t.count} of ${s.count}` })
     } else parts.push({ text: `${s.count}` })
   }
@@ -371,13 +371,14 @@ export function shownTaskings<T extends { ops: readonly { uid: number }[] }>(tas
 
 // ---- group alarms on the map's banner, once they have held --------------------------------------
 
-export type GroupAlarm = 'suspended' | 'under' | 'refused'
+/** The one group alarm the banner raises: a group that stopped and waits for a person (its order
+ *  suspended below its minimum, which never resumes on its own). Under strength while it settles
+ *  and a re-form refused are the strip's and the Inbox's, not an alarm (the cutdown, ledger 1). */
+export type GroupAlarm = 'suspended'
 
-/** An alarm's banner head and tone, the worst first. */
-export const GROUP_ALARM: Record<GroupAlarm, { head: string; tone: Tone; rank: number }> = {
-  suspended: { head: 'GROUP SUSPENDED', tone: 'bad', rank: 0 },
-  under: { head: 'GROUP UNDER STRENGTH', tone: 'bad', rank: 1 },
-  refused: { head: 'GROUP RE-FORM REFUSED', tone: 'warn', rank: 2 },
+/** An alarm's banner head. */
+export const GROUP_ALARM: Record<GroupAlarm, { head: string }> = {
+  suspended: { head: 'GROUP SUSPENDED' },
 }
 
 /** how long a group's alarm must hold before the banner raises it, ms: a link's blip that drops a
@@ -390,10 +391,9 @@ export interface AlarmSeen {
   since: number
 }
 
-/** A group's alarm now: its order suspended below its minimum, under its minimum, or its last
- *  re-form refused. */
-export function groupAlarm(m: Pick<GroupMark, 'suspended' | 'under' | 'refused'>): GroupAlarm | null {
-  return m.suspended ? 'suspended' : m.under ? 'under' : m.refused ? 'refused' : null
+/** A group's alarm now: its order suspended below its minimum. */
+export function groupAlarm(m: Pick<GroupMark, 'suspended'>): GroupAlarm | null {
+  return m.suspended ? 'suspended' : null
 }
 
 /** Each group's alarm and since when, from the last summary's and this one's (`nowT`): an alarm
@@ -412,14 +412,14 @@ export function stepAlarms(prev: ReadonlyMap<string, AlarmSeen>, marks: readonly
 /** A held alarm's key, for dismissing that one (a new one of the group comes up again). */
 export const alarmKey = (id: string, a: AlarmSeen) => `${id}:${a.alarm}:${a.since}`
 
-/** The alarms held ALARM_HOLD_MS or more and not dismissed, the worst and oldest first. */
+/** The alarms held ALARM_HOLD_MS or more and not dismissed, the oldest first. */
 export function heldAlarms(seen: ReadonlyMap<string, AlarmSeen>, marks: GroupMarks, nowT: number, dismissed: ReadonlySet<string>): { m: GroupMark; seen: AlarmSeen }[] {
   const out: { m: GroupMark; seen: AlarmSeen }[] = []
   for (const [id, a] of seen) {
     const m = marks.byId.get(id)
     if (m && nowT - a.since >= ALARM_HOLD_MS && !dismissed.has(alarmKey(id, a))) out.push({ m, seen: a })
   }
-  return out.sort((x, y) => GROUP_ALARM[x.seen.alarm].rank - GROUP_ALARM[y.seen.alarm].rank || x.seen.since - y.seen.since)
+  return out.sort((x, y) => x.seen.since - y.seen.since)
 }
 
 // ---- the group strip (GroupStrip.tsx): each group's state in a word -----------------------------
@@ -434,6 +434,13 @@ export function stripParts(parts: readonly ChipPart[]): ChipPart[] {
   const [first, ...rest] = parts
   const wrong = rest.filter((p) => p.tone === 'warn' || p.tone === 'bad')
   return wrong.length ? [first, ...wrong.slice(0, 2)] : parts.slice(0, 2)
+}
+
+/** What a group's chip on the map says under its name: only what is wrong (a warn or bad part:
+ *  under its minimum, suspended, drops, lost links), nothing when nothing is; its order and its
+ *  strength are the strip's (ledger 1, the map's groups: one home per fact). */
+export function chipExceptions(parts: readonly ChipPart[]): ChipPart[] {
+  return parts.filter((p) => p.tone === 'warn' || p.tone === 'bad')
 }
 
 export type GroupState = 'suspended' | 'under' | 'reforming' | 'station' | 'moving' | 'returning' | 'idle' | 'lost' | 'damaged'
@@ -483,25 +490,6 @@ export function groupMarks(doc: SwarmsDoc | null): GroupMarks {
   const ofUid = new Map<number, GroupMark>()
   for (const m of list) for (const u of m.members) ofUid.set(u, m)
   return { list, byId: new Map(list.map((m) => [m.id, m])), ofUid }
-}
-
-/** Who is missing from a group and why, for its chip's hover: those its group order dropped, by
- *  reason; those back and waiting to rejoin; those whose link is lost now. Names by `nameOf`, at
- *  most `max` a line. */
-export function missingLines(m: GroupMark, lostNow: readonly number[], nameOf: (uid: number) => string, max = 6): string[] {
-  const names = (uids: number[]) => uids.slice(0, max).map(nameOf).join(', ') + (uids.length > max ? ` +${uids.length - max}` : '')
-  const out: string[] = []
-  const why = new Map<string, number[]>()
-  for (const [u, w] of m.dropped) {
-    const k = w.split(':')[0]
-    const list = why.get(k)
-    if (list) list.push(u)
-    else why.set(k, [u])
-  }
-  for (const [k, uids] of why) out.push(`${uids.length} dropped (${k}): ${names(uids)}`)
-  if (m.back.length) out.push(`${m.back.length} back, waiting to rejoin: ${names(m.back)}`)
-  if (lostNow.length) out.push(`${lostNow.length} link lost now: ${names([...lostNow])}`)
-  return out
 }
 
 /** The convex hull of points ([lon, lat]), counter-clockwise (Andrew's monotone chain). */

@@ -95,8 +95,7 @@ function Row({ s, look, selected, hovered, alerts, onSelect, onHover, rowRef }: 
         {/* rules 34: each group order in force over its members: its strength against its minimum */}
         {(s.groups ?? []).map((g) => (
           <span key={g.intent} className={`sw-gorder ${strengthTone(g)}`}>
-            {strengthLine(g)}
-            {g.members_here !== g.strength && <span className="dim"> ({g.members_here} of it here)</span>}
+            <span title={g.members_here !== g.strength ? `${g.members_here} of it here` : undefined}>{strengthLine(g)}</span>
             {g.refused && <span className="warn"> · re-form refused: {g.refused}</span>}
           </span>
         ))}
@@ -105,12 +104,16 @@ function Row({ s, look, selected, hovered, alerts, onSelect, onHover, rowRef }: 
         <span title="navigation-ready of all its members">
           <b>{s.ready}</b>/{s.count} ready
         </span>
-        <span className={s.lost_link ? 'bad' : 'dim'} title="members whose link is lost">
-          <b>{s.lost_link}</b> lost link
-        </span>
-        <span className={s.low_battery ? 'warn' : 'dim'} title="members low on battery">
-          <b>{s.low_battery}</b> low batt
-        </span>
+        {s.lost_link > 0 && (
+          <span className="bad" title="members whose link is lost">
+            <b>{s.lost_link}</b> lost link
+          </span>
+        )}
+        {s.low_battery > 0 && (
+          <span className="warn" title="members low on battery">
+            <b>{s.low_battery}</b> low batt
+          </span>
+        )}
       </span>
     </button>
   )
@@ -165,7 +168,7 @@ function GroupLine({ g, alerts, heard }: { g: GroupInForce; alerts: SwarmAlert[]
   }
   const mine = alerts.filter((a) => a.id.startsWith(`group:${g.intent}:`))
   return (
-    <div className={`sw-gline ${tone}`}>
+    <div className={`sw-gline ${tone}`} title={g.taken > 0 ? `${g.taken} taken by a newer order` : undefined}>
       <span className="sw-gmain">
         <b>{strengthLine({ ...g, dropped, back: g.back?.length ?? 0 })}</b>
         {g.swarm && <span className="dim"> · {g.swarm}</span>}
@@ -175,7 +178,6 @@ function GroupLine({ g, alerts, heard }: { g: GroupInForce; alerts: SwarmAlert[]
           dropped: {[...why.entries()].map(([k, n]) => `${n} ${k}`).join(', ')}
         </span>
       )}
-      {g.taken > 0 && <span className="dim">{g.taken} taken by a newer order</span>}
       {mine.map((a) => (
         <span key={a.id} className={`sw-galert ${a.severity}`}>
           {alertLabel(a.kind)}
@@ -184,7 +186,6 @@ function GroupLine({ g, alerts, heard }: { g: GroupInForce; alerts: SwarmAlert[]
       {g.suspended && <span className="bad">It re-forms no more: order it anew, or order its members.</span>}
       {g.suspended && <ReformButton g={g} heard={heard} />}
       {g.refused && <span className="warn">Last re-form refused: {g.refused}</span>}
-      {!g.reforming && !g.suspended && <span className="dim">does not re-form ({g.kind})</span>}
     </div>
   )
 }
@@ -202,15 +203,15 @@ export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, al
     if (focus) rows.current.get(focus.id)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [focus])
   const groups = feed.doc?.groups ?? []
-  const total = swarms.reduce((n, s) => n + s.count, 0)
   const alertsBy = new Map<string, number>()
   for (const a of alerts) alertsBy.set(a.swarm, (alertsBy.get(a.swarm) ?? 0) + 1)
   const roles = [...ROLE_ORDER, ...new Set(swarms.map((s) => s.role).filter((r) => !ROLE_ORDER.includes(r)))]
+  // a heading per role only when there are several roles to tell apart
+  const headed = roles.filter((r) => swarms.some((s) => s.role === r)).length > 1
   return (
     <aside className="ix sw" aria-label="Groups">
       <div className="ix-top">
         <h2>Groups</h2>
-        <span className="q-sub">{swarms.length ? `${swarms.length} swarms · ${total.toLocaleString()} vehicles` : ''}</span>
         <button className="ghost close" onClick={onClose} aria-label="Close the groups">
           ×
         </button>
@@ -219,7 +220,7 @@ export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, al
       <div className="ix-scroll">
         {feed.status === 'missing' && (
           <p className="empty sw-missing" role="status">
-            No swarm data: the bridge does not serve <code>/api/swarms</code>. Swarms need a bridge that summarises them.
+            The bridge sends no swarm summary.
           </p>
         )}
         {feed.status === 'error' && (
@@ -240,17 +241,13 @@ export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, al
             ))}
           </section>
         )}
-        {feed.status === 'ok' && swarms.length === 0 && <p className="empty muted">This fleet has no swarms.</p>}
         {feed.status === 'ok' && feed.error && <p className="empty muted">Last summary kept: {feed.error}</p>}
         {roles.map((role) => {
           const group = swarms.filter((s) => s.role === role)
           if (!group.length) return null
           return (
             <section key={role} className="sw-group">
-              <h3 className="ix-h" title="The fleet's swarms in this role: units its fleet file defines, not groups of yours">
-                {ROLE_LABEL[role] ?? role} swarms <span>{group.length}</span>
-                <small>{group.reduce((n, s) => n + s.count, 0).toLocaleString()} vehicles</small>
-              </h3>
+              {headed && <h3 className="ix-h">{ROLE_LABEL[role] ?? role}</h3>}
               {group.map((s) => (
                 <Row
                   key={s.id}
@@ -270,9 +267,6 @@ export function SwarmsPanel({ feed, selected, focus, hovered = null, onHover, al
             </section>
           )
         })}
-        {swarms.length > 0 && (
-          <p className="ix-foot">A click selects every member of a swarm: the order form then sends one order to all of them (under group orders, one group order laid out member by member).</p>
-        )}
       </div>
     </aside>
   )

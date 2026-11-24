@@ -7,11 +7,12 @@ import { symbolSvg } from './symbols'
 import { groupCodes, groupColor, type Swarm, swarmGroups } from './swarmsModel'
 import './nodeLoss.css'
 import { AddToGroup } from './GroupsSection'
-import { kindsOf, rangeBetween } from './commandModel'
+import { domainChoices, kindsOf, rangeBetween } from './commandModel'
 import type { GroupsApi } from './useGroups'
 import './swarms.css'
+import { doingNow, latestOrders, type OrderIntent } from './orderWords'
 import type { Tasking, Vehicle } from './types'
-import { callsign, domainOf, isStale } from './types'
+import { callsign, domainOf, isStale, vehicleNamer } from './types'
 
 interface Props {
   vehicles: Vehicle[]
@@ -25,13 +26,13 @@ interface Props {
   onSelect: (uids: number[]) => void
   /** vehicles just selected from outside the list: scroll to the first and mark it */
   reveal?: Reveal | null
-  /** bd murmur-4tq: vehicles whose sensor reach is under half its clear day's ("EO 18% · fog") */
-  reachBadges?: Map<number, { text: string; title: string }>
   /** the bridge's swarm summary (swarmsModel.ts), for the groups' order, names and colours: a fleet
    *  with swarms is listed swarm by swarm */
   swarms?: Pick<Swarm, 'id' | 'name' | 'color' | 'role'>[]
-  /** the orders' ops (a member on its order's active op is on station) */
+  /** the orders' ops (a member on its order's active op is on station), and the intents they
+   *  carry out: each row says what its vehicle is doing in the words of its order (orderWords.ts) */
   taskings?: Tasking[]
+  intents?: readonly OrderIntent[]
   /** vehicles with an inbox `damaged` alert, and with an alert of their own (not folded into
    *  their group's): exceptions, listed on their own */
   damaged?: ReadonlySet<number>
@@ -39,16 +40,8 @@ interface Props {
   /** what each row's exception slot is made from (vehicleException.ts): rules 30's standings,
    *  damage reports, spent loadouts */
   exceptions?: ExceptionContext
-  /** the map legend's Show all for lists: every group open */
-  expandAll?: boolean
-  /** how many vehicles the folded groups do not list (the map legend counts them) */
-  onFolded?: (n: { vehicles: number; groups: number }) => void
   /** the operator's own groups: the selection can be added to one from here */
   groups?: GroupsApi
-}
-
-function fmt(n: number | null | undefined, digits = 0, unit = '') {
-  return n == null ? '–' : `${n.toFixed(digits)}${unit}`
 }
 
 interface RowProps {
@@ -59,21 +52,19 @@ interface RowProps {
   onToggle: (uid: number, shift: boolean) => void
   onDeselect: Props['onDeselect']
   onDetails: Props['onDetails']
-  reach?: { text: string; title: string }
   /** what its exception slot is made from (vehicleException.ts) */
   exc: ExceptionContext
+  /** what it is doing, in the words of its order (orderWords.ts) */
+  doing: string
 }
 
-/** Two controls: the left strip selects the vehicle for tasking; the rest opens its details.
- *  Three lines and the link's numbers, each kept to its own column (nothing overprints the height
- *  and speed, bd murmur-iobd.7): the callsign and what it is; the stand-in tags and its model; its
- *  one exception (vehicleException.ts, the only colour on the row: damaged, silent, link down, out
- *  of rounds) before its mode. */
-const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach, exc }: RowProps) {
+/** Two controls: the left strip selects the vehicle for tasking; the rest opens its details (what
+ *  it is, its height, speed and link numbers are there, one click away). Two lines: its callsign and
+ *  its one exception (vehicleException.ts, the only colour on the row: damaged, silent, link down,
+ *  no GNSS, low battery, out of rounds), then what it is doing in the words of its order. */
+const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, exc, doing }: RowProps) {
   const stale = isStale(v)
   const x = exceptionOf(v, exc, emuCause)
-  const standin = v.identity?.sim === 'standin'
-  const dr = v.nav_source === 'dead_reckoning'
   return (
     <div
       className={`vrow ${selected ? 'sel' : ''} ${stale ? 'stale' : ''} ${open ? 'open' : ''} ${flash ? 'flash' : ''}`}
@@ -94,78 +85,18 @@ const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, 
         </span>
       </button>
       <button className="vrow-body" aria-expanded={open} title="Show details" onClick={() => onDetails(v.uid)}>
-      <span className="vrow-sym" dangerouslySetInnerHTML={{ __html: symbolSvg(v, { stale, size: 16, labels: false }).svg }} />
-      <span className="vrow-main">
-        <span className="vrow-name">
-          <span className="vrow-call">{callsign(v)}</span>
-          {v.identity && <span className="vrow-short">{v.identity.short}</span>}
-          {v.identity?.armed ? (
-            <span className="vrow-weapons" title="Weapons-carrying platform: any task on it needs a human decision">
-              WEAPONS
-            </span>
-          ) : null}
-        </span>
-        {(v.identity || dr) && (
-          <span className="vrow-model" title={v.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
-            {standin && (
-              <span className="vrow-standin" title="Kinematic stand-in: speaks MAVLink, but not ArduPilot SITL">
-                STAND-IN
-              </span>
-            )}
-            {dr && (
-              <span className="vrow-standin" title="Dead reckoning: no GNSS fix, position from inertial navigation and DVL (sub) or airspeed (fixed-wing), error growing with distance">
-                DR
-              </span>
-            )}
-            {v.identity && (
-              <span className="vrow-model-text">
-                {v.identity.name} · {v.identity.role}
+        <span className="vrow-sym" dangerouslySetInnerHTML={{ __html: symbolSvg(v, { stale, size: 16, labels: false }).svg }} />
+        <span className="vrow-main">
+          <span className="vrow-name">
+            <span className="vrow-call">{callsign(v)}</span>
+            {x && (
+              <span className={`vrow-exc ${x.tone}`} title={x.title} data-exception={x.kind}>
+                {x.text}
               </span>
             )}
           </span>
-        )}
-        <span className="vrow-mode">
-          {x && (
-            <span className={`vrow-exc ${x.tone}`} title={x.title} data-exception={x.kind}>
-              {x.text}
-            </span>
-          )}
-          <span className="vrow-mode-text">
-            {v.mode ?? '–'}
-            {v.armed ? (
-              <em className="motors-on" title="MAVLink arm state: motors enabled. Says nothing about weapons.">
-                motors on
-              </em>
-            ) : null}
-          </span>
-          {reach && (
-            <span className="vrow-standin vrow-reach" title={reach.title}>
-              {reach.text}
-            </span>
-          )}
+          <span className="vrow-mode">{doing}</span>
         </span>
-      </span>
-      <span className="vrow-kin">
-        {domainOf(v) === 'subsurface' ? (
-          <span title="depth">{v.alt_msl == null ? '–' : `${Math.max(0, -v.alt_msl).toFixed(1)} m dp`}</span>
-        ) : domainOf(v) === 'air' ? (
-          <span title="altitude above mean sea level">{fmt(v.alt_msl, 0, ' m')}</span>
-        ) : (
-          <span>&nbsp;</span>
-        )}
-        <span>{fmt(v.groundspeed, 1, ' m/s')}</span>
-      </span>
-      <span className="vrow-link">
-        <span title="time since last message">
-          {stale || (v.link.since_last_ms ?? 0) >= 1000
-            ? `${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s`
-            : v.link.since_last_ms == null && v.link.stale === false
-              ? 'live' // a lite snapshot (out of view): the link is heard from, no exact age
-              : fmt(v.link.since_last_ms, 0, 'ms')}
-        </span>
-        <span title="packet loss, last 10 s">{fmt(v.link.loss_pct, 0, '%')} loss</span>
-        <span title="round trip time (TIMESYNC)">{fmt(v.link.rtt_ms, 0, 'ms')} rtt</span>
-      </span>
       </button>
     </div>
   )
@@ -180,7 +111,7 @@ const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
 
 // Windowed list (murmur-ica): every row and group header has a fixed height (index.css keeps
 // them in step), so only the rows in view, plus a margin, are in the DOM, whatever the fleet size.
-export const ROW_H = 84
+export const ROW_H = 52
 export const HEAD_H = 32
 /** a group's row (name, counts by state) and the line under a folded group's listed members */
 export const GROUP_H = 54
@@ -201,7 +132,7 @@ const HEIGHT: Record<Item['kind'], number> = { head: HEAD_H, group: GROUP_H, row
  *  (details open, just revealed, damaged, lost link, an alert of its own, selected; at most
  *  GROUP_SHOWN) unless the group is open, then every member, exceptions first. A fleet without
  *  groups by domain, every vehicle, as before. */
-function layout(vehicles: Vehicle[], swarms: Props['swarms'], ctx: GroupContext, open: ReadonlySet<string>, expandAll: boolean): { items: Item[]; height: number } {
+function layout(vehicles: Vehicle[], swarms: Props['swarms'], ctx: GroupContext, open: ReadonlySet<string>): { items: Item[]; height: number } {
   const items: Item[] = []
   let top = 0
   const bySwarm = swarmGroups(vehicles, swarms)
@@ -212,7 +143,7 @@ function layout(vehicles: Vehicle[], swarms: Props['swarms'], ctx: GroupContext,
     for (const g of bySwarm) {
       if (!g.vehicles.length) continue
       const id = g.id ?? 'none'
-      const expanded = expandAll || open.has(id)
+      const expanded = open.has(id)
       const view = groupView(g.vehicles, ctx, expanded)
       items.push({ kind: 'group', id, title: g.title, color: (g.id && looks.get(g.id)?.color) || '#7d8b9a', ink: (g.id && looks.get(g.id)?.ink) || '#0b0f14', code: g.id ? (codes.get(g.id) ?? null) : null, members: g.vehicles, view, expanded, top })
       top += GROUP_H
@@ -304,10 +235,11 @@ function GroupRow({ it, selected, onSelect, onOpen }: { it: Extract<Item, { kind
   )
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, exceptions = NO_EXCEPTIONS, expandAll = false, onFolded, groups }: Props) {
-  const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
-  // the kinds in the fleet, for "all of a kind" (recomputed only when the fleet's membership changes)
-  const kinds = useMemo(() => kindsOf(vehicles), [vehicles])
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, swarms, taskings, intents, damaged = NONE, alerted = NONE, exceptions = NO_EXCEPTIONS, groups }: Props) {
+  // the Select menu's choices: all, each domain present, then each kind of platform, most numerous
+  // first (recomputed only when the fleet's membership changes)
+  const domains = useMemo(() => domainChoices(vehicles), [vehicles])
+  const kinds = useMemo(() => kindsOf(vehicles).map((k) => ({ ...k, id: `kind:${k.id}` })), [vehicles])
   const list = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState({ top: 0, height: 800 })
   // the groups the person opened (a view setting of this console)
@@ -320,24 +252,15 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
       return next
     })
   const opStates = useMemo(() => latestOps(taskings ?? []), [taskings])
+  // each vehicle's latest order, for its row's words; names for an order that points at one of ours
+  const orders = useMemo(() => latestOrders(taskings ?? [], new Map((intents ?? []).map((i) => [i.id, i]))), [taskings, intents])
+  const namer = useMemo(() => vehicleNamer(vehicles), [vehicles])
+  const nameOf = (uid: number) => namer(String(uid))
   const revealUid = reveal?.ids.length ? Number(reveal.ids[0]) : null
   const { items, height } = useMemo(
-    () => layout(vehicles, swarms, { latest: opStates, damaged, alerted, selected, open: detailsUid, flash: revealUid }, open, expandAll),
-    [vehicles, swarms, opStates, damaged, alerted, selected, detailsUid, revealUid, open, expandAll],
+    () => layout(vehicles, swarms, { latest: opStates, damaged, alerted, selected, open: detailsUid, flash: revealUid }, open),
+    [vehicles, swarms, opStates, damaged, alerted, selected, detailsUid, revealUid, open],
   )
-  // what the folded groups do not list, for the map legend
-  let foldedVehicles = 0
-  let foldedGroups = 0
-  for (const it of items) {
-    if (it.kind !== 'group' || it.view.folded === 0) continue
-    foldedVehicles += it.view.folded
-    foldedGroups++
-  }
-  const foldedRef = useRef(onFolded)
-  foldedRef.current = onFolded
-  useEffect(() => {
-    foldedRef.current?.({ vehicles: foldedVehicles, groups: foldedGroups })
-  }, [foldedVehicles, foldedGroups])
   // the list element exists only once there are vehicles
   const hasList = vehicles.length > 0
 
@@ -411,44 +334,49 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
     <aside className="panel fleet" data-tutorial="fleet">
       <header className="panel-head">
         <h2>Fleet</h2>
-        <div className="seg">
-          <button onClick={() => onSelect(ids(() => true))}>All</button>
-          <button onClick={() => onSelect(ids((v) => domainOf(v) === 'air'))}>Air</button>
-          <button onClick={() => onSelect(ids((v) => domainOf(v) === 'ground'))}>Gnd</button>
-          <button onClick={() => onSelect(ids((v) => ['surface', 'subsurface'].includes(domainOf(v))))}>Sea</button>
-          <button onClick={() => onSelect([])}>None</button>
-        </div>
+        {domains.length > 0 && (
+          <select
+            className="fleet-pick"
+            aria-label="Select vehicles for tasking: all, a domain or a kind"
+            value=""
+            onChange={(e) => {
+              const c = [...domains, ...kinds].find((x) => x.id === e.target.value)
+              if (c) onSelect(c.uids)
+            }}
+          >
+            <option value="">Select...</option>
+            <optgroup label="Domain">
+              {domains.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label} ({c.uids.length})
+                </option>
+              ))}
+            </optgroup>
+            {kinds.length > 1 && (
+              <optgroup label="Kind">
+                {kinds.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label} ({c.uids.length})
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        )}
       </header>
-      <div className={`fleet-sel ${selected.size ? '' : 'none'}`} data-testid="selection">
-        <span aria-live="polite">
-          <b>{selected.size}</b> selected
-        </span>
-        {selected.size > 0 && (
+      {selected.size > 0 && (
+        <div className="fleet-sel" data-testid="selection">
+          <span aria-live="polite">
+            <b>{selected.size}</b> selected
+          </span>
           <button className="ghost" onClick={() => onSelect([])} title="Clear the selection (Escape)">
             Clear
           </button>
-        )}
-        {kinds.length > 1 && (
-          <select
-            aria-label="Select all of a kind"
-            value=""
-            onChange={(e) => {
-              const k = kinds.find((x) => x.id === e.target.value)
-              if (k) onSelect(k.uids)
-            }}
-          >
-            <option value="">All of a kind...</option>
-            {kinds.map((k) => (
-              <option key={k.id} value={k.id}>
-                {k.label} ({k.uids.length})
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
+        </div>
+      )}
       {groups && <AddToGroup api={groups} selected={selected} />}
       {vehicles.length === 0 ? (
-        <p className="empty">Waiting for the first vehicle reports: each vehicle appears here as its first heartbeat arrives.</p>
+        <p className="empty">Waiting for vehicles</p>
       ) : (
         <div className="vlist" ref={list}>
           <div className="vlist-inner" style={{ height }}>
@@ -463,7 +391,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                   <GroupRow it={it} selected={selected} onSelect={onSelect} onOpen={() => toggleGroup(it.id)} />
                 </div>
               ) : it.kind === 'more' ? (
-                <button key={`m:${it.id}`} className="vlist-more" style={{ top: it.top }} onClick={() => toggleGroup(it.id)} disabled={expandAll}>
+                <button key={`m:${it.id}`} className="vlist-more" style={{ top: it.top }} onClick={() => toggleGroup(it.id)}>
                   {it.text}
                 </button>
               ) : (
@@ -476,8 +404,8 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                     onToggle={act.onToggle}
                     onDeselect={act.onDeselect}
                     onDetails={act.onDetails}
-                    reach={reachBadges?.get(it.v.uid)}
                     exc={exceptions}
+                    doing={doingNow(it.v, orders.get(it.v.uid), nameOf, { cannotMove: exceptions.damage.get(it.v.uid)?.mobility, silent: isStale(it.v) })}
                   />
                 </div>
               ),

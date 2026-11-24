@@ -46,8 +46,7 @@ function AcceptLost({ l, on, onToggle }: { l: KeepOutLost; on: boolean; onToggle
   return (
     <label className="ko-accept">
       <input type="checkbox" checked={on} onChange={(e) => onToggle(l, e.target.checked)} />
-      Accept {l.track} as lost for this engagement, out of view since its last fix at {fmtWorldZ(l.since)} (engagement authority; logged under your session with the
-      nomination; it covers this loss only)
+      Accept {l.track} as lost, out of view since {fmtWorldZ(l.since)}
     </label>
   )
 }
@@ -63,8 +62,7 @@ function AcceptBehaving({ b, on, onToggle }: { b: BehavingInfo; on: boolean; onT
         <label className="ko-accept">
           <input type="checkbox" checked={on} onChange={(e) => onToggle(b, e.target.checked)} />
           <span>
-            <b>Accept as behaving now</b>: {b.track}, {courseText(b.velocity_mps, b.velocity_sigma_mps)}, its estimate at {fmtWorldZ(b.estimate_t)} (engagement authority;
-            logged under your session with the nomination; for this engagement only)
+            <b>Accept as behaving now</b>: {b.track}, {courseText(b.velocity_mps, b.velocity_sigma_mps)}, its estimate at {fmtWorldZ(b.estimate_t)}
           </span>
         </label>
       )}
@@ -81,12 +79,11 @@ function AcceptBehaving({ b, on, onToggle }: { b: BehavingInfo; on: boolean; onT
 
 function Item({
   i,
-  ex,
   acceptLost,
   onAcceptLost,
   acceptBehaving,
   onAcceptBehaving,
-}: { i: KeepOutItem; ex: KeepOutExplanation } & Pick<Props, 'acceptLost' | 'onAcceptLost' | 'acceptBehaving' | 'onAcceptBehaving'>) {
+}: { i: KeepOutItem } & Pick<Props, 'acceptLost' | 'onAcceptLost' | 'acceptBehaving' | 'onAcceptBehaving'>) {
   const kind = i.subject === 'lost_contact' ? `lost: ${i.region ? KEEP_OUT_KIND_LABEL[i.region.kind] : 'its reach'}` : i.region ? KEEP_OUT_KIND_LABEL[i.region.kind] : 'cannot be placed'
   return (
     <div className={`ko-item ${i.blocks ? 'blocks' : 'near'}`}>
@@ -98,111 +95,90 @@ function Item({
         )}
       </div>
       <div className="ko-reason">{i.reason}</div>
-      {i.altitude && <div className="ko-alt">{i.altitude}</div>}
-      {i.blocks && (
-        <ul className="ko-clears">
-          {ex.move_within && <li>{clearsText(i, ex)}</li>}
-          {i.wait && (
-            <li>
-              {i.wait.why} <span className="ko-at">(at {fmtWorldZ(i.wait.nominate_t)})</span>
-            </li>
-          )}
-          {i.not_by_waiting && <li>{i.not_by_waiting}</li>}
-          {i.other && <li>{i.other}</li>}
-        </ul>
-      )}
       {i.blocks && i.lost && onAcceptLost && <AcceptLost l={i.lost} on={!!acceptLost?.[i.lost.track]} onToggle={onAcceptLost} />}
       {i.blocks && i.behaving && <AcceptBehaving b={i.behaving} on={!!acceptBehaving?.[i.behaving.track]} onToggle={onAcceptBehaving} />}
     </div>
   )
 }
 
-/** The platform's hints on the picture now: closer (within), farther or later windows. */
-function Placement({ mw, name, t }: { mw: MoveWithin; name: string; t: number }) {
-  if (!mw.possible) {
-    return (
-      <p className="ko-hint">
-        <b>Where</b>
-        <span>{mw.why}</span>
-      </p>
-    )
+/** What would clear each blocker, in one list: its own ways (a closer platform, a later window,
+ *  waiting, or not by waiting), then the platform's placement on the picture now, then whether
+ *  waiting helps at all. */
+function clearing(ex: KeepOutExplanation, name: string, many: boolean): string[] {
+  const out: string[] = []
+  const mw = ex.move_within
+  for (const i of ex.items.filter((x) => x.blocks)) {
+    const who = many ? `${i.label}: ` : ''
+    if (mw) out.push(`${who}${clearsText(i, ex)}`)
+    if (i.wait) out.push(`${who}${i.wait.why} (at ${fmtWorldZ(i.wait.nominate_t)})`)
+    if (i.not_by_waiting) out.push(`${who}${i.not_by_waiting}`)
+    if (i.other) out.push(`${who}${i.other}`)
   }
+  if (mw) out.push(...placement(mw, name, ex.t))
+  out.push(ex.wait ? `Wait: ${ex.wait.why} (at ${fmtWorldZ(ex.wait.nominate_t)})` : ex.wait_none ? `Wait: ${ex.wait_none}` : '')
+  return out.filter(Boolean)
+}
+
+/** The platform's placement on the picture now: closer (within), farther or later windows. */
+function placement(mw: MoveWithin, name: string, t: number): string[] {
+  if (!mw.possible) return [mw.why]
   const later = mw.windows.filter((w) => w.from_t > mw.earliest_t)
-  return (
-    <>
-      {mw.within_m != null && mw.effect_by_t != null && (
-        <p className="ko-hint move">
-          <b>Closer</b>
-          <span>
-            {name} within {fmtDist(mw.within_m)} of {mw.holding ? 'the target' : 'the marked point'}
-            {mw.now_m != null ? ` (now ${fmtDist(mw.now_m)})` : ''}: every keep-out holds for an effect up to {span(mw.effect_by_t - t)} from now, on the
-            picture now.
-          </span>
-        </p>
-      )}
-      {mw.within_m == null && (
-        <p className="ko-hint">
-          <b>Closer</b>
-          <span>No closer position clears it, on the picture now.</span>
-        </p>
-      )}
-      {later.length > 0 && (
-        <p className="ko-hint move">
-          <b>{mw.holding ? 'Farther' : 'Later'}</b>
-          <span>
-            {mw.holding ? `${name} ` : ''}
-            {later.map((w) => windowText(w, t)).join('; or ')}: every keep-out holds, on the picture now
-            {mw.holding ? '' : ' (with the target moving, the platform’s distance alone does not set the effect time)'}.
-          </span>
-        </p>
-      )}
-    </>
-  )
+  const out: string[] = []
+  if (mw.within_m != null && mw.effect_by_t != null) {
+    out.push(`${name} within ${fmtDist(mw.within_m)} of ${mw.holding ? 'the target' : 'the marked point'}${mw.now_m != null ? ` (now ${fmtDist(mw.now_m)})` : ''}: every keep-out holds for an effect up to ${span(mw.effect_by_t - t)} from now.`)
+  } else {
+    out.push('No closer position clears it.')
+  }
+  if (later.length > 0) out.push(`${mw.holding ? `Farther: ${name} ` : 'Later: '}${later.map((w) => windowText(w, t)).join('; or ')}: every keep-out holds${mw.holding ? '' : ' (with the target moving, the platform\u2019s distance alone does not set the effect time)'}.`)
+  return out
 }
 
 export function KeepOutExplain({ ex, name, now, acceptLost, onAcceptLost, acceptBehaving, onAcceptBehaving }: Props) {
   if (!ex.items.length) return null
   const blocking = ex.items.filter((i) => i.blocks)
   const near = ex.items.filter((i) => !i.blocks)
-  const mw = ex.move_within
+  const ways = ex.blocked ? clearing(ex, name, blocking.length > 1) : []
+  const heights = ex.items.filter((i) => i.altitude)
   return (
     <section className="eg-sec ko" aria-label="Why the keep-out blocks">
       <span className="ix-label">
         Keep-out
         <em>{ex.blocked ? `blocked by ${ex.blocking}` : `holds; ${near.length} near`}</em>
       </span>
-      <p className="ko-lead">
-        The effect, {Math.round(ex.effect_radius_m)} m at {span(ex.effect_t - now())} from now, needs {fmtDist(ex.clearance_m)} clear of every track and
-        vehicle of ours at the effect time.
-      </p>
       {blocking.map((i) => (
-        <Item key={`${i.subject}${i.id}`} i={i} ex={ex} acceptLost={acceptLost} onAcceptLost={onAcceptLost} acceptBehaving={acceptBehaving} onAcceptBehaving={onAcceptBehaving} />
+        <Item key={`${i.subject}${i.id}`} i={i} acceptLost={acceptLost} onAcceptLost={onAcceptLost} acceptBehaving={acceptBehaving} onAcceptBehaving={onAcceptBehaving} />
       ))}
+      {ways.length > 0 && (
+        <div className="ko-hints">
+          <span className="ix-label">What would clear it</span>
+          <ul className="ko-clears">
+            {ways.map((w, k) => (
+              <li key={k}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {near.length > 0 && (
         <details className="ko-near" open={!ex.blocked}>
           <summary>Nearly blocking ({near.length})</summary>
           {near.map((i) => (
-            <Item key={`${i.subject}${i.id}`} i={i} ex={ex} />
+            <Item key={`${i.subject}${i.id}`} i={i} />
           ))}
         </details>
       )}
       {ex.omitted > 0 && <p className="ko-foot">{ex.omitted} more not listed.</p>}
-      {ex.blocked && (
-        <div className="ko-hints">
-          {mw && <Placement mw={mw} name={name} t={ex.t} />}
-          <p className="ko-hint">
-            <b>Wait</b>
-            {ex.wait ? (
-              <span>
-                {ex.wait.why} <span className="ko-at">(at {fmtWorldZ(ex.wait.nominate_t)})</span>
-              </span>
-            ) : (
-              <span>{ex.wait_none}</span>
-            )}
+      <details className="ko-near">
+        <summary>Evidence</summary>
+        <p className="ko-lead">
+          The effect, {Math.round(ex.effect_radius_m)} m at {span(ex.effect_t - now())} from now, needs {fmtDist(ex.clearance_m)} clear of every track and vehicle of ours at the effect time.
+        </p>
+        {heights.map((i) => (
+          <p key={`${i.subject}${i.id}`} className="ko-alt">
+            {i.label}: {i.altitude}
           </p>
-        </div>
-      )}
-      <p className="ko-foot">{ex.assumptions} Read-only: the checks decide, and nothing here relaxes a keep-out.</p>
+        ))}
+        <p className="ko-foot">{ex.assumptions}</p>
+      </details>
     </section>
   )
 }

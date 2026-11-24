@@ -109,7 +109,6 @@ export function CoverageControl({
     if (c) pickAlt(c.alt, c.above)
   }
   const shownAlt = grid ? (grid.alt_ref === 'surface' ? `${grid.alt_m} m above surface` : fmtAlt(grid.alt_m, false)) : null
-  const total = grid ? grid.nlat * grid.nlon : 0
   return (
     <section className="cov" aria-label="Predicted link coverage">
       <header className="cov-head">
@@ -170,42 +169,44 @@ export function CoverageControl({
           <span key={s}>
             <i style={{ background: `rgb(${STATE_RGB[s].join(',')})`, opacity: s === 'up' ? 0.45 : 0.85 }} />
             {s}
-            {grid && <b>{grid.counts[s === 'degraded' ? 'degraded' : s]}</b>}
           </span>
         ))}
         {grid && grid.counts.unknown > 0 && (
           <span title="Terrain not answered yet: counted open, as the emulator does until its answer comes">
             <i style={{ background: `rgb(${STATE_RGB.unknown.join(',')})` }} />
-            not yet<b>{grid.counts.unknown}</b>
+            not yet
           </span>
         )}
       </div>
       {error && <p className="cov-error">{error}</p>}
       {grid && (
-        <p className="cov-meta">
-          {grid.callsign ? `${grid.callsign}: ` : ''}
-          {grid.profile} at {shownAlt} · {Math.round(grid.res_m)} m cells ({total.toLocaleString()})
-          {grid.failsafe_s != null && ` · failsafe ${grid.failsafe_s} s`}
-          <br />
-          terrain: {grid.sources.terrain}
-          {(grid.sources.ground_stations?.length ?? 0) > 1 && (
-            <>
+        <>
+          {grid.failsafe_s != null && <p className="cov-meta">Its failsafe acts after {grid.failsafe_s} s without a link.</p>}
+          {/not checked|none/i.test(grid.sources.terrain) && <p className="cov-meta">Terrain not checked.</p>}
+          <details className="cov-evidence">
+            <summary>Evidence</summary>
+            <p className="cov-meta">
+              {grid.callsign ? `${grid.callsign}: ` : ''}
+              {grid.profile} at {shownAlt} · {Math.round(grid.res_m)} m cells
               <br />
-              {grid.sources.ground_stations!.length} ground stations: each link through the best ({grid.sources.ground_stations!.map((g) => g.name).join(', ')})
-            </>
-          )}
-          {grid.sources.satcom && (
-            <>
-              <br />
-              satellites at {grid.at.slice(11, 16)}Z
-            </>
-          )}
-        </p>
+              terrain: {grid.sources.terrain}
+              {(grid.sources.ground_stations?.length ?? 0) > 1 && (
+                <>
+                  <br />
+                  {grid.sources.ground_stations!.length} ground stations: each link through the best ({grid.sources.ground_stations!.map((g) => g.name).join(', ')})
+                </>
+              )}
+              {grid.sources.satcom && (
+                <>
+                  <br />
+                  satellites at {grid.at.slice(11, 16)}Z
+                </>
+              )}
+            </p>
+          </details>
+        </>
       )}
-      <p className="cov-note">
-        Predicted from the link emulator's own geometry: range from the ground station (the best one where there are several), terrain, satellites in view, depth. Its random
-        loss and scripted events (jammers, cuts) are not in it. Hover the map for why.
-      </p>
+      <p className="cov-note">Scripted events (jammers, cuts) are not in it.</p>
     </section>
   )
 }

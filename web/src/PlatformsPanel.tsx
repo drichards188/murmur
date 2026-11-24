@@ -1,8 +1,7 @@
 import ms from 'milsymbol'
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Domain } from './types'
-import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
-
+import { LINKS } from './catalogLabels'
 
 export interface Platform {
   id: string
@@ -10,7 +9,6 @@ export interface Platform {
   short: string
   role: string
   domain: Domain
-  sim: 'sitl' | 'standin'
   link: string
   sidc: string
   callsign: string
@@ -19,10 +17,6 @@ export interface Platform {
   endurance_h: number | null
   alt_m: number | null
   min_turn_radius_m: number | null
-  protocol?: Protocol
-  protocol_note?: string
-  authenticity?: string
-  authenticity_blocker?: string
   tasks: string[]
   in_fleet: { uid: number; sysid: number | null; callsign: string }[]
 }
@@ -72,13 +66,6 @@ interface Props {
 export function PlatformsPanel({ onClose, onFocus }: Props) {
   const [platforms, setPlatforms] = useState<Platform[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [open, setOpen] = useState<Set<string>>(new Set())
-  const toggle = (id: string) =>
-    setOpen((o) => {
-      const n = new Set(o)
-      if (!n.delete(id)) n.add(id)
-      return n
-    })
 
   useEffect(() => {
     fetch('/api/platforms')
@@ -98,7 +85,7 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
         <h2>Platforms</h2>
         {platforms && (
           <span className="muted">
-            {platforms.length} types · {fielded} in the current fleet · figures are approximate, see sim/platforms.toml
+            {platforms.length} types, {fielded} in this fleet
           </span>
         )}
         <button className="ghost close" onClick={onClose} aria-label="Close">
@@ -114,7 +101,6 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
               <tr>
                 <th />
                 <th>Type</th>
-                <th>Sim</th>
                 <th>Cruise</th>
                 <th>Alt / depth</th>
                 <th>Endurance</th>
@@ -129,34 +115,18 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
               return (
                 <tbody key={id}>
                   <tr className="domain">
-                    <td colSpan={9}>
+                    <td colSpan={8}>
                       {title} <span>{rows.length}</span>
                     </td>
                   </tr>
                   {rows.map((p) => (
-                    <Fragment key={p.id}>
-                    <tr className={p.in_fleet.length ? '' : 'absent'}>
+                    <tr key={p.id} className={p.in_fleet.length ? '' : 'absent'}>
                       <td className="sym" dangerouslySetInnerHTML={{ __html: icon(p.sidc) }} />
                       <td>
                         <div className="pname">
                           {p.name} <span className="vrow-short">{p.short}</span>
                         </div>
                         <div className="muted">{p.role}</div>
-                        {p.protocol && (
-                          <div className="protorow">
-                            <span className={`prototag ${p.protocol}`} title={p.protocol_note}>
-                              {PROTOCOLS[p.protocol] ?? p.protocol}
-                            </span>
-                            {p.authenticity && (
-                              <button className="ghost moretoggle" onClick={() => toggle(p.id)} aria-expanded={open.has(p.id)}>
-                                {open.has(p.id) ? 'hide authenticity' : 'authenticity'}
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <span className={`simtag ${p.sim}`}>{p.sim === 'sitl' ? 'ArduPilot' : 'stand-in'}</span>
                       </td>
                       <td className="num">{speed(p)}</td>
                       <td className="num">
@@ -183,32 +153,9 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
                               {m.callsign}
                             </button>
                           ))
-                        ) : (
-                          <span className="muted">not in this fleet</span>
-                        )}
+                        ) : null}
                       </td>
                     </tr>
-                    {open.has(p.id) && (
-                      <tr className={`detail${p.in_fleet.length ? '' : ' absent'}`}>
-                        <td />
-                        <td colSpan={8}>
-                          <div>
-                            <span className="dlabel">Max authenticity</span> {p.authenticity}
-                          </div>
-                          {p.authenticity_blocker && (
-                            <div>
-                              <span className="dlabel blocker">Blocker</span> {p.authenticity_blocker}
-                            </div>
-                          )}
-                          {p.protocol_note && (
-                            <div className="muted">
-                              <span className="dlabel">Protocol</span> {p.protocol_note}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    )}
-                    </Fragment>
                   ))}
                 </tbody>
               )

@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { routing, sendWords } from './commandModel'
+import { tierLabel } from './decisions'
 import { DryRun } from './DryRun'
 import { type IdentifyOption, sendIdentify, useIdentifyOptions } from './identify'
 import { useDryRun } from './useDryRun'
@@ -56,6 +58,9 @@ export function IdentifyForm({ track, vehicles, onClose }: { track: string; vehi
   const req: TaskRequest | null = chosen != null && !sent ? { task: 'identify', uids: [chosen], track } : null
   const dry = useDryRun(req, vehicles)
   const who = options?.find((o) => o.uid === chosen)?.callsign ?? `uid ${chosen}`
+  // the dry run's state and where it would go, on the Send button
+  const route = dry.answer && req ? routing(dry.answer, tierLabel) : null
+  const goes = sendWords({ complete: req != null, loading: dry.loading, routing: route })
 
   const send = async () => {
     if (chosen == null) return
@@ -97,8 +102,8 @@ export function IdentifyForm({ track, vehicles, onClose }: { track: string; vehi
             </ul>
           )}
           {chosen != null && <DryRun st={dry} vehicles={vehicles} />}
-          <button className="primary" disabled={chosen == null || busy} onClick={() => void send()}>
-            {chosen == null ? 'No vehicle can go' : `Send IDENTIFY ${track} to ${who}`}
+          <button className="primary" disabled={chosen == null || busy} onClick={() => void send()} title={route?.text}>
+            {chosen == null ? 'No vehicle can go' : `Send IDENTIFY ${track} to ${who}${goes ? ` (${goes})` : ''}`}
           </button>
         </>
       )}

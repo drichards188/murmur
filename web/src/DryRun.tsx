@@ -1,10 +1,9 @@
 import { memo, useMemo } from 'react'
-import { tierLabel } from './decisions'
-import { orderPhrase, routing } from './commandModel'
+import { orderPhrase, ruleName } from './commandModel'
 import { LazyDetails } from './LazyDetails'
 import { sameFleet } from './stableFleet'
-import { pct, REASON_WORDS, STATE_RGB, type VehicleLink } from './coverage'
-import type { DryRunAnswer, DryRunState } from './useDryRun'
+import { pct, type VehicleLink } from './coverage'
+import type { DryRunState } from './useDryRun'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 import { counts, foldByRule, foldLine, foldTone, headline, layoutLine, memberClasses, type GroupPreview } from './groupOrders'
@@ -12,14 +11,10 @@ import type { Check } from './decisions'
 import { RefusalFold } from './RefusalFold'
 import './coverage.css'
 
-const LEG_WORDS: Record<string, string> = { transit: 'transit', task: 'task path', return: 'return', here: 'where it is' }
-
-function km(m: number) {
-  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m / 10) * 10} m`
-}
-
+/** One vehicle's predicted link: where it drops, in a sentence, and whether it holds; the chance
+ *  its lost-link failsafe trips, behind it. */
 function VehicleLinkView({ v }: { v: VehicleLink }) {
-  const name = v.callsign ?? `uid ${v.uid}`
+  const name = v.callsign ?? `vehicle ${v.uid}`
   if (v.error) {
     return (
       <div className="lk-veh">
@@ -31,47 +26,16 @@ function VehicleLinkView({ v }: { v: VehicleLink }) {
   }
   return (
     <div className="lk-veh">
-      <span className="lk-sentence">{v.sentence}</span>
-      <div className="lk-chips">
-        {v.p_failsafe != null && (
-          <span className={`lk-chip ${v.holds ? 'holds' : 'fails'}`} title="The chance its lost-link failsafe trips on the way: the transit, then five minutes on the task path">
-            failsafe {pct(v.p_failsafe)}
-          </span>
-        )}
-        <span className={`lk-chip ${v.holds ? 'holds' : 'fails'}`}>{v.holds ? 'holds' : 'does not hold'}</span>
-        <span className="lk-chip plain" title={v.active_profile && v.active_profile !== v.profile ? `carried on ${v.active_profile} there` : undefined}>
-          {v.profile}
-          {v.alt_m != null && ` at ${Math.round(v.alt_m)} m`}
-          {v.alt_basis && ` (${v.alt_basis})`}
-        </span>
-      </div>
-      {v.legs && v.legs.some((l) => l.length_m > 0) && (
-        <div className="lk-legs">
-          {v.legs
-            .filter((l) => l.length_m > 0)
-            .map((l, k) => (
-              <LegBar key={k} label={`${LEG_WORDS[l.part] ?? l.part}${l.looped ? ' (lap)' : ''} ${km(l.length_m)}`} leg={l} ret={l.part === 'return'} />
-            ))}
-        </div>
+      <span className="lk-sentence">
+        {v.sentence} <span className={`lk-chip ${v.holds ? 'holds' : 'fails'}`}>{v.holds ? 'holds' : 'does not hold'}</span>
+      </span>
+      {v.p_failsafe != null && (
+        <details className="lk-fold">
+          <summary>Failsafe chance</summary>
+          {pct(v.p_failsafe)}: the chance its lost-link failsafe trips on the way, the transit then five minutes on the task path.
+        </details>
       )}
     </div>
-  )
-}
-
-function LegBar({ label, leg, ret }: { label: string; leg: NonNullable<VehicleLink['legs']>[number]; ret: boolean }) {
-  return (
-    <>
-      <span>{label}</span>
-      <span className={`lk-bar${ret ? ' ret' : ''}`}>
-        {leg.stretches.map((s, k) => (
-          <i
-            key={k}
-            style={{ flex: Math.max(0, s.to_m - s.from_m), background: `rgb(${STATE_RGB[s.state].join(',')})` }}
-            title={`${s.state} ${km(s.from_m)} to ${km(s.to_m)} (about ${Math.round(s.seconds)} s)${s.reason ? `: ${REASON_WORDS[s.reason]}` : ''}, loss up to ${pct(s.max_p_loss)}`}
-          />
-        ))}
-      </span>
-    </>
   )
 }
 
@@ -104,8 +68,9 @@ function GroupLinks({ vehicles }: { vehicles: VehicleLink[] }) {
 
 /** Rules 34: a group order's dry run, bottom line first (docs/SWARMS.md section 10): how many it
  *  sends now, how many wait and join if heard in time, how many it leaves out and why, its
- *  strength against its minimum, then the layout (each member's slot and layer, drawn on the map),
- *  then the checks folded by rule. A hundred members read as a few lines. */
+ *  strength against its minimum; a layout that does not hold and its warnings; then, folded, the
+ *  layout (each member's slot and layer, drawn on the map) and the checks by rule. A hundred
+ *  members read as a few lines. */
 export function GroupDry({ g, checks, uids, kind, phrase, nameOf, vehicles }: { g: GroupPreview; checks: Check[]; uids: string[]; kind: string; phrase: string; nameOf: (uid: string) => string; vehicles: Vehicle[] }) {
   const lines = memberClasses(uids, checks)
   const c = counts(lines, g.spec, kind)
@@ -119,42 +84,40 @@ export function GroupDry({ g, checks, uids, kind, phrase, nameOf, vehicles }: { 
   const shares = Object.entries(g.layout.shares ?? {}).sort((a, b) => a[1].slot - b[1].slot)
   return (
     <div className="grp-dry" aria-label="Group order">
-      <div className="dry-head">
-        <h4>Group</h4>
-        <span className="muted">{g.layout.spread ?? g.spec.spread}</span>
-      </div>
       <p className={c.sent + c.waiting >= c.min ? 'pass' : 'fail'}>
         <b>{phrase}</b>: {headline(c, g.spec, kind, g.spec.swarm ?? null)}.
       </p>
       <RefusalFold checks={checks} uids={uids} vehicles={vehicles} />
-      {g.layout.refused ? <p className="fail">The layout does not hold: {g.layout.refused}</p> : <p className="muted">{layoutLine(g.layout)}</p>}
+      {g.layout.refused && <p className="fail">The layout does not hold: {g.layout.refused}</p>}
       {(g.layout.warnings ?? []).map((w, k) => (
         <p key={k} className="warn">
           {w}
         </p>
       ))}
-      {byLayer.size > 1 && (
-        <p className="grp-layers">
-          {[...byLayer.entries()]
-            .sort((a, b) => a[0] - b[0])
-            .map(([layer, n]) => (
-              <span key={layer} className="grp-layer">
-                layer {layer + 1}
-                {altOf.has(layer) ? ` (${Math.round(altOf.get(layer)!)} m)` : ''}: {n}
-              </span>
+      <LazyDetails className="grp-shares" summary="Layout and checks">
+        {!g.layout.refused && <p className="muted">{layoutLine(g.layout)}</p>}
+        {byLayer.size > 1 && (
+          <p className="grp-layers">
+            {[...byLayer.entries()]
+              .sort((a, b) => a[0] - b[0])
+              .map(([layer, n]) => (
+                <span key={layer} className="grp-layer">
+                  layer {layer + 1}
+                  {altOf.has(layer) ? ` (${Math.round(altOf.get(layer)!)} m)` : ''}: {n}
+                </span>
+              ))}
+          </p>
+        )}
+        <ul className="grp-folds" aria-label="Checks by rule">
+          {folds
+            .filter((f) => f.rule !== 'strength')
+            .map((f) => (
+              <li key={f.rule} className={foldTone(f)}>
+                <b>{f.rule}</b> {foldLine(f)}
+              </li>
             ))}
-        </p>
-      )}
-      <p className="muted grp-ghosts">On the map, before it is sent: each slot a ghost at its height (filled: sent now; dashed: joins if heard), a grey ✕ on each member left out (hover for why).</p>
-      <ul className="grp-folds" aria-label="Checks by rule">
-        {folds
-          .filter((f) => f.rule !== 'strength')
-          .map((f) => (
-            <li key={f.rule} className={foldTone(f)}>
-              <b>{f.rule}</b> {foldLine(f)}
-            </li>
-          ))}
-      </ul>
+        </ul>
+      </LazyDetails>
       {shares.length > 0 && (
         <LazyDetails className="grp-shares" summary={`Each member's share (${shares.length})`}>
           <table>
@@ -185,19 +148,16 @@ export function GroupDry({ g, checks, uids, kind, phrase, nameOf, vehicles }: { 
   )
 }
 
-function verdictOf(a: DryRunAnswer): { cls: string; text: string } {
-  const r = routing(a, tierLabel)
-  return { cls: r.tone, text: r.text }
-}
-
-/** The order form's dry run: what the checks and the policy say now, and the predicted link
- *  along each vehicle's route. Information only: nothing here blocks the order. */
+/** The order form's dry run, only what blocks or bears on the order: the checks that would refuse
+ *  it (in words), those that cannot be verified, the planner's detours, a group order's bottom line,
+ *  and the predicted link along each vehicle's route. Whether it is checking and where it would go
+ *  are the Send button's (TaskPanel.tsx). Information only: nothing here blocks the order. */
 function DryRunView({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) {
   const a = st.answer
   // one lookup for the names a hundred-member answer asks for (a find over the fleet each was
   // 100 x 3,600 comparisons)
   const byUid = useMemo(() => new Map(vehicles.map((v) => [String(v.uid), v])), [vehicles])
-  if (!a && !st.loading && !st.error) return null
+  if (!a && !st.error) return null
   const nameOf = (uid: string | null) => {
     if (uid == null) return null
     const v = byUid.get(uid)
@@ -206,23 +166,18 @@ function DryRunView({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) 
   // rules 34: a group order's failures are its members' (folded by rule below), and its own
   const failed = a ? a.checks.filter((c) => c.outcome === 'fail' && !a.group) : []
   const unverified = a ? a.checks.filter((c) => c.outcome === 'unverified').length : 0
-  const v = a ? verdictOf(a) : null
   const link = a?.link_coverage
   // rules 22: the legs the planner routed (one it could not route is a failing check above)
   const routed = Object.entries(a?.routes ?? {}).flatMap(([uid, legs]) => legs.filter((p) => !p.no_route).map((p) => ({ uid, p })))
+  if (!st.error && !failed.length && !unverified && !a?.group && !routed.length && !link) return null
   return (
     <div className="dry" aria-label="Dry run" aria-live="polite">
-      <div className="dry-head">
-        <h4>Dry run</h4>
-        <span className="muted">{st.loading ? 'checking…' : 'nothing sent'}</span>
-      </div>
       {st.error && <p className="fail">{st.error}</p>}
-      {v && <p className={v.cls}>{v.text}</p>}
       {failed.length > 0 && (
         <ul>
           {failed.map((c, k) => (
             <li key={k} className="fail">
-              <b>{c.rule}</b>
+              <b>{ruleName(c.rule)}</b>
               {c.uid != null && <> ({nameOf(c.uid)})</>}: {c.detail}
             </li>
           ))}
@@ -234,7 +189,7 @@ function DryRunView({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) 
         <ul aria-label="Routed">
           {routed.map(({ uid, p }, k) => (
             <li key={k}>
-              <b>routed</b> ({nameOf(uid)}): {p.summary}
+              Routed ({nameOf(uid)}): {p.summary}
             </li>
           ))}
         </ul>
@@ -242,9 +197,7 @@ function DryRunView({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) 
       {link && (
         <div className="lk">
           <div className="lk-head">
-            <h4>Link</h4>
-            <span className="lk-pred">predicted</span>
-            <span className="muted">information only</span>
+            <h4>Link (predicted)</h4>
           </div>
           {link.error && <span className="muted">No prediction: {link.error}</span>}
           {a?.group && (link.vehicles?.length ?? 0) > LINK_FOLD ? (
@@ -252,10 +205,7 @@ function DryRunView({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] }) 
           ) : (
             (link.vehicles ?? []).map((x) => <VehicleLinkView key={x.uid} v={x} />)
           )}
-          <span className="lk-note">
-            From the link emulator's geometry; its random loss and scripted events (jammers, cuts) are not in it. It never blocks the order.
-            {link.sources?.terrain?.startsWith('not checked') && ' Terrain is not checked in this run.'}
-          </span>
+          {link.sources?.terrain?.startsWith('not checked') && <span className="lk-note">Terrain is not checked in this run.</span>}
         </div>
       )}
     </div>

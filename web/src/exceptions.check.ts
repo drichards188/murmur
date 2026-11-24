@@ -77,7 +77,6 @@ const sorted: T[] = [
   const l = foldTracks(sorted, (t) => t.affiliation === 'hostile' || t.id === 'T-12', true)
   check(l.pinned.map((t) => t.id).join() === 'T-1,T-12', `in focus pinned on top (${l.pinned.map((t) => t.id)})`)
   check(l.folds.length === 2 && l.folds[0].key === 'unknown|small_drone' && l.folds[0].tracks.length === 39 && l.folds[1].key === 'neutral|ferry', `folds by affiliation and kind, unknown first (${l.folds.map((f) => `${f.key}:${f.tracks.length}`)})`)
-  check(l.folds[0].levels.identify === 20 && l.folds[0].levels.recognise === 19, `a fold counts its levels (${JSON.stringify(l.folds[0].levels)})`)
   check(l.loose.length === FOLD_MIN - 1 && l.loose.every((t) => t.identity.kind === 'small_air'), 'a rare kind is listed on its own')
   const all = l.pinned.length + l.loose.length + l.folds.reduce((n, f) => n + f.tracks.length, 0)
   check(all === sorted.length, 'every track is somewhere')

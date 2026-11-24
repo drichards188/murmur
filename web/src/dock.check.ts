@@ -88,12 +88,10 @@ const pend = [
   intent(5, 5000, { kind: 'agent', id: 'agent-scripted' }, { expires_t: null, kind: 'engage', uids: ['3'] }),
   intent(8, 5000, { kind: 'agent', id: 'agent-scripted' }, { expires_t: 100_000 }),
 ]
-const rows = awaitingRows(pend, [done], 10_000, (u) => `UNIT ${u}`)
+const rows = awaitingRows(pend, 10_000, (i) => `ask ${i.id}`)
 assert.deepEqual(rows.map((r) => r.id), [6, 7, 8, 5], 'soonest expiry first, as the Inbox; one that never expires last; ties by number')
-assert.deepEqual(rows.map((r) => r.what), ['UNIT 9', 'CRISSY (8)', '2 vehicles', 'UNIT 3'])
+assert.deepEqual(rows.map((r) => r.ask), ['ask 6', 'ask 7', 'ask 8', 'ask 5'], 'each row is the ask as the card says it')
 assert.equal(rows[0].left_s, 30)
-assert.equal(rows[1].turn?.item.id, 'tk-1', "the officer's order names the guidance its turn read")
-assert.equal(rows[2].turn, null)
 assert.equal(rows[3].engage, true)
 
 // ---- the message box ------------------------------------------------------------------------------

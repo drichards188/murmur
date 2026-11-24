@@ -186,6 +186,7 @@ export type Severity = 'high' | 'medium' | 'info'
 export interface Alert {
   id: string // link:<uid>, op:<op id>, restore:<uid>, spent:<uid> or route:<op id>; stable while the condition lasts
   kind:
+    | 'damaged'
     | 'lost_link'
     | 'not_moving'
     | 'left_task'
@@ -386,6 +387,7 @@ export async function unspendPlatform(uid: number, note: string, proof: { passwo
 }
 
 export const ALERT_LABEL: Record<Alert['kind'], string> = {
+  damaged: 'DAMAGED',
   lost_link: 'LOST LINK',
   not_moving: 'NOT MOVING',
   left_task: 'LEFT TASK',
@@ -574,15 +576,14 @@ export function verdict(i: Intent): Verdict {
   return { route: 'rules', decided: null, wait_s: null }
 }
 
-// ---- alert acknowledge and snooze (client-side) ---------------------------------------------
+// ---- alert acknowledge (client-side) ---------------------------------------------------------
 
-/** Acknowledged and snoozed alerts live only in this browser's localStorage: they are not
- *  shared between operators or consoles and the bridge doesn't know about them. An
- *  acknowledgement holds for one occurrence (the alert id plus when it started); the same
- *  condition starting again later is a new alert. */
+/** Acknowledged alerts live only in this browser's localStorage: they are not shared between
+ *  operators or consoles and the bridge doesn't know about them. An acknowledgement holds for
+ *  one occurrence (the alert id plus when it started); the same condition starting again later
+ *  is a new alert. */
 interface AlertMemory {
   acked: Record<string, number> // alert id -> since_t acknowledged
-  snoozed: Record<string, number> // alert id -> browser time (ms) when the snooze ends
 }
 
 const ALERT_KEY = 'murmur.alerts'
@@ -592,12 +593,12 @@ function loadMemory(): AlertMemory {
     const raw = localStorage.getItem(ALERT_KEY)
     if (raw) {
       const m = JSON.parse(raw)
-      return { acked: m.acked ?? {}, snoozed: m.snoozed ?? {} }
+      return { acked: m.acked ?? {} }
     }
   } catch {
     // blocked or corrupt storage: start empty
   }
-  return { acked: {}, snoozed: {} }
+  return { acked: {} }
 }
 
 export function useAlertMemory(live: Alert[]) {
@@ -613,37 +614,24 @@ export function useAlertMemory(live: Alert[]) {
   // forget entries for conditions that have cleared, so storage stays small
   useEffect(() => {
     const ids = new Set(live.map((a) => a.id))
-    const now = Date.now()
-    const keep = (rec: Record<string, number>, expired: (v: number) => boolean) =>
-      Object.fromEntries(Object.entries(rec).filter(([id, v]) => ids.has(id) && !expired(v)))
-    const acked = keep(mem.acked, () => false)
-    const snoozed = keep(mem.snoozed, (v) => v < now - 60_000)
-    if (Object.keys(acked).length !== Object.keys(mem.acked).length || Object.keys(snoozed).length !== Object.keys(mem.snoozed).length) {
-      save({ acked, snoozed })
-    }
+    const acked = Object.fromEntries(Object.entries(mem.acked).filter(([id]) => ids.has(id)))
+    if (Object.keys(acked).length !== Object.keys(mem.acked).length) save({ acked })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live])
   return {
     isAcked: (a: Alert) => mem.acked[a.id] === a.since_t,
-    /** seconds of snooze left, or null */
-    snoozedUntil: (a: Alert) => {
-      const u = mem.snoozed[a.id]
-      return u != null && u > Date.now() ? (u - Date.now()) / 1000 : null
-    },
-    ack: (a: Alert) => save({ ...mem, acked: { ...mem.acked, [a.id]: a.since_t } }),
-    snooze: (a: Alert, ms: number) => save({ ...mem, snoozed: { ...mem.snoozed, [a.id]: Date.now() + ms } }),
+    ack: (a: Alert) => save({ acked: { ...mem.acked, [a.id]: a.since_t } }),
     wake: (a: Alert) => {
-      const { [a.id]: _s, ...snoozed } = mem.snoozed
       const { [a.id]: _a, ...acked } = mem.acked
-      save({ acked, snoozed })
+      save({ acked })
     },
   }
 }
 
-/** Alert ids that are acknowledged or snoozed here (for the badge and the panel). */
+/** Alert ids that are acknowledged here (for the badge and the panel). */
 export function useHiddenAlerts(decisions: Decisions | null) {
   const mem = useAlertMemory(decisions?.inbox.alerts ?? [])
   const hidden = new Set<string>()
-  for (const a of decisions?.inbox.alerts ?? []) if (mem.isAcked(a) || mem.snoozedUntil(a) != null) hidden.add(a.id)
+  for (const a of decisions?.inbox.alerts ?? []) if (mem.isAcked(a)) hidden.add(a.id)
   return { mem, hidden }
 }

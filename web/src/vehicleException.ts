@@ -11,6 +11,10 @@
 //   damaged    its own damage report (an inbox `damaged` alert): what it can no longer do
 //   silent     its link is stale: "SILENT 12s" (rules 30), "LOST 12s" before it (nodeLoss.ts)
 //   link_down  the link emulator has its link down, before it goes silent
+//   no_gnss    no satellite fix: dead reckoning, or no position its autopilot trusts while under
+//              way; never a sub under water, where dead reckoning is how it navigates
+//   low_battery its battery at LOW_BATTERY_PCT or under, or too low to bring it home with a
+//              margin at its platform's endurance
 //   no_rounds  an armed platform with every round of its loadout spent
 //   degraded   the link emulator degrades it, or the bridge measures more than LOSS_PCT loss
 //
@@ -18,10 +22,11 @@
 // vehicleException.check.ts runs it under node.
 import type { Priority } from './declutter.ts'
 import { type NodeLossView, type NodeStanding, staleBadge, standingOf } from './nodeLoss.ts'
+import { distanceM } from './geo.ts'
 import type { Vehicle } from './types'
-import { isStale } from './types.ts'
+import { domainOf, isStale } from './types.ts'
 
-export type ExceptionKind = 'lost' | 'presumed' | 'damaged' | 'silent' | 'link_down' | 'no_rounds' | 'degraded'
+export type ExceptionKind = 'lost' | 'presumed' | 'damaged' | 'silent' | 'link_down' | 'no_gnss' | 'low_battery' | 'no_rounds' | 'degraded'
 
 /** `bad` red, `warn` amber, `settled` grey (a person decided it: no longer an alarm) */
 export type ExceptionTone = 'bad' | 'warn' | 'settled'
@@ -44,6 +49,26 @@ export interface Damage {
 /** Measured packet loss above this, %, is a degraded link (as the fleet row's numbers turned amber). */
 export const LOSS_PCT = 10
 
+/** A battery at this, %, or under is low whatever the way home. */
+export const LOW_BATTERY_PCT = 20
+/** A battery is low too when what is left of the platform's endurance is under this many times
+ *  the time to fly home at its cruise speed. */
+export const HOME_MARGIN = 1.5
+
+/** What the battery has to do: what is left of the platform's endurance and the time home, s
+ *  (null where the catalog or the report does not say). */
+export interface BatteryFacts {
+  pct: number
+  leftS: number | null
+  homeS: number | null
+}
+
+/** Whether a battery is low: at the floor, or short of the way home with its margin. */
+export function batteryLow(b: BatteryFacts): boolean {
+  if (b.pct <= LOW_BATTERY_PCT) return true
+  return b.leftS != null && b.homeS != null && b.leftS < b.homeS * HOME_MARGIN
+}
+
 export interface ExceptionFacts {
   stale: boolean
   /** seconds since it was last heard */
@@ -57,6 +82,11 @@ export interface ExceptionFacts {
   noRounds: boolean
   /** the map draws where it probably is (the bridge's estimate) */
   estimate: boolean
+  /** its position without a satellite fix: `dead_reckoning` (inertial, airspeed or DVL), or
+   *  `none` while under way; null when it has one, or is a sub under water (normal there) */
+  noGnss?: 'dead_reckoning' | 'none' | null
+  /** its battery, when it reports one */
+  battery?: BatteryFacts | null
 }
 
 /** A damage report's words: what the vehicle can no longer do. */
@@ -87,6 +117,23 @@ export function vehicleException(f: ExceptionFacts): VehicleException | null {
   if (f.emu?.state === 'down') {
     return { kind: 'link_down', tone: 'bad', text: 'LINK DOWN', title: `The link emulator has its link down${f.emu.cause ? `: ${f.emu.cause}` : ''}. It goes silent once nothing more is heard.` }
   }
+  if (f.noGnss) {
+    return {
+      kind: 'no_gnss',
+      tone: 'warn',
+      text: 'NO GNSS',
+      title:
+        f.noGnss === 'dead_reckoning'
+          ? 'No satellite fix: it navigates on dead reckoning, its position error growing with distance travelled.'
+          : 'No satellite fix and no position its autopilot trusts: it cannot navigate to an order.',
+    }
+  }
+  if (f.battery && batteryLow(f.battery)) {
+    const b = f.battery
+    const left = b.leftS != null ? ` About ${minutes(b.leftS)} left at its endurance` : ''
+    const home = b.homeS != null ? `${left ? ';' : ' About'} ${minutes(b.homeS)} to get home` : ''
+    return { kind: 'low_battery', tone: 'warn', text: `LOW BATTERY ${Math.round(b.pct)}%`, title: `Battery ${Math.round(b.pct)}%.${left}${home}${left || home ? '.' : ''}` }
+  }
   if (f.noRounds) {
     return { kind: 'no_rounds', tone: 'warn', text: 'OUT OF ROUNDS', title: 'Every round of its loadout is spent: no engagement can name it (vehicle details, Loadout).' }
   }
@@ -97,6 +144,10 @@ export function vehicleException(f: ExceptionFacts): VehicleException | null {
     return { kind: 'degraded', tone: 'warn', text: `LINK ${Math.round(f.lossPct)}% LOSS`, title: `The bridge measures ${Math.round(f.lossPct)}% packet loss over the last 10 s.` }
   }
   return null
+}
+
+function minutes(s: number): string {
+  return s < 90 ? `${Math.max(0, Math.round(s))} s` : `${Math.round(s / 60)} min`
 }
 
 /** How the map's label budget weighs a slot under the symbol (declutter.ts), given its vehicle's
@@ -116,6 +167,9 @@ export interface ExceptionContext {
   damage: ReadonlyMap<number, Damage>
   /** armed vehicles with no round left (GET /api/loadouts) */
   noRounds: ReadonlySet<number>
+  /** each platform's endurance and cruise speed (the catalog, /api/platforms): a battery too low
+   *  to bring its vehicle home; without it, only the floor */
+  platforms?: ReadonlyMap<string, { endurance_h?: number | null; cruise_mps?: number | null }> | null
 }
 
 export const NO_EXCEPTIONS: ExceptionContext = {
@@ -124,8 +178,30 @@ export const NO_EXCEPTIONS: ExceptionContext = {
   noRounds: new Set(),
 }
 
+/** What a vehicle's report says of its navigation and battery, where it carries them (a lite
+ *  snapshot out of view carries no battery). */
+type Report = Partial<Pick<Vehicle, 'kind' | 'identity' | 'nav_source' | 'armed' | 'alt_msl' | 'battery_pct' | 'position' | 'home'>>
+
+/** Its satellite fix, as the slot reads it: a sub under water dead-reckons by design. */
+export function noGnssOf(v: Report): 'dead_reckoning' | 'none' | null {
+  if (v.nav_source !== 'dead_reckoning' && v.nav_source !== 'none') return null
+  if (domainOf({ kind: v.kind ?? null, identity: v.identity ?? null }) === 'subsurface' && (v.alt_msl == null || v.alt_msl < -1)) return null
+  // `none` before its first fix is every vehicle at start: trouble only once it is under way
+  if (v.nav_source === 'none' && !v.armed) return null
+  return v.nav_source
+}
+
+/** Its battery against the way home (`platforms`: the catalog's endurance and cruise speed). */
+export function batteryOf(v: Report, platforms: ExceptionContext['platforms']): BatteryFacts | null {
+  if (v.battery_pct == null) return null
+  const p = v.identity ? platforms?.get(v.identity.platform) : undefined
+  const leftS = p?.endurance_h ? (v.battery_pct / 100) * p.endurance_h * 3600 : null
+  const homeS = p?.cruise_mps && v.position && v.home ? distanceM(v.position, v.home) / p.cruise_mps : null
+  return { pct: v.battery_pct, leftS, homeS }
+}
+
 /** A vehicle's slot. `cause` puts the link emulator's cause in words (linkEmu.ts emuCause). */
-export function exceptionOf(v: Pick<Vehicle, 'uid' | 'link' | 'estimate'>, ctx: ExceptionContext, cause: (c: string | null) => string = (c) => c ?? ''): VehicleException | null {
+export function exceptionOf(v: Pick<Vehicle, 'uid' | 'link' | 'estimate'> & Report, ctx: ExceptionContext, cause: (c: string | null) => string = (c) => c ?? ''): VehicleException | null {
   const stale = isStale(v)
   const emu = v.link.emu
   return vehicleException({
@@ -137,6 +213,8 @@ export function exceptionOf(v: Pick<Vehicle, 'uid' | 'link' | 'estimate'>, ctx: 
     lossPct: v.link.loss_pct,
     noRounds: ctx.noRounds.has(v.uid),
     estimate: stale && !!v.estimate,
+    noGnss: noGnssOf(v),
+    battery: batteryOf(v, ctx.platforms),
   })
 }
 

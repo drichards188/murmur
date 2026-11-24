@@ -10,7 +10,7 @@
 // goes only round members heard; members crowding each other are a pile; chips that would overlap
 // stack; a cluster tile names its groups. Throws on the first failure, prints "swarms: ok" otherwise.
 import type { Alert } from './decisions'
-import { alarmKey, causeLines, chipStatus, convexHull, GROUP_STATE, groupState, heldAlarms, shownTaskings, stepAlarms, stripParts, taskingGroup, type GroupMark, type GroupMarks, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, missingLines, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
+import { alarmKey, causeLines, chipStatus, convexHull, GROUP_STATE, groupState, heldAlarms, shownTaskings, stepAlarms, stripParts, taskingGroup, type GroupMark, type GroupMarks, foldedInto, GROUP_PALETTE, groupCodes, groupColor, groupMarks, chipExceptions, selectedSwarm, swarmGroups, swarmOutlines, swarmTone, taskLine, unfolded, type Swarm, type SwarmsDoc } from './swarmsModel.ts'
 import { cellChipText, cellGroups, chipSize, groupsOnScreen, stackChips, tileOf, type MemberOnScreen } from './groupScreen.ts'
 import { textWidth } from './declutter.ts'
 import type { GroupInForce } from './groupOrders.ts'
@@ -99,7 +99,7 @@ const inForce: GroupInForce[] = [
 ]
 const sg = (over: Partial<NonNullable<Swarm['groups']>[number]> = {}) => ({ intent: 41, kind: 'orbit', members_here: 60, strength: 60, min: 48, dropped: 0, back: 0, reforms: 0, suspended: false, ...over })
 const full = chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg()] }), inForce)
-check(full.doing === 'orbit i41' && full.parts.map((p) => p.text).join(' · ') === '60/60 · min 48' && full.tone === 'ok', `a group at full strength (${JSON.stringify(full.parts)})`)
+check(full.doing === 'orbit' && full.parts.map((p) => p.text).join(' · ') === '60/60 · min 48' && full.tone === 'ok', `a group at full strength, its order in words without its raw id (${JSON.stringify(full.parts)})`)
 const belowMin = chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 45, dropped: 3, back: 1 })] }), inForce)
 check(belowMin.parts[0].text === "45/60 · under min 48" && belowMin.tone === "bad" && !belowMin.suspended, 'under its minimum: bad, not suspended')
 check(belowMin.parts.some((p) => p.text === "3 dropped") && belowMin.parts.some((p) => p.text === '1 back'), 'drops and returns counted, not pooled')
@@ -108,15 +108,16 @@ check(susp.suspended && susp.parts[0].text === 'SUSPENDED · 5 of min 7', 'suspe
 const short = chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 55, dropped: 5 })] }), inForce)
 check(short.tone === 'warn' && short.parts[0].text === '55/60', 'short of its selection, above its minimum: a warning')
 const lost = chipStatus(swarm('X', [1, 2, 3, 4], { lost_link: 3, tasks: [{ intent: 9, kind: 'patrol', count: 4 }] }))
-check(lost.doing === 'patrol i9' && lost.parts.map((p) => p.text).join() === '4,3 lost link' && lost.tone === 'bad', `no group order: its task and its lost links (${JSON.stringify(lost.parts)})`)
+check(lost.doing === 'patrol' && lost.parts.map((p) => p.text).join() === '4,3 lost link' && lost.tone === 'bad', `no group order: its task and its lost links (${JSON.stringify(lost.parts)})`)
 check(chipStatus(swarm('X', [1, 2], { tasks: [] })).doing === 'no order', 'no order')
 
 const marks = groupMarks({ ...doc, groups: inForce })
 check(marks.list.map((m) => m.code).join() === 'P1,S1' && marks.ofUid.get(5)?.id === 'SEARCH-1', 'marks: codes and members')
 check(marks.byId.get('PICKET-1')!.color === GROUP_PALETTE[0].color, "marks: the summary's order sets the colour")
-const pm = { ...marks.byId.get('PICKET-1')!, ...chipStatus(swarm('PICKET-1', [1, 2], { groups: [sg({ strength: 45, dropped: 3, back: 1 })] }), inForce) }
-const lines = missingLines(pm, [3], (u) => `SKY ${u}`)
-check(lines.join('|') === '2 dropped (lost link): SKY 7, SKY 8|1 dropped (ended): SKY 9|1 back, waiting to rejoin: SKY 12|1 link lost now: SKY 3', `who is missing and why (${lines.join('|')})`)
+// the map's chip: only what is wrong (the strip holds the order and the strength)
+check(chipExceptions(full.parts).length === 0, 'a group at full strength: nothing under its name')
+check(chipExceptions(belowMin.parts).map((p) => p.text).join(' · ') === '45/60 · under min 48 · 3 dropped', `under its minimum: that and its drops (${JSON.stringify(belowMin.parts)})`)
+check(chipExceptions(lost.parts).map((p) => p.text).join() === '3 lost link', 'its lost links, not its count')
 
 // the group strip's state: its order's first, else what most members do
 const base = { suspended: false, under: false, reformedT: null as number | null }
@@ -136,22 +137,24 @@ check(shownTaskings(tks, marks.ofUid, new Set(['PICKET-1']), new Set(), false).m
 check(shownTaskings(tks, marks.ofUid, new Set(), new Set([5]), false).map((t) => t.id).join() === '2,3,4', "a selected member shows its own order")
 check(shownTaskings(tks, marks.ofUid, new Set(), new Set(), true).length === 4, 'Space shows them all')
 
-// group alarms: raised once held, a blip never; the worst first; dismissed until a new one
+// group alarms: only a group that stopped and waits (suspended); raised once held, a blip never;
+// the oldest first; dismissed until a new one
 const mk = (id: string, over: Partial<GroupMark>): GroupMark => ({ ...marks.list[0], id, suspended: false, under: false, refused: null, ...over })
 const am = (list: GroupMark[]): GroupMarks => ({ list, byId: new Map(list.map((m) => [m.id, m])), ofUid: new Map() })
-const blip = [mk('A', { under: true })]
+check(stepAlarms(new Map(), [mk('U', { under: true }), mk('R', { refused: 'no room' })], 0).size === 0, 'under strength while it settles, or a re-form refused: no alarm (the strip says it)')
+const blip = [mk('A', { suspended: true })]
 let seen = stepAlarms(new Map(), blip, 1000)
 check(heldAlarms(seen, am(blip), 3000, new Set()).length === 0, 'an alarm not yet held is not raised')
 seen = stepAlarms(seen, [mk('A', {})], 3000)
 check(seen.size === 0, 'a blip that clears is forgotten')
 seen = stepAlarms(seen, blip, 4000)
 check(seen.get('A')!.since === 4000 && heldAlarms(stepAlarms(seen, blip, 9000), am(blip), 9000, new Set()).length === 1, 'raised once held five seconds, from its own start')
-const two = [mk('A', { refused: 'no room' }), mk('B', { suspended: true })]
-const s2 = stepAlarms(new Map(), two, 0)
-const held = heldAlarms(s2, am(two), 6000, new Set())
-check(held.map((h) => `${h.m.id}:${h.seen.alarm}`).join() === 'B:suspended,A:refused', 'the worst first')
-check(heldAlarms(s2, am(two), 6000, new Set([alarmKey('B', s2.get('B')!)])).map((h) => h.m.id).join() === 'A', 'a dismissed alarm stays down')
-check(stepAlarms(s2, [mk('B', { under: true })], 7000).get('B')!.since === 7000, 'a changed alarm starts again')
+const two = [mk('A', { suspended: true }), mk('B', { suspended: true })]
+const s2 = stepAlarms(stepAlarms(new Map(), [two[1]], 0), two, 1000)
+const held = heldAlarms(s2, am(two), 7000, new Set())
+check(held.map((h) => `${h.m.id}:${h.seen.alarm}`).join() === 'B:suspended,A:suspended', 'the oldest first')
+check(heldAlarms(s2, am(two), 7000, new Set([alarmKey('B', s2.get('B')!)])).map((h) => h.m.id).join() === 'A', 'a dismissed alarm stays down')
+check(stepAlarms(stepAlarms(s2, [], 7000), two, 8000).get('B')!.since === 8000, 'an alarm that clears and comes back starts again')
 
 // outlines: round the members heard now, a stale one left out
 const heard = new Map<number, LngLat>([[1, [-122.48, 37.82]], [2, [-122.46, 37.82]], [3, [-122.47, 37.84]]])
@@ -175,6 +178,7 @@ check(groupsOnScreen([at(1, 100, 100), at(2, 105, 100, 'H')]).groups.get('G')!.l
 const st = stackChips([{ x: 100, y: 100, w: 120, h: 43 }, { x: 110, y: 100, w: 120, h: 43 }, { x: 600, y: 100, w: 120, h: 43 }])
 check(st[0].up === 0 && st[1].up === 47 && st[1].free && st[2].up === 0, `chips that would overlap stack (${JSON.stringify(st)})`)
 check(chipSize(marks.list[0]).w >= textWidth('P1', 11) + textWidth('PICKET-1', 14), 'a chip is as wide as its words')
+check(chipSize({ ...marks.list[0], parts: full.parts }).h < chipSize({ ...marks.list[0], parts: belowMin.parts }).h, 'a chip with nothing wrong is one line, its exceptions a second')
 
 // far out: the groups in each cluster tile
 const [tx, ty] = tileOf(-122.47, 37.82, 12)
@@ -189,8 +193,8 @@ check(cell.total === 4 && cell.none === 1 && cell.groups.map(([id, n]) => `${id}
 check(cellChipText(cell, (id) => marks.byId.get(id)!.code).head === 'PICKET-1 2' && cellChipText(cell, (id) => marks.byId.get(id)!.code).rest === 'S1 1 · 1 ungrouped', 'a tile chip names its groups by code')
 
 // the panel's words
-check(taskLine(doc.swarms[0]) === 'orbit i7', 'a task all run')
-check(taskLine(doc.swarms[1]) === 'patrol i9 (1), hold (1)', 'tasks some run, with how many')
+check(taskLine(doc.swarms[0]) === 'orbit', 'a task all run')
+check(taskLine(doc.swarms[1]) === 'patrol (1), hold (1)', 'tasks some run, with how many')
 check(taskLine(swarm('X', [1], { tasks: [] })) === 'no task', 'no task')
 check(swarmTone(doc.swarms[0]) === 'bad' && swarmTone(doc.swarms[1]) === 'ok', 'tone from lost links')
 check(swarmTone(swarm('Y', Array.from({ length: 100 }, (_, k) => k), { lost_link: 2 })) === 'warn', 'a few unheard: a warning')

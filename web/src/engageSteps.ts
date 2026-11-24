@@ -136,7 +136,7 @@ export function againstText(a: Against, nameOf: (uid: string) => string): string
  *  corroborating observation. `now` and `observed_t` are engine ms. */
 export function evidenceBullets(e: RuleEvidence, nameOf: (uid: string) => string, now: number): string[] {
   const out = [
-    `Act ${e.act} against ${againstText(e.against, nameOf)}, ${span(now - e.observed_t)} ago`,
+    `The act was against ${againstText(e.against, nameOf)}, ${span(now - e.observed_t)} ago`,
     e.sensors.length ? `Seen by ${sensorsText(e.sensors, nameOf)}` : 'No sensor named',
     `Attributed to this track at ${e.attribution.toFixed(2)} (the rule needs ${e.threshold.toFixed(2)})`,
   ]

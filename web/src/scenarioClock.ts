@@ -29,6 +29,21 @@ export function scenarioMs(m: ClockMap, bridgeMs: number): number {
   return m.scenario_origin + Math.floor((bridgeMs - m.engine_origin) * m.rate)
 }
 
+/** m:ss of `s` seconds, never negative. */
+function mss(s: number): string {
+  const n = Math.max(0, Math.round(s))
+  return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`
+}
+
+/** A situation's time beside the world's in the top bar (the cutdown's new piece 8: the clock once,
+ *  in the top bar): "T+3:27 · 8:33 left", "T+--:--" before its clock starts; null with no
+ *  situation. */
+export function runClock(t: { elapsed: number | null; left: number | null } | null): string | null {
+  if (!t) return null
+  if (t.elapsed == null) return 'T+--:--'
+  return `T+${mss(t.elapsed)}${t.left != null ? ` · ${mss(t.left)} left` : ''}`
+}
+
 /** The top bar's clock and its hover: "17:04:31Z" in scenario time, or a placeholder until the
  *  bridge has said what its clock is. */
 export function clockText(answer: ScenarioClockAnswer | null, bridgeMs: number): { text: string; title: string } {

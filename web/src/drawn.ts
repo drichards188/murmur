@@ -1,8 +1,8 @@
 // Where our own vehicles are drawn on the map (display smoothing, glide.ts). One shared
 // glider, because everything drawn attached to a vehicle must read the same position: the
 // symbol, rings, labels, drop line, trail end, order badges, the follow camera. Layers call
-// drawnPosition / drawnAlt instead of reading `v.position` and friends; with smoothing off
-// these return the reported values, exactly as before. A vehicle with no altitude now is drawn
+// drawnPosition / drawnAlt instead of reading `v.position` and friends; a vehicle with no glide
+// is drawn at its report. Smoothing is always on (the map's toggle went in the cutdown). A vehicle with no altitude now is drawn
 // at the last one it reported (shownAlt), never left off the map.
 //
 // Only map drawing reads this. Lists, the details card, the API and the logs show the
@@ -12,7 +12,6 @@ import type { LngLat, Vehicle } from './types'
 import { domainOf, isStale, staleMs } from './types'
 
 const glider = new Glider()
-let enabled = true
 let tick = 0
 // the last altitude each vehicle reported, for drawing one that has none now (shownAlt)
 const lastAlt = new Map<number, number>()
@@ -35,23 +34,9 @@ export function shownAlt(v: Pick<Vehicle, 'uid' | 'trail' | 'alt_msl'>): number 
   return v.alt_msl ?? lastKnownAlt(v) ?? 0
 }
 
-/** Smoothing on or off (MapView's toggle). Either way every glide is forgotten: the next
- *  report of each vehicle is drawn as it is. */
-export function setSmoothing(on: boolean) {
-  if (on === enabled) return
-  enabled = on
-  glider.clear()
-  tick++
-}
-
-export function smoothing() {
-  return enabled
-}
-
-/** Changes whenever drawn positions may have changed: use in layer updateTriggers. 0 while
- *  smoothing is off, so those layers behave exactly as before. */
+/** Changes whenever drawn positions may have changed: use in layer updateTriggers. */
 export function drawnTick(): number {
-  return enabled ? tick : 0
+  return tick
 }
 
 function contextOf(v: Vehicle): Context {
@@ -67,7 +52,6 @@ function contextOf(v: Vehicle): Context {
 
 /** Feed the latest state (every vehicle, on every state update). `now` is performance.now(). */
 export function observeVehicles(vehicles: Vehicle[], now: number) {
-  if (!enabled) return
   const live = new Set<number>()
   for (const v of vehicles) {
     live.add(v.uid)
@@ -85,23 +69,22 @@ export function snapAllDrawn(now: number) {
 
 /** Step the glides to `now`; returns how many vehicles are still gliding. */
 export function advanceDrawn(now: number): number {
-  if (!enabled) return 0
   tick++
   return glider.advance(now)
 }
 
 /** how many vehicles are gliding now (the animation runs only while this is above zero) */
 export function glidingCount(): number {
-  return enabled ? glider.activeCount : 0
+  return glider.activeCount
 }
 
 export function isGliding(uid: number): boolean {
-  return enabled && glider.isGliding(uid)
+  return glider.isGliding(uid)
 }
 
-/** the glide's current pose for a vehicle, or undefined when smoothing is off or it has none */
+/** the glide's current pose for a vehicle, or undefined when it has none */
 function poseOf(uid: number): Pose | undefined {
-  return enabled ? glider.pose(uid) : undefined
+  return glider.pose(uid)
 }
 
 /** Forget every glide (a MapView mounted: its predecessor's poses are of no use). */
@@ -110,8 +93,8 @@ export function resetDrawn() {
   tick++
 }
 
-/** The glide's pose for a vehicle (reused, not copied: do not keep it), undefined when smoothing
- *  is off or the vehicle has none. Allocation-free, for per-frame accessors. */
+/** The glide's pose for a vehicle (reused, not copied: do not keep it), undefined when the
+ *  vehicle has none. Allocation-free, for per-frame accessors. */
 export function drawnPose(v: Vehicle): Pose | undefined {
   return poseOf(v.uid)
 }

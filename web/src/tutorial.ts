@@ -21,6 +21,28 @@ const ENDED = ['rejected', 'expired', 'voided', 'failed', 'aborted']
 
 export type StepId = 'welcome' | 'map' | 'tracks' | 'act' | 'confirm' | 'nominate' | 'sign' | 'strike' | 'assess' | 'done'
 
+/** What each step is about on the map (the cutdown's change 39: the coach card keeps its scene
+ *  in view): the boat, and which of ours by callsign. The map frames them once as the step comes
+ *  up; a step with neither leaves the view as it is. */
+export function stepScene(id: StepId): { boat: boolean; ours: string[] } {
+  switch (id) {
+    case 'map':
+      return { boat: false, ours: ['HUNTER 1', 'REAPER 1'] }
+    case 'tracks':
+    case 'act':
+      return { boat: true, ours: ['HUNTER 1'] }
+    case 'confirm':
+    case 'assess':
+      return { boat: true, ours: [] }
+    case 'nominate':
+    case 'sign':
+    case 'strike':
+      return { boat: true, ours: ['REAPER 1'] }
+    default:
+      return { boat: false, ours: [] }
+  }
+}
+
 /** Each step, in order: a `read` step moves on with Next; a `wait` step when the bridge shows it
  *  done (stepDone), but not before it has been shown `minShowS`, or with Next once it is done. */
 export const STEPS: { id: StepId; kind: 'read' | 'wait'; minShowS?: number }[] = [
@@ -49,11 +71,8 @@ export interface Facts {
   /** a declaration in force that needs no confirmation any more (an operator's, or a rule
    *  declaration an operator confirmed) */
   confirmed: boolean
-  /** who confirmed it */
-  confirmedBy: string | null
-  /** the act the rule declaration rests on, and its attribution */
+  /** the act the rule declaration rests on */
   declarationAct: string | null
-  declarationAttribution: number | null
   /** the latest attack as our sensors know it (the weapon picture: weapon.ts), and how many we know of */
   attack: WeaponTrack | null
   attacks: number
@@ -72,9 +91,6 @@ export interface Facts {
   nominationEnded: { state: string; reason: string } | null
   signed: string[]
   needed: number
-  /** whether the engine's live picture of the waiting nomination passes, and what fails */
-  livePassed: boolean | null
-  failing: string[]
   /** the nomination form's target-identity check on the boat, from its latest dry run (null with
    *  the form closed or on another track): how sure our sensors are of what the boat is against
    *  what the policy needs to nominate on it */
@@ -173,10 +189,8 @@ export function tutorialFacts(
   const view = nomination?.engage
   const signed = view?.signed ?? []
   const needed = view?.approvers_needed ?? 2
-  const live = view?.live
   const e = nomination?.engagement
   const impactT = e?.munition ? e.munition.impact_t : (e?.effect?.t ?? null)
-  const declaring = (acts ?? []).find((a) => a.verdict.verdict === 'declare' && a.act.act === d?.evidence?.act)
   const cue = (w: WeaponTrack) => w.first_cue_t ?? w.struck?.t ?? 0
   const attack = [...weapons].sort((a, b) => cue(b) - cue(a))[0] ?? null
   return {
@@ -184,9 +198,7 @@ export function tutorialFacts(
     declared,
     byRule,
     confirmed,
-    confirmedBy: d?.confirmed_by ?? (declared && !d?.rule ? (d?.by ?? null) : null),
     declarationAct: d?.evidence?.act ?? null,
-    declarationAttribution: declaring && declaring.verdict.verdict === 'declare' ? declaring.verdict.attribution : null,
     attack,
     attacks: weapons.length,
     attackSettled: !attack || attack.status === 'lost' || (!!attack.struck && nowMs - attack.struck.t >= ATTACK_READ_MS),
@@ -197,8 +209,6 @@ export function tutorialFacts(
     nominationEnded: ended && nomination ? { state: nomination.state, reason: lastStep?.reason ?? '' } : null,
     signed,
     needed,
-    livePassed: nomination?.state === 'pending_approval' && live ? live.passed : null,
-    failing: (live?.checks ?? []).filter((c) => c.outcome !== 'pass').map((c) => c.rule),
     identity: boat && form?.track === boat.id ? identityCheck(form.checks, boat.identity.level ?? null) : null,
     dispatched: !!nomination && !ended && (RUNNING.includes(nomination.state) || signed.length >= needed),
     released: !!e?.effect,

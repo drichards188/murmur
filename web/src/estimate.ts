@@ -4,7 +4,7 @@
 // turns the region into something deck.gl can draw and the details card can say.
 import { ellipseRing } from './engage'
 import { circle } from './geo'
-import type { Estimate, FailsafeBranch, LngLat, Motion, Vehicle } from './types'
+import type { Estimate, LngLat, Motion, Vehicle } from './types'
 import { isStale } from './types'
 
 export type Region =
@@ -235,8 +235,3 @@ export const BASIS_LABEL: Record<Estimate['basis'], string> = {
   drift: 'drifting with the water',
 }
 
-export const FAILSAFE_LABEL: Record<FailsafeBranch['action'], string> = {
-  rtl: 'RTL',
-  surface: 'SURFACING',
-  disarm: 'DISARMED',
-}

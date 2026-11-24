@@ -7,15 +7,15 @@ import { TextLayer } from '@deck.gl/layers'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { distanceM } from './geo'
-import { IMPACT_ANIMATION_MS, impactElement, type ImpactEvent } from './impact'
+import type { ImpactEvent } from './impact'
 import { mapScreen, NO_SCREEN, type MapScreen } from './aloft'
 import { BRIDGE_FILTER, bridgeLifter, type LiftedBridge } from './bridges'
 import { bridgeDeckLayer, build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION, z } from './map3d'
-import { ALL_FULL, planLabels, type LabelCandidate, type LabelLevel, type LabelPlan, type LabelStats, type Priority } from './declutter'
-import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
-import { burstShown, LAUNCH_FLASH_MS, munitionShown, type BurstFire, type GroundAt, type MunitionFlight } from './munition'
+import { ALL_FULL, planLabels, type LabelCandidate, type LabelLevel, type LabelPlan, type Priority } from './declutter'
+import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, snapAllDrawn } from './drawn'
+import { burstShown, inFlight, type BurstFire, type GroundAt, type MunitionFlight } from './munition'
 import { buildMunitionLayers, buildTracerLayers, type Flying, type Tracer } from './munitionLayers'
-import { actLabelCandidates, buildActLayers } from './actLayers'
+import { buildActLayers } from './actLayers'
 import { buildWeaponLayers, weaponLabelCandidates, weaponsAnimating } from './weaponLayers'
 import { shownWeapons, type WeaponTrack } from './weapon'
 import { type ActDrawing, animating, visibleActs } from './hostileAct'
@@ -36,7 +36,7 @@ import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS, vehicleLabelCandi
 import { cellChipSize, cellGroups, chipSize, groupsOnScreen, stackChips, type CellChip, type GroupOnScreen, type MemberOnScreen } from './groupScreen'
 import { GroupChips, type ChipPlacer, type ChipSpot, type GroupsOnMap } from './GroupChips'
 import { frameIcon } from './symbols'
-import { buildClusterLayers, CLUSTER_PICK_LAYERS, clusterRadius, domainLine, hotLine, unknownLine } from './clusterLayers'
+import { buildClusterLayers, CLUSTER_PICK_LAYERS, clusterRadius, hotLine } from './clusterLayers'
 import { WeatherMap, type WeatherView } from './weatherMap'
 import { buildReachLayers, newReachCache } from './reachLayers'
 import { REACH_REDRAW_MS, ringSet } from './reachCache'
@@ -93,6 +93,8 @@ interface Props {
   weapons?: WeaponTrack[]
   weaponVictim?: (w: WeaponTrack) => LngLat | null
   nameOf?: (uid: string) => string
+  /** the act the person viewed (its banner's View): its weapon's fixes, the evidence, are drawn */
+  viewedAct?: string | null
   taskings: Tasking[]
   selected: Set<number>
   draft: Draft
@@ -146,10 +148,9 @@ interface Props {
    *  candidates at this camera. MapView weighs them with our vehicles' and hands the plan to
    *  `layers`. Memoise it as `layers`. */
   labels?: (screen: MapScreen) => LabelCandidate[]
-  /** the map legend's Show all for labels: every label in full, none dropped */
-  allLabels?: boolean
-  /** what the budget drew, after each plan (the map legend counts what it left unlabelled) */
-  onLabelStats?: (stats: LabelStats) => void
+  /** a run that opens in top view (a weapon situation, situationText.ts opensInTopView): the
+   *  camera looks straight down once for each new key, 3D one key (T) away; null as before */
+  topView?: string | null
   /** the full block of what is under the pointer, by its label key (`t:<id>`...), for a layer
    *  and object not our vehicles: shown as a tooltip while its label is not drawn in full */
   tooltip?: (layerId: string, object: unknown) => { key: string; text: string } | null
@@ -228,7 +229,6 @@ const TOP_PITCH = 1
 // middle-drag orbit sensitivity, degrees per pixel
 const ORBIT_YAW = 0.35
 const ORBIT_TILT = 0.25
-const SMOOTH_KEY = 'murmur.smooth'
 // the 2D or 3D choice of the console before 3D was its only map (10-12): no longer read
 try {
   localStorage.removeItem('murmur.view')
@@ -239,9 +239,6 @@ try {
  *  glide frame scales with the vehicles drawn, not those gliding: every vehicle's position is
  *  recomputed in each attached layer whenever anything glides. */
 const GLIDE_MANY = 300
-/** The label budget's counts reach the map legend at most this often, ms (from a timer, never as
- *  an update from the effect that plans the labels). */
-const STATS_MS = 500
 
 // prefers-reduced-motion, kept current by a listener (not asked of the browser every frame)
 let reducedNow = reducedMotion()
@@ -251,15 +248,6 @@ try {
   })
 } catch {
   // no matchMedia: motion stays as it was read
-}
-
-/** display smoothing (drawn.ts) is on unless the operator turned it off */
-function savedSmooth(): boolean {
-  try {
-    return localStorage.getItem(SMOOTH_KEY) !== 'off'
-  } catch {
-    return true
-  }
 }
 
 /** The map is 3D (terrain and seabed, a tilted camera, vehicles and tracks at their height or
@@ -291,10 +279,22 @@ function tintDrapedWater(m: maplibregl.Map) {
   }
 }
 
+/** The basemap's words under the tactical picture: no street names (clutter no decision reads);
+ *  places and water named, dim. */
+function quietBasemapLabels(m: maplibregl.Map) {
+  for (const l of m.getStyle().layers) {
+    if (l.type !== 'symbol' || !('source-layer' in l)) continue
+    const src = l['source-layer']
+    if (src === 'transportation_name') m.setLayoutProperty(l.id, 'visibility', 'none')
+    else if (src === 'place' || src === 'water_name') m.setPaintProperty(l.id, 'text-opacity', 0.55)
+  }
+}
+
 /** Terrain and seabed, the bridges and the water, on a freshly loaded style. */
 function apply3d(m: maplibregl.Map) {
   hideDrapedBridges(m)
   tintDrapedWater(m)
+  quietBasemapLabels(m)
   m.setTerrain({ source: 'dem', exaggeration: HEIGHT_EXAGGERATION })
 }
 
@@ -368,14 +368,12 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, exceptions, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp, groups = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, exceptions, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, viewedAct = null, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, topView = null, tooltip: tooltipProp, groups = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
   const tiltBack = useRef(INITIAL_PITCH)
-  // display smoothing of our vehicles' motion (glide.ts, drawn.ts): the choice is remembered
-  const [smooth, setSmooth] = useState(savedSmooth)
-  const smoothRef = useRef(smooth)
+  // our vehicles' motion is smoothed between reports (glide.ts, drawn.ts), always
   const frameId = useRef(0)
   // the layers that do not move with a glide, kept between animation frames
   const staticLayers = useRef<{ three: ReturnType<typeof build3dStatic>; surface: LayersList; preview: LayersList; link: LayersList; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
@@ -396,7 +394,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     () => (map.current && ready.current ? surfaceScale(map.current) : null),
   )
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay, exceptions, groupDraw: null as GroupDraw | null, groupGeo: new Map<string, GroupOnScreen>(), cells: new Map<string, CellChip>() })
+  const latest = useRef({ vehicles, selected, follow, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay, exceptions, groupDraw: null as GroupDraw | null, groupGeo: new Map<string, GroupOnScreen>(), cells: new Map<string, CellChip>() })
   // the groups: their marks and what a chip does, the chips laid out last (GroupChips.tsx), and the
   // function that moves them with the camera
   const groupsRef = useRef(groups)
@@ -407,20 +405,11 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const chipSpots = useRef<ChipSpot[]>([])
   const chipPlacer = useRef<ChipPlacer | null>(null)
   // the label budget (declutter.ts): our vehicles' candidates as last seen on screen, the other
-  // layers' source, Show all, the plan last made and its counts
+  // layers' source, the plan last made
   const vehicleLabels = useRef<LabelCandidate[]>([])
   const labelsRef = useRef(labels)
-  const allLabelsRef = useRef(allLabels)
   const planRef = useRef<LabelPlan>(ALL_FULL)
-  const statsRef = useRef<string>('')
-  const statsLatest = useRef<LabelStats | null>(null)
-  const statsTimer = useRef<number | null>(null)
-  useEffect(() => () => {
-    if (statsTimer.current != null) window.clearTimeout(statsTimer.current)
-  }, [])
-  const statsCb = useRef(onLabelStats)
   const tooltipRef = useRef(tooltipProp)
-  statsCb.current = onLabelStats
   tooltipRef.current = tooltipProp
   // the surface drawings' inputs (surfaceLayers.ts), and what they were last built from
   const taskingsRef = useRef(taskings)
@@ -462,12 +451,9 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const container = useRef<HTMLDivElement>(null)
   const tooltip = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
-  const impactMarkers = useRef(new Map<string, maplibregl.Marker>())
-  // the strikes and the clock, for the animation frames of a munition's flight; the latest clock
-  // reading the markers were reconciled at (never back: see syncImpacts)
+  // the strikes and the clock, for the animation frames of a munition's flight
   const impactsRef = useRef(impacts)
   const clockRef = useRef(bridgeNow)
-  const syncedAt = useRef(0)
   // munitions were drawn in the last layers built
   const munitionsDrawn = useRef(false)
   const tracersRef = useRef(tracers)
@@ -475,12 +461,13 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const actsRef = useRef(acts)
   const actsDismissed = useRef(actsDismissedAt)
   const actsDrawn = useRef(false)
-  // the act and weapon labels the last label plan weighed (actLabelCandidates, weaponLabelCandidates)
-  const actsPlanned = useRef<ReadonlySet<string>>(new Set())
+  // the weapon launch labels the last label plan weighed (weaponLabelCandidates)
+  const weaponsPlanned = useRef<ReadonlySet<string>>(new Set())
   // the opponent weapons, where each one's victim was, the names, and whether any was drawn last
   const weaponsRef = useRef(weapons)
   const weaponVictimRef = useRef(weaponVictim)
   const nameOfRef = useRef(nameOf)
+  const viewedActRef = useRef(viewedAct)
   const weaponsDrawn = useRef(false)
   const ready = useRef(false)
   // centroid we last zoomed to; refit when the swarm shows up somewhere else (new --location)
@@ -630,25 +617,22 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const cl = latest.current.clusters
     const obstacles: LabelCandidate[] = (cl?.cells ?? []).map((cell) => {
       const r = clusterRadius(cell)
-      const lines = [domainLine(cell), hotLine(cell), unknownLine(cell)].filter(Boolean)
+      const lines = [hotLine(cell)].filter(Boolean)
       const w = Math.max(r, ...lines.map((l) => l.length * 3.2))
       return { key: `c:${cell.x}:${cell.y}`, at: screen.at(cell.c[0], cell.c[1], 0), short: [-w, -r, w, r + 3 + 12 * lines.length], full: [-w, -r, w, r + 3 + 12 * lines.length], priority: 2, obstacle: true }
     })
     const others = labelsRef.current?.(screen) ?? []
-    // the observed acts' labels as they stand now (bd murmur-iobd.3); the act layers draw each as
-    // this plan placed it, and one newer than the plan in full until the next
+    // the opponent weapons' launch labels, which stay where they are (bd murmur-iobd.3); the weapon
+    // layers draw each as this plan placed it, and one newer than the plan in full until the next
     const actT = clockRef.current?.()
-    const actCands = actT == null ? [] : actLabelCandidates(actsAt(actT), actT, screen)
-    // and the opponent weapons' launch and strike labels, which stay where they are
-    const weaponCands = actT == null ? [] : weaponLabelCandidates(weaponsAt(actT), actT, screen, weaponVictimRef.current, nameOfRef.current)
-    actsPlanned.current = new Set([...actCands, ...weaponCands].map((c) => c.key))
+    const weaponCands = actT == null ? [] : weaponLabelCandidates(weaponsAt(actT), actT, screen, nameOfRef.current)
+    weaponsPlanned.current = new Set(weaponCands.map((c) => c.key))
     const { cands: chipCands, spots } = chipLayout(screen)
     const t1 = performance.now()
-    const plan = planLabels([...obstacles, ...chipCands, ...vehicleLabels.current, ...actCands, ...weaponCands, ...others], {
+    const plan = planLabels([...obstacles, ...chipCands, ...vehicleLabels.current, ...weaponCands, ...others], {
       zoom: m.getZoom(),
       width: c.clientWidth,
       height: c.clientHeight,
-      all: allLabelsRef.current,
     })
     planRef.current = plan
     if (DEBUG_ON) {
@@ -685,17 +669,6 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       chipsKey.current = ck
       setChips(shown)
     } else chipPlacer.current?.place(screen)
-    // the counts go to the legend a moment later, from a timer: never as an update from this
-    // effect, and at most once a STATS_MS however often the labels change
-    const key = JSON.stringify(plan.stats)
-    if (key !== statsRef.current) {
-      statsRef.current = key
-      statsLatest.current = plan.stats
-      statsTimer.current ??= window.setTimeout(() => {
-        statsTimer.current = null
-        if (statsLatest.current) statsCb.current?.(statsLatest.current)
-      }, STATS_MS)
-    }
     return plan
   }
 
@@ -705,7 +678,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       const screen = screenNow()
       const plan = planNow(screen)
       staticLayers.current = {
-        three: build3dStatic(latest.current.vehicles, bridges.current),
+        three: build3dStatic(bridges.current),
         surface: surfaceLayers(m),
         preview: m ? buildPreviewLayers(previewData(), surfaceScale(m)) : [],
         link: linkLayers(m),
@@ -714,14 +687,13 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         clusters: buildClusterLayers(latest.current.clusters),
       }
     } else if (previewToo && m) staticLayers.current.preview = buildPreviewLayers(previewData(), surfaceScale(m))
-    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, exceptions: ex, groupDraw } = latest.current
+    const { vehicles: vs, selected: sel, follow: fv, labels: lv, badges, aloft, oneWay: ow, exceptions: ex, groupDraw } = latest.current
     const { three, surface, preview: previewLayers, link, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
     const glide = build3dGlide(vs, groupDraw ? stemColorOf(groupDraw) : undefined, groupDraw)
-    const trails = smoothRef.current ? buildTrailLayers(vs) : { under: [], over: [] }
+    const trails = buildTrailLayers(vs)
     const layers: LayersList = [
       // seen through the water (map3d.ts): the trails and stems of what is under it
-      ...three.under,
       ...trails.under,
       glide.stemsUnder,
       // on the water's surface (or the ground): taskings, the draft, the inbox preview, the
@@ -731,17 +703,15 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       ...link,
       // the sensor reach rings, on the surface too (reachLayers.ts)
       ...reachLayers(m),
-      // what is above or on the water: bridge decks, the other trails and stems, sea-level shadows
+      // what is above or on the water: bridge decks, the other trails and stems
       ...three.decks,
-      ...three.over,
       ...trails.over,
       glide.stems,
-      glide.shadows,
       ...space,
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
-      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, exceptions: ex, groups: groupDraw }),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, follow: fv, labels: lv, badges, aloft, oneWay: ow, exceptions: ex, groups: groupDraw }),
       // hostile acts our sensors observed: the fire event, then what lingers of it
       ...actLayers(),
       // opponent weapons as our sensors know them: the estimate, the fixes, the strike
@@ -754,9 +724,9 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     return [...layers, ...(weatherMap.current?.layers() ?? [])]
   }
 
-  /** the munitions in flight, or flashing at their launch, at `t` (the bridge's clock) */
+  /** the munitions in flight at `t` (the bridge's clock) */
   const munitionsAt = (t: number): MunitionFlight[] =>
-    impactsRef.current.flatMap((i) => (i.munition && munitionShown(i.munition, t) ? [{ m: i.munition, kind: i.kind, profile: i.profile, launcher: i.platform, target: i.track }] : []))
+    impactsRef.current.flatMap((i) => (i.munition && inFlight(i.munition, t) ? [{ m: i.munition, kind: i.kind, profile: i.profile, launcher: i.platform, target: i.track }] : []))
   /** the gun bursts to draw at `t`, with the platform's drawn place and the target's fix */
   const tracersAt = (t: number): Tracer[] =>
     tracersRef.current.flatMap((s) => {
@@ -766,19 +736,19 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       if (!v || !p) return []
       return [{ fire: s.fire, from: [p[0], p[1], z(drawnAlt(v))], to: [s.to[0], s.to[1], z(s.toAlt)] }]
     })
-  /** Animation frames are wanted for a munition: one is in flight or flashing at its launch, or
-   *  is to be launched within a second. Never with reduced motion (the console's tick steps it). */
+  /** Animation frames are wanted for a munition: one is in flight, or is to be launched within a
+   *  second. Never with reduced motion (the console's tick steps it). */
   const munitionsFlying = () => {
     const t = clockRef.current?.()
     if (t == null || reducedNow) return false
-    return impactsRef.current.some(({ munition: m }) => m && t >= m.launch_t - 1000 && (t < m.impact_t || t < m.launch_t + LAUNCH_FLASH_MS)) || tracersRef.current.some((s) => burstShown(s.fire, t))
+    return impactsRef.current.some(({ munition: m }) => m && t >= m.launch_t - 1000 && t < m.impact_t) || tracersRef.current.some((s) => burstShown(s.fire, t))
   }
   const munitionLayers = (): LayersList => {
     const t = clockRef.current?.()
     const live = t == null ? [] : munitionsAt(t)
     const bursts = t == null ? [] : tracersAt(t)
     munitionsDrawn.current = live.length > 0 || bursts.length > 0
-    return [...(live.length ? buildMunitionLayers(live, t!, screenNow(), reducedNow, groundNow()) : []), ...(bursts.length ? buildTracerLayers(bursts, t!, reducedNow) : [])]
+    return [...(live.length ? buildMunitionLayers(live, t!, screenNow(), groundNow()) : []), ...(bursts.length ? buildTracerLayers(bursts, t!, reducedNow) : [])]
   }
   /** the observed acts drawn at `t` (hostileAct.ts visibleActs) */
   const actsAt = (t: number) => visibleActs(actsRef.current, t, actsDismissed.current)
@@ -793,8 +763,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const t = clockRef.current?.()
     const live = t == null ? [] : actsAt(t)
     actsDrawn.current = live.length > 0
-    const level = (key: string) => (actsPlanned.current.has(key) ? planRef.current.level(key) : undefined)
-    return live.length ? buildActLayers(live, t!, reducedNow, level) : []
+    return live.length ? buildActLayers(live, t!, reducedNow) : []
   }
   /** the opponent weapons drawn at `t` (weapon.ts shownWeapons) */
   const weaponsAt = (t: number) => shownWeapons(weaponsRef.current, t)
@@ -807,8 +776,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const t = clockRef.current?.()
     const live = t == null ? [] : weaponsAt(t)
     weaponsDrawn.current = live.length > 0
-    const level = (key: string) => (actsPlanned.current.has(key) ? planRef.current.level(key) : undefined)
-    return live.length ? buildWeaponLayers(live, t!, screenNow(), reducedNow, weaponVictimRef.current, nameOfRef.current, level) : []
+    const level = (key: string) => (weaponsPlanned.current.has(key) ? planRef.current.level(key) : undefined)
+    return live.length ? buildWeaponLayers(live, t!, screenNow(), reducedNow, weaponVictimRef.current, nameOfRef.current, viewedActRef.current, level) : []
   }
   /** a munition, an act or an opponent weapon wants animation frames */
   const animated = () => munitionsFlying() || actsAnimating() || weaponsMoving()
@@ -836,7 +805,6 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
   const previewData = (): FC => {
     const base = previewRef.current
-    if (!smoothRef.current) return base
     return {
       ...base,
       features: base.features.map((f) => {
@@ -858,12 +826,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   // must draw that same pose or the followed symbol shakes against the view.
   //
   // The same frames draw a munition in flight (munitionLayers.ts) and an observed act's fire event
-  // (actLayers.ts), smoothing on or off: then they run while one flies or fires, and step only the
-  // glides there are (none: no vehicle is re-positioned).
+  // (actLayers.ts): then they run while one flies or fires, and step only the glides there are.
   const glideFrame = (t: number) => {
     frameId.current = 0
-    const flying = animated()
-    if ((!smoothRef.current && !flying) || lostRef.current || !overlay.current) return
+    if (lostRef.current || !overlay.current) return
     const every = latest.current.vehicles.length > GLIDE_MANY ? 1000 / 30 : 1000 / 60
     if (!following.current && t - lastGlideFrame.current < every - 2) {
       // too soon: wait for the next display frame (the glide may have ended meanwhile; the next real frame then draws its end)
@@ -885,17 +851,14 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       a.push(performance.now() - t0)
       if (a.length > 600) a.splice(0, a.length - 600)
     }
-    // a munition that has just landed: its strike starts this frame, not at the next tick
-    if (flying && clockRef.current) syncImpacts(clockRef.current())
     if (n > 0 || animated()) frameId.current = requestAnimationFrame(glideFrame)
   }
   const wakeGlide = () => {
     if (frameId.current || document.visibilityState !== 'visible') return
-    if ((smoothRef.current && glidingCount() > 0) || animated()) frameId.current = requestAnimationFrame(glideFrame)
+    if (glidingCount() > 0 || animated()) frameId.current = requestAnimationFrame(glideFrame)
   }
 
   useEffect(() => {
-    const markers = impactMarkers.current
     const cam = camera.current
     const m = new maplibregl.Map({
       container: container.current!,
@@ -909,6 +872,18 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     })
     // ?perf exposes it in a production build too, so scripts/console_stress.py can drive the camera
     if (DEBUG_ON) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
+    // the map's credits (a licence condition: OpenStreetMap, the terrain tiles) as the (i) alone:
+    // MapLibre opens a compact attribution when its credits first arrive; it is closed once, and
+    // a click on the (i) opens it
+    let creditsClosed = false
+    const closeCredits = () => {
+      const el = creditsClosed ? null : m.getContainer().querySelector('.maplibregl-ctrl-attrib.maplibregl-compact-show')
+      if (!el) return
+      el.classList.remove('maplibregl-compact-show')
+      creditsClosed = true
+    }
+    m.on('styledata', closeCredits)
+    m.on('sourcedata', closeCredits)
 
     // What is under the pointer: its full block as a tooltip while its label is not drawn in full
     // (short or none, the label budget's), and a pointer over anything that has one.
@@ -936,8 +911,12 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       m.getCanvas().style.cursor = tipKey ? 'pointer' : cursor.current
       const tip = tooltip.current
       if (!tip) return
-      // a round's own line is never drawn in full (its group's label is), so it always tips
-      if (tipKey && (tipKey.startsWith('munition:') || planRef.current.level(tipKey) !== 'full')) {
+      // a round's own line is never drawn in full (its group's label is), and a contact's label
+      // never carries its id, so both always tip; one of ours shows its full block only while
+      // selected or its details are open
+      const focusedV = v != null && (latest.current.selected.has(v.uid) || latest.current.follow === v.uid)
+      const always = tipKey != null && (tipKey.startsWith('munition:') || tipKey.startsWith('t:') || tipKey.startsWith('l:'))
+      if (tipKey && (always || planRef.current.level(tipKey) !== 'full' || (v != null && !focusedV))) {
         tip.textContent = tipText
         tip.style.transform = `translate(${info.x}px, ${info.y - 14}px) translate(-50%, -100%)`
         tip.hidden = false
@@ -1333,8 +1312,6 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     return () => {
       ready.current = false
       weatherMap.current?.detach()
-      for (const marker of markers.values()) marker.remove()
-      markers.clear()
       overlay.current = null
       surface.removeEventListener('mousedown', onDown)
       surface.removeEventListener('auxclick', noAux)
@@ -1362,35 +1339,6 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapGen])
 
-  // CSS runs the short flash and shockwave; MapLibre keeps its anchor on the effect point
-  // while the operator pans, tilts or zooms. Reconcile by strike id so bridge ticks do not
-  // restart the animation, and do not replay old effects when a console reconnects. Called at
-  // each tick and on the animation frames of a munition's flight, whose clock readings can come a
-  // little after a tick's: the latest reading within a second counts, so a strike a frame started
-  // is not taken down again by a tick read just before it (and a clock set back, a new run, is
-  // followed).
-  const syncImpacts = (nowMs: number) => {
-    const m = map.current
-    if (!m || !ready.current) return
-    const now = nowMs < syncedAt.current && syncedAt.current - nowMs < 1000 ? syncedAt.current : nowMs
-    syncedAt.current = now
-    const live = new Set<string>()
-    for (const impact of impactsRef.current) {
-      const age = now - impact.t
-      if (age < 0 || age >= IMPACT_ANIMATION_MS) continue
-      live.add(impact.key)
-      if (impactMarkers.current.has(impact.key)) continue
-      const marker = new maplibregl.Marker({ element: impactElement(impact, age), anchor: 'center' })
-        .setLngLat(impact.point)
-        .addTo(m)
-      impactMarkers.current.set(impact.key, marker)
-    }
-    for (const [key, marker] of impactMarkers.current) {
-      if (live.has(key)) continue
-      marker.remove()
-      impactMarkers.current.delete(key)
-    }
-  }
   useEffect(() => {
     impactsRef.current = impacts
     tracersRef.current = tracers
@@ -1399,36 +1347,25 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     weaponsRef.current = weapons
     weaponVictimRef.current = weaponVictim
     nameOfRef.current = nameOf
+    viewedActRef.current = viewedAct
     clockRef.current = bridgeNow
-    syncImpacts(impactNowMs)
     // a munition in flight or an act firing: animation frames; none (reduced motion), a step at
     // each tick instead, and one more to take off one that has landed (or was left drawn while
     // the tab was hidden); an act's lingering line and marker fade at the tick
     if (animated()) wakeGlide()
     else if (overlay.current && (munitionsDrawn.current || actsDrawn.current || weaponsDrawn.current || actsAt(impactNowMs).length || weaponsAt(impactNowMs).length || (reducedNow && munitionsAt(impactNowMs).length))) overlay.current.setProps({ layers: deckLayers(true) })
-    // syncImpacts, wakeGlide and deckLayers read refs only
+    // wakeGlide and deckLayers read refs only
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [impacts, tracers, acts, actsDismissedAt, weapons, weaponVictim, nameOf, impactNowMs, bridgeNow, styleGen, mapGen])
+  }, [impacts, tracers, acts, actsDismissedAt, weapons, weaponVictim, nameOf, viewedAct, impactNowMs, bridgeNow, styleGen, mapGen])
 
-  // the smooth toggle: remembered, and every vehicle is drawn as reported until its next report
+  // on mount, every vehicle is drawn as reported until its next report: a remounted map (the error
+  // boundary's Retry) must not glide from its predecessor's poses
   useEffect(() => {
-    smoothRef.current = smooth
-    // also on mount: a remounted map (the error boundary's Retry) must not glide from its predecessor's poses
     resetDrawn()
-    setSmoothing(smooth)
-    try {
-      localStorage.setItem(SMOOTH_KEY, smooth ? 'on' : 'off')
-    } catch {
-      // storage unavailable: the toggle still works for this session
-    }
-    if (!smooth && frameId.current) {
-      cancelAnimationFrame(frameId.current)
-      frameId.current = 0
-    }
     pushLayers()
     // pushLayers reads refs only
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [smooth])
+  }, [])
 
   // a hidden tab draws vehicles as reported (no animation frames run there anyway)
   useEffect(() => {
@@ -1464,12 +1401,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // a vehicle that stops reporting an altitude is drawn at the last one it reported
     noteAltitudes(vehicles)
-    if (smoothRef.current) {
-      // report changes start glides; a new generation or a hidden tab: draw as reported
-      const now = performance.now()
-      observeVehicles(vehicles, now)
-      if (newGeneration || document.visibilityState === 'hidden') snapAllDrawn(now)
-    }
+    // report changes start glides; a new generation or a hidden tab: draw as reported
+    const nowGlide = performance.now()
+    observeVehicles(vehicles, nowGlide)
+    if (newGeneration || document.visibilityState === 'hidden') snapAllDrawn(nowGlide)
     const clustered = !!clusters?.cells.length
     const drawn = visibleVehicles(vehicles, viewport.current, clustered)
     // where each is seen: at its height, or at its foot when that is above the view (aloft.ts)
@@ -1518,7 +1453,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // far out: which groups fill each cluster tile (every vehicle, those sent lite too)
     const cells = g && clustered ? cellGroups(vehicles, (uid) => g.marks.ofUid.get(uid)?.id ?? null, clusters!.z) : new Map<string, CellChip>()
     const groupDraw: GroupDraw | null = g ? { ofUid: g.marks.ofUid, crowded, hovered: g.hovered, selected: g.selected } : null
-    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay, exceptions, groupDraw, groupGeo, cells }
+    latest.current = { ...latest.current, vehicles: drawn, selected, follow, aloft, clusters: clustered ? clusters : null, oneWay, exceptions, groupDraw, groupGeo, cells }
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
@@ -1545,7 +1480,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, exceptions, follow, groups])
+  }, [vehicles, selected, moved, styleGen, clusters, oneWay, exceptions, follow, groups])
 
   useEffect(() => {
     spaceRef.current = space
@@ -1592,15 +1527,14 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkRoute])
 
-  // extension layers changed (see the `layers` prop), their labels, or Show all labels
+  // extension layers changed (see the `layers` prop), or their labels
   useEffect(() => {
-    if (layersRef.current === layers && labelsRef.current === labels && allLabelsRef.current === allLabels) return
+    if (layersRef.current === layers && labelsRef.current === labels) return
     layersRef.current = layers
     labelsRef.current = labels
-    allLabelsRef.current = allLabels
     pushLayers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layers, labels, allLabels])
+  }, [layers, labels])
 
   const vehiclesRef = useRef(vehicles)
   useEffect(() => {
@@ -1639,16 +1573,15 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       }
       const v = vehiclesRef.current.find((x) => x.uid === uid)
       if (v?.position && !lostRef.current && !m.isZooming() && !m.isRotating()) {
-        // smoothing on: aim at where the symbol is drawn (so the symbol stays put in the view
-        // instead of stepping ahead of the glide and drifting back), with a tighter glide
-        const smooth = smoothRef.current
-        if (smooth) advanceDrawn(now)
-        const at = smooth ? drawnPosition(v) : v.position
+        // aim at where the symbol is drawn (so the symbol stays put in the view instead of
+        // stepping ahead of the glide and drifting back), with a tighter glide
+        advanceDrawn(now)
+        const at = drawnPosition(v)
         // tight only while the vehicle is gliding (the target moves smoothly); a snap, a resting
         // vehicle and reduced-motion users get the slow approach as before
-        const k = 1 - Math.exp(-dt / (smooth && isGliding(uid) && !reducedNow ? 0.08 : 0.25))
+        const k = 1 - Math.exp(-dt / (isGliding(uid) && !reducedNow ? 0.08 : 0.25))
         const c = m.getCenter()
-        const elev = smooth ? drawnAlt(v) * HEIGHT_EXAGGERATION : drawnHeight(v)
+        const elev = drawnAlt(v) * HEIGHT_EXAGGERATION
         m.setCenterClampedToGround(false)
         const z = m.getZoom()
         const zoom = f.zoom == null ? z : z + (f.zoom - z) * k
@@ -1715,6 +1648,14 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   }
   const toggleTopRef = useRef(toggleTop)
   toggleTopRef.current = toggleTop
+  // a run that opens in top view (`topView`): straight down once for its key, T tilts it back
+  const toppedFor = useRef<string | null>(null)
+  useEffect(() => {
+    const m = map.current
+    if (!topView || !m || toppedFor.current === topView) return
+    toppedFor.current = topView
+    if (m.getPitch() > TOP_PITCH) toggleTopRef.current()
+  }, [topView, mapGen])
   // T toggles it, except while typing (a form's field) or with a modifier (the browser's own keys)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1834,24 +1775,15 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         <button
           className={`topbtn${top ? ' on' : ''}`}
           aria-pressed={top}
-          title={
+          title={`${
             top
               ? 'Tilt the camera back (T). Heights and depths read from the side.'
               : 'Top view (T): look straight down, for plan judgments such as the distance to a keep-out. Only the camera turns: vehicles and tracks stay at their height.'
-          }
+          } Middle-drag spins and tilts the map; heights are drawn ×${HEIGHT_EXAGGERATION}.`}
           onClick={toggleTop}
         >
           top view
         </button>
-        <button
-          className={`smoothbtn${smooth ? ' on' : ''}`}
-          aria-pressed={smooth}
-          title="Smooth the motion of vehicles on the map between position reports. Numbers always show the reports; a vehicle never moves past its last report."
-          onClick={() => setSmooth((s) => !s)}
-        >
-          smooth
-        </button>
-        <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · middle-drag: spin + tilt · T: top view{groups ? ' · hold Space: group orders' : ''}</span>
       </div>
     </>
   )

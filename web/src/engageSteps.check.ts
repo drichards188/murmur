@@ -138,7 +138,7 @@ const nameOf = (uid: string) => ({ '1': 'HUNTER 1', '2': 'REAPER 1' })[uid] ?? `
 eq(sensorsText(['1:sonar', '1:eo_ir', '2:radar'], nameOf), 'HUNTER 1 sonar and EO/IR; REAPER 1 radar', 'sensors by vehicle')
 eq(
   evidenceBullets({ act: 'A-1', against: { kind: 'vehicle', uid: '1' }, observed_t: NOW - 130_000, sensors: ['1:sonar', '1:eo_ir'], attribution: 0.9833, threshold: 0.9 }, nameOf, NOW),
-  ['Act A-1 against HUNTER 1, 2 min 10 s ago', 'Seen by HUNTER 1 sonar and EO/IR', 'Attributed to this track at 0.98 (the rule needs 0.90)'],
+  ['The act was against HUNTER 1, 2 min 10 s ago', 'Seen by HUNTER 1 sonar and EO/IR', 'Attributed to this track at 0.98 (the rule needs 0.90)'],
   'evidence',
 )
 eq(declarationLine({ affiliation: 'hostile', by: 'op-1', rule: false }), 'Declared hostile by op-1', 'operator declaration')

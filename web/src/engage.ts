@@ -717,13 +717,6 @@ export function ellipseRing(e: Ellipse, n = 72): LngLat[] {
   return pts
 }
 
-export function fmtRel(ms: number) {
-  const s = Math.round(ms / 1000)
-  const sign = s < 0 ? '-' : '+'
-  const a = Math.abs(s)
-  return a < 60 ? `${sign}${a}s` : `${sign}${Math.floor(a / 60)}m${String(a % 60).padStart(2, '0')}s`
-}
-
 export const STATE_LABEL: Partial<Record<Intent['state'], string>> = {
   pending_approval: 'awaiting approval',
   approved: 'approved',

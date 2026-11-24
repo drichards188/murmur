@@ -1,20 +1,28 @@
 import { PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
-import { ellipseRing, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, type EngagePreview, type KeepOutExplanation, type KeepOutRegion } from './engage'
+import { ellipseRing, fmtDist, KEEP_OUT_KIND_LABEL, type EngagePreview, type KeepOutExplanation, type KeepOutRegion } from './engage'
 import type { MapScreen } from './aloft'
 import { ALL_FULL, type LabelCandidate, type LabelPlan, type Priority, textBox } from './declutter'
 import { circle, distanceM } from './geo'
+import { engageWho, engageWords } from './mapWords'
 import { paddedRing } from './nodeLoss'
 import type { LngLat } from './types'
 
 /** Engagement previews on the map (Phase E), through MapView's `layers` prop: for each
  *  engagement in play (and the nomination form's draft) the platform's path forward, the
- *  track's projected motion, the predicted effect point with its radius, the keep-out circle
- *  and the track's uncertainty ellipse at the effect time. At sea level, drawn over the
- *  terrain and the water (never hidden by either). */
+ *  track's projected motion, the predicted effect point with its radius, and, while signers
+ *  weigh it (pending, the form's draft, or its card selected), the keep-out circle and the
+ *  track's uncertainty ellipse at the effect time: evidence for a signature, clutter once it
+ *  runs (ledger 1, the map's engagements). At sea level, drawn over the terrain and the water
+ *  (never hidden by either). Labels in words, no raw id (mapWords.ts engageWords). */
 
 export interface EngageDrawing {
   key: string
-  label: string
+  /** the platform's callsign; none for the form's draft before a platform is chosen */
+  platform?: string
+  /** the target track */
+  track?: string
+  /** the intent's state, said once it ended */
+  state?: string
   preview: EngagePreview
   /** pending, running, effected, or the form's draft */
   phase: 'draft' | 'pending' | 'running' | 'effected' | 'ended'
@@ -50,19 +58,27 @@ interface Path {
 /** released, and landed: a munition still in flight has not struck yet */
 const struckAt = (d: EngageDrawing, nowMs: number) => d.effect != null && !(d.impactT != null && nowMs < d.impactT)
 
-/** An engagement's label in full ("ENGAGE i2 effect +44s", "ENGAGE i2 · ASSESSED PERSISTS") and
- *  short (its name alone), where it is anchored (the effect point), and how the label budget
- *  weighs it (declutter.ts): the form's draft and the selected one placed whatever they overlap,
- *  one in play with what waits on the person, an ended one with the rest. */
+/** An engagement's label in full ("REAPER 1 on T-0008: effect in 44 s", "T-0008 still
+ *  detected") and short (who on what), where it is anchored (the effect point), and how the
+ *  label budget weighs it (declutter.ts): the form's draft and the selected one placed whatever
+ *  they overlap, one in play with what waits on the person, an ended one with the rest. */
 function engageLabel(d: EngageDrawing, nowMs: number) {
-  const full = d.effect
-    ? `${d.label} · ${d.assessment ? `ASSESSED ${d.assessment.toUpperCase()}` : struckAt(d, nowMs) ? 'IMPACT' : 'MUNITION IN FLIGHT'}`
-    : d.phase === 'ended'
-      ? d.label
-      : `${d.label} effect ${fmtRel(d.preview.effect_t - nowMs)}`
+  const full = engageWords({
+    platform: d.platform,
+    track: d.track,
+    phase: d.phase,
+    effectInMs: d.preview.effect_t - nowMs,
+    released: d.effect != null,
+    struck: struckAt(d, nowMs),
+    assessment: d.assessment,
+    state: d.state,
+  })
   const priority: Priority = d.phase === 'ended' ? 4 : 1
-  return { key: `x:${d.key}`, at: d.effect?.point ?? d.preview.effect_point, full, short: d.label, priority, force: d.selected || d.phase === 'draft' }
+  return { key: `x:${d.key}`, at: d.effect?.point ?? d.preview.effect_point, full, short: engageWho(d), priority, force: d.selected || d.phase === 'draft' }
 }
+
+/** its keep-out and the track's ellipse at the effect: while signers weigh it */
+const weighed = (d: EngageDrawing) => d.phase === 'pending' || d.phase === 'draft' || d.selected
 
 /** where an engagement's label is drawn from its point, px (above right of it) */
 const LABEL_AT: [number, number] = [10, -10]
@@ -107,7 +123,7 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number, plan
   return [
     new ScatterplotLayer<EngageDrawing>({
       id: 'engage-keepout',
-      data: drawings.filter((d) => d.phase !== 'ended'),
+      data: drawings.filter((d) => d.phase !== 'ended' && weighed(d)),
       getPosition: (d) => d.preview.effect_point,
       getRadius: (d) => d.preview.keep_out_m,
       radiusUnits: 'meters',
@@ -122,7 +138,7 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number, plan
     }),
     new PolygonLayer<EngageDrawing>({
       id: 'engage-ellipse',
-      data: drawings.filter((d) => d.phase !== 'ended'),
+      data: drawings.filter((d) => d.phase !== 'ended' && weighed(d)),
       getPolygon: (d) => ellipseRing(d.preview.ellipse),
       stroked: true,
       filled: true,

@@ -48,23 +48,31 @@ export function routing(a: AnswerLike, tier: (rule: string) => string): Routing 
   return { tone: 'wait', short: `reaches ${a.would_reach}`, text: `Checks pass; it would reach ${a.would_reach}.` }
 }
 
-/** Where the order stands, for the three steps it shows: composing (not complete), checking (the
- *  dry run is out), ready (the dry run answered, nothing refuses), blocked (it would be refused), sent. */
-export type Stage = 'compose' | 'checking' | 'ready' | 'blocked' | 'sent'
-
-export function stage(o: { complete: boolean; loading: boolean; answered: boolean; passed: boolean; sent: boolean }): Stage {
-  if (o.sent) return 'sent'
-  if (!o.complete) return 'compose'
-  if (!o.answered) return 'checking'
-  return o.passed ? 'ready' : 'blocked'
+/** A task check's rule in words, for the order form's refusals (a group order's are refusalFold.ts
+ *  `ruleWords`'): "land or water on the way", not `domain`. */
+const RULE_NAME: Record<string, string> = {
+  capability: 'can do this task',
+  readiness: 'ready to go',
+  platform_limits: 'platform limits',
+  domain: 'land or water on the way',
+  geofence: 'no-go areas on the way',
+  reserves: 'battery reserve',
+  identify: 'can identify it',
+  space_query: 'satellite answer',
+  feasibility: 'pass still feasible',
+  coverage: 'coverage over the window',
 }
 
-export const STAGE_WORDS: Record<Stage, string> = {
-  compose: 'Set the order up: where, how it is shared.',
-  checking: 'Asking the rules what would happen. Nothing is sent.',
-  ready: 'Checked. Send it when it reads right.',
-  blocked: 'The rules would refuse it as it stands. Change it, or send to see the full refusal.',
-  sent: 'Sent. Follow it in the command log.',
+export function ruleName(rule: string): string {
+  return RULE_NAME[rule] ?? rule.replace(/_/g, ' ')
+}
+
+/** The send button's routing words while the dry run is out or answered: "checking...", or where
+ *  the answer says the order goes (`routing`). */
+export function sendWords(o: { complete: boolean; loading: boolean; routing: Routing | null }): string | null {
+  if (!o.complete) return null
+  if (o.routing) return o.routing.short
+  return o.loading ? 'checking...' : null
 }
 
 /** The selection in a line: its name when it is a group of yours (or a swarm), then its size and
@@ -101,6 +109,19 @@ export function kindsOf(vehicles: readonly Pick<Vehicle, 'uid' | 'identity'>[]):
     by.set(id, e)
   }
   return [...by.values()].sort((a, b) => b.uids.length - a.uids.length || a.label.localeCompare(b.label))
+}
+
+/** The fleet's Select menu's first choices: all, then each domain present (water and under water
+ *  as one, Sea), with what each takes; a domain with none is not offered. */
+export function domainChoices(vehicles: readonly Pick<Vehicle, 'uid' | 'kind' | 'identity'>[]): { id: string; label: string; uids: number[] }[] {
+  const of = (want: (d: string) => boolean) => vehicles.filter((v) => want(domainOf(v))).map((v) => v.uid)
+  const all = { id: 'all', label: 'All', uids: vehicles.map((v) => v.uid) }
+  const parts = [
+    { id: 'air', label: 'Air', uids: of((d) => d === 'air') },
+    { id: 'ground', label: 'Ground', uids: of((d) => d === 'ground') },
+    { id: 'sea', label: 'Sea', uids: of((d) => d === 'surface' || d === 'subsurface') },
+  ].filter((c) => c.uids.length > 0)
+  return all.uids.length ? [all, ...parts] : []
 }
 
 /** A command log card's label: "ORBIT · North picket" when the order went to a named group. */

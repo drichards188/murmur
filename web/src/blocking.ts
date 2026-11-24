@@ -74,20 +74,31 @@ export function stripLine(b: Blocking): string {
   return `${b.id}: ${b.waits_for}. ${b.text}`
 }
 
-/** The items a note names that hold something up now: by id as a word in its text ("D-1",
- *  never "D-12" for "D-1"), or among the ids its writer attached (`blocking`: the watch
- *  officer's driver attaches what held something up when its turn ended). */
-export function namedBlocking(note: { text: string; blocking?: readonly string[] | null }, list: readonly Blocking[] | undefined | null): Blocking[] {
-  const attached = new Set(note.blocking ?? [])
-  return waitingItems(list).filter((b) => attached.has(b.id) || new RegExp(`(^|[^A-Za-z0-9-])${b.id}(?![0-9])`).test(note.text))
+/** Why the engine declared nothing on a flagged act, in a person's words (the bridge's
+ *  `waits_for` names the flag's kind in its own). */
+function flagWhy(waitsFor: string): string {
+  if (/below the rule's threshold/.test(waitsFor)) return 'the engine was not sure enough who fired to declare it hostile'
+  if (/conflicts/.test(waitsFor)) return "its evidence conflicts, so the engine declared nothing"
+  return 'it was seen once where the policy wants two, so the engine declared nothing'
+}
+
+/** The waiting strip in plain words (the cutdown's change 6): the ask, without the item's id, and
+ *  what the person's delay holds up. `victim`: whom the item's act was against, by name, when known. */
+export function stripWords(b: Pick<Blocking, 'kind' | 'track' | 'waits_for' | 'platforms'>, victim: string | null): { ask: string; holds: string } {
+  const ask =
+    b.kind === 'declaration'
+      ? `${b.track} was declared hostile by the engine's rule: confirm or revoke it.`
+      : `${b.track} fired${victim ? ` on ${victim}` : ''}, but ${flagWhy(b.waits_for)}: decide on it.`
+  const names = b.platforms.map((p) => p.callsign ?? `vehicle ${p.uid}`)
+  const ready = names.length ? ` (${names.length > 2 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} more` : names.join(' and ')} ready otherwise)` : ''
+  return { ask, holds: `Until then no engagement on ${b.track} can go ahead${ready}.` }
 }
 
 // ---- what waits on a person without holding anything up -----------------------------------------
 
 /** A review item waiting on the person that holds nothing up (or not yet): a rule declaration
- *  awaiting confirmation, an open flag. The calm standing pointer under the top bar
- *  (docs/research/saturation-display.md R4) shows each, pending, not urgent: it only opens the
- *  item's card in the Review, where the person decides. */
+ *  awaiting confirmation, an open flag. The Inbox number counts each; the Sitrep names the
+ *  oldest. */
 export interface Pending {
   /** the review item: `D-<n>` or `F-<n>` */
   id: string

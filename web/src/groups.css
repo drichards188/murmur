@@ -17,10 +17,6 @@
 .og-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .og-line input[type='text'], .og-line input:not([type]), .og-new input:not([type]) { flex: 1; min-width: 0; }
 .og-acts button { font-size: 11.5px; }
-.og-swatches { display: inline-flex; gap: 5px; }
-.og-swatch { width: 18px; height: 18px; border-radius: 4px; border: 2px solid transparent; padding: 0; }
-.og-swatch.on { border-color: var(--text); }
-.og-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .og-members { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; font: 11.5px var(--mono); }
 .og-members li { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
 .og-members li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -38,7 +34,6 @@
 /* the groups the AI watch officer made for a tasking request: apart, and marked as its own */
 .og-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin: 8px 0 0; font: 600 11px var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .og-sub span { color: var(--text); }
-.og-sub small { flex-basis: 100%; font: 11px var(--sans); text-transform: none; letter-spacing: 0; }
 .og-item.officer { border-style: dashed; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .og-badge.og-officer { color: var(--accent); border-style: solid; border-color: color-mix(in srgb, var(--accent) 55%, transparent); text-transform: none; letter-spacing: 0.02em; }
 .og-made { margin: 0; padding: 6px 8px 0; font-size: 11.5px; line-height: 1.4; }

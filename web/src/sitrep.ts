@@ -8,7 +8,7 @@ import type { OperatorGroup } from './groups.ts'
 import { STATE_ORDER, STATE_WORDS, vehicleState, type LatestOp, type VehicleState } from './exceptions.ts'
 import { swarmTone, taskLine, type GroupMark, type Swarm } from './swarmsModel.ts'
 import type { Track } from './tracks.ts'
-import { callsign, domainOf, isStale, staleMs, type Domain, type Vehicle } from './types.ts'
+import { callsign, isStale, staleMs, type Vehicle } from './types.ts'
 
 /** Below this a vehicle counts as low on battery when the swarm summary does not say (it does:
  *  `low_battery_below_pct`). */
@@ -166,14 +166,9 @@ export function strengthWords(r: Pick<GroupRow, 'total' | 'counts'>): string {
 export interface NodeRow {
   uid: number
   name: string
-  /** the model's short name ("QUAD") */
-  model: string
-  domain: Domain
   state: VehicleState
   /** link health as the fleet list reads it */
   link: 'ok' | 'warn' | 'bad'
-  /** seconds since it was heard, null when never or unknown */
-  quietS: number | null
   battery: number | null
   lowBattery: boolean
   /** its latest order ("orbit active"), empty when none */
@@ -194,15 +189,11 @@ export function nodeRows(vehicles: readonly Vehicle[], ctx: SitrepContext, group
   const low = ctx.lowBelowPct ?? LOW_BATTERY_PCT
   return vehicles.map((v) => {
     const op = ctx.latest.get(v.uid)
-    const since = v.link.since_last_ms
     return {
       uid: v.uid,
       name: callsign(v),
-      model: v.identity?.short ?? '',
-      domain: domainOf(v),
       state: vehicleState(v, ctx.latest, ctx.damaged),
       link: linkHealth(v),
-      quietS: since == null || !Number.isFinite(since) ? null : Math.round(since / 1000),
       battery: v.battery_pct,
       lowBattery: v.battery_pct != null && v.battery_pct < low,
       order: op ? `${op.task} ${op.state}` : '',
@@ -212,31 +203,26 @@ export function nodeRows(vehicles: readonly Vehicle[], ctx: SitrepContext, group
 }
 
 export interface NodeFilter {
-  domain: Domain | 'all'
   state: VehicleState | 'all'
   /** only those not heard now */
   unheard: boolean
   /** only the low on battery */
   low: boolean
-  /** a model short name, or 'all' */
-  model: string
   /** names containing this, any case */
   text: string
   /** only the members of these uids (a group opened), or null for every node */
   within: ReadonlySet<number> | null
 }
 
-export const ANY: NodeFilter = { domain: 'all', state: 'all', unheard: false, low: false, model: 'all', text: '', within: null }
+export const ANY: NodeFilter = { state: 'all', unheard: false, low: false, text: '', within: null }
 
 export function filterNodes(rows: readonly NodeRow[], f: NodeFilter): NodeRow[] {
   const q = f.text.trim().toLowerCase()
   return rows.filter(
     (r) =>
-      (f.domain === 'all' || r.domain === f.domain) &&
       (f.state === 'all' || r.state === f.state) &&
       (!f.unheard || r.state === 'lost') &&
       (!f.low || r.lowBattery) &&
-      (f.model === 'all' || r.model === f.model) &&
       (!q || r.name.toLowerCase().includes(q)) &&
       (!f.within || f.within.has(r.uid)),
   )
@@ -254,57 +240,4 @@ export function windowOf(count: number, scrollTop: number, viewH: number, rowH: 
   const from = Math.max(0, Math.floor(scrollTop / rowH) - overscan)
   const to = Math.min(count, Math.ceil((scrollTop + viewH) / rowH) + overscan)
   return { from, to: Math.max(from, to) }
-}
-
-// ---- contacts -------------------------------------------------------------------------------
-
-export interface ContactSummary {
-  total: number
-  /** by the affiliation in force (a declaration's over the tracker's call) */
-  byAffiliation: Record<string, number>
-  byDomain: Record<string, number>
-  declared: number
-  /** with a review flag raised */
-  flagged: number
-  stale: number
-}
-
-export function contactSummary(tracks: readonly Pick<Track, 'affiliation' | 'declared' | 'domain' | 'state' | 'review'>[]): ContactSummary {
-  const out: ContactSummary = { total: tracks.length, byAffiliation: {}, byDomain: {}, declared: 0, flagged: 0, stale: 0 }
-  for (const t of tracks) {
-    const a = t.declared?.affiliation ?? t.affiliation
-    out.byAffiliation[a] = (out.byAffiliation[a] ?? 0) + 1
-    out.byDomain[t.domain] = (out.byDomain[t.domain] ?? 0) + 1
-    if (t.declared) out.declared++
-    if (t.review?.some((f) => f.status === 'open')) out.flagged++
-    if (t.state === 'stale') out.stale++
-  }
-  return out
-}
-
-/** The tracks nearest the given points, for "nearest to what we protect" (no protected point is
- *  known to the console, so it is the nearest to our vehicles' centre, which the caller passes). */
-export function nearest<T extends { position: readonly [number, number] }>(tracks: readonly T[], to: readonly [number, number], n: number): { track: T; km: number }[] {
-  const km = (a: readonly [number, number], b: readonly [number, number]) => {
-    const dLat = (a[1] - b[1]) * 111.32
-    const dLon = (a[0] - b[0]) * 111.32 * Math.cos((((a[1] + b[1]) / 2) * Math.PI) / 180)
-    return Math.hypot(dLat, dLon)
-  }
-  return tracks
-    .map((track) => ({ track, km: km(track.position, to) }))
-    .sort((a, b) => a.km - b.km)
-    .slice(0, n)
-}
-
-// ---- export ---------------------------------------------------------------------------------
-
-/** The report as text (markdown), for pasting into a log or a message. */
-export function sitrepText(h: Headline, rows: readonly GroupRow[], c: ContactSummary, when: string): string {
-  const lines: string[] = [`# Situation report${h.scenario ? `: ${h.scenario}` : ''}`, `_${when}_`, '']
-  lines.push(`**${h.up} of ${h.total} vehicles heard** (${h.lost} lost link); **${h.contacts} contacts** (${h.hostile} hostile, ${h.suspect} suspect); **${h.waiting} waiting for a person**.`)
-  if (h.urgent) lines.push('', `Most urgent: ${h.urgent}`)
-  lines.push('', '## Groups and swarms')
-  for (const r of rows) lines.push(`- ${r.kind === 'yours' ? '(yours) ' : r.kind === 'officer' ? "(the officer's) " : ''}**${r.name}**: ${strengthWords(r)}${r.task ? `; ${r.task}` : ''}${r.lowBattery ? `; ${r.lowBattery} low on battery` : ''}`)
-  lines.push('', '## Contacts', Object.entries(c.byAffiliation).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(', ') || 'none')
-  return lines.join('\n')
 }

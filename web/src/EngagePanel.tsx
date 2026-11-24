@@ -42,6 +42,7 @@ import {
 } from './engageSteps'
 import { KeepOutExplain } from './KeepOutExplain'
 import { useCeilingReason, useEngageDefaults } from './policy'
+import { agoWhen, plainText } from './plainText'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import type { Track, TracksMessage } from './tracks'
@@ -101,11 +102,10 @@ function StepBox({ n, title, state, status, note, children }: { n: number; title
         <span className="eg-num" aria-hidden="true">
           {state === 'done' ? '✓' : n}
         </span>
-        <h3>
+        <h3 title={note}>
           <span className="eg-sr">Step {n}: </span>
           {title}
         </h3>
-        {note && <span className="eg-step-note">{note}</span>}
         <span className="eg-step-status">{status ?? STATE_WORD[state]}</span>
       </div>
       <div className="eg-step-body">{children}</div>
@@ -147,8 +147,8 @@ function Blocker({
   )
 }
 
-/** The checks list behind the one line: blocking first, each in plain words with the rule's code. */
-function CheckRows({ checks }: { checks: Check[] }) {
+/** The checks list behind the one line: blocking first, each in plain words. */
+function CheckRows({ checks, plain }: { checks: Check[]; plain: (text: string) => string }) {
   const order: Step[] = ['target', 'platform', 'effect', 'checks']
   const sorted = [...checks].sort((a, b) => Number(blocks(b)) - Number(blocks(a)) || order.indexOf(stepOf(a.rule)) - order.indexOf(stepOf(b.rule)))
   return (
@@ -158,9 +158,9 @@ function CheckRows({ checks }: { checks: Check[] }) {
           <span className="ix-mark">{c.outcome === 'pass' ? 'PASS' : c.outcome === 'fail' ? 'BLOCKS' : c.outcome.replace('_', ' ').toUpperCase()}</span>
           <span className="ix-text">
             <span className="ix-rule">
-              {checkTitle(c.rule)} <code className="eg-code">{c.rule}</code>
+              {checkTitle(c.rule)}
             </span>
-            <span className="ix-detail">{c.detail}</span>
+            <span className="ix-detail">{plain(c.detail)}</span>
           </span>
         </div>
       ))}
@@ -501,11 +501,10 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
       <header className="eg-top">
         <h2>{title}</h2>
         <span className="eg-as">as {operator}</span>
-        <button className="ghost mini close" onClick={onClose} aria-label="Close" title="Close (Esc)">
+        <button className="ghost mini close" onClick={onClose} aria-label="Close">
           ✕
         </button>
       </header>
-      <p className="eg-sub">An abstract effect: a point, a radius, a time. Two operators with engagement authority decide it, never you.</p>
       {replaces != null && (
         <div className="eg-replace" role="note" aria-label={`Replacing i${replaces}`}>
           <p className="eg-replace-head">
@@ -540,7 +539,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
       <ol className="eg-steps">
         <StepBox n={1} title="Target" state={s1} status={s1Status}>
           {targets.length === 0 ? (
-            <p className="eg-muted">No track is declared hostile. A track is declared on its card in Tracks: by an operator, or by the engine's rule on a hostile act our sensors observed.</p>
+            <p className="eg-muted">No track is declared hostile</p>
           ) : (
             <div className="eg-picks" role="radiogroup" aria-label="Declared-hostile tracks">
               {targets.map((h) => (
@@ -588,15 +587,12 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
         </StepBox>
 
         <StepBox n={2} title="Platform" state={s2} status={!chosen ? 'choose one' : undefined} note="by uid, not ranked">
-          {!track ? (
-            <p className="eg-muted">Listed once a target is chosen.</p>
-          ) : !options ? (
-            <p className="eg-muted">Checking every armed platform...</p>
+          {!track ? null : !options ? (
+            <p className="eg-muted">Checking...</p>
           ) : !options.length ? (
-            <p className="eg-muted">No armed platform in the fleet.</p>
+            <p className="eg-muted">No armed platform</p>
           ) : (
             <>
-              {uid == null && <p className="eg-muted">Nothing is chosen for you: pick one.</p>}
               <div className="eg-picks" role="radiogroup" aria-label="Armed platforms" data-tutorial="engage-platforms">
                 {options.map((o) => {
                   const pl = platformLine(o, nowMs)
@@ -669,17 +665,17 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
               </label>
             )}
           </div>
-          {ceiling > 1 && (
-            <p className="eg-muted">
-              {rounds > 1
-                ? `A salvo: ${rounds} rounds on one plan, at least ${Math.round(defaults?.salvo_spacing_s ?? 0)} s apart, each checked at its own release; any operator may cease it, and rounds in flight cannot be recalled.`
-                : 'One round, as every engagement was.'}
-              {ceilingWhy ? ` The policy raised the ceiling above one: ${ceilingWhy}.` : ''}
-            </p>
+          {ceiling > 1 && rounds > 1 && (
+            <div className="eg-muted">
+              A salvo: {rounds} rounds on one plan, at least {Math.round(defaults?.salvo_spacing_s ?? 0)} s apart; your signature covers every round.{' '}
+              <details className="eg-why">
+                <summary>More</summary>
+                Each round is checked at its own release; any operator may cease it, and rounds in flight cannot be recalled.
+                {ceilingWhy ? ` The policy raised the ceiling above one: ${ceilingWhy}.` : ''}
+              </details>
+            </div>
           )}
-          {radius == null || windowS == null ? (
-            <p className="eg-muted">{defaultsError ? `The policy's defaults could not be read (${defaultsError}): name a radius and a window.` : "Reading the policy's defaults."}</p>
-          ) : null}
+          {(radius == null || windowS == null) && defaultsError ? <p className="eg-muted">{`The policy's defaults could not be read (${defaultsError}): name a radius and a window.`}</p> : null}
           <fieldset className="eg-fallbacks">
             <legend>If it stops before the effect (an abort, a void, a lost link)</legend>
             {FALLBACKS.map((f) => {
@@ -738,7 +734,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
               sub={line.clear ? `To clear: ${line.clear}` : undefined}
               open={line.tone === 'bad' && !!chosen.keep_outs?.blocked}
             >
-              <CheckRows checks={chosen.checks} />
+              <CheckRows checks={chosen.checks} plain={(text) => plainText(text, { nameOf: (u) => nameOf(Number(u)), when: agoWhen(nowMs) })} />
               {chosen.keep_outs && (
                 <KeepOutExplain
                   ex={chosen.keep_outs}
@@ -756,14 +752,12 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
             <ul className="eg-accepts" role="status">
               {lostIds.length > 0 && (
                 <li>
-                  You accept {lostIds.join(', ')} as lost for this engagement: logged under your session with the nomination and shown to every signer; the checks leave{' '}
-                  {lostIds.length > 1 ? 'them' : 'it'} out while out of view since that fix.
+                  You accept {lostIds.join(', ')} as lost for this engagement: every signer sees it, and the checks leave {lostIds.length > 1 ? 'them' : 'it'} out while out of view since that fix.
                 </li>
               )}
               {behavingIds.length > 0 && (
                 <li>
-                  You accept {behavingIds.join(', ')} as behaving now: logged with the estimate then and shown to every signer; the keep-out counts{' '}
-                  {behavingIds.length > 1 ? 'each' : 'it'} along that course only, and the acceptance lapses on its own if it departs from it or goes out of view.
+                  You accept {behavingIds.join(', ')} as behaving now: every signer sees it, and the keep-out counts {behavingIds.length > 1 ? 'each' : 'it'} along that course only, until it departs from it or goes out of view.
                   {behavingShort.length > 0 ? ` Accepting ${behavingShort.join(', ')} would not clear the keep-out.` : ''}
                 </li>
               )}
@@ -800,19 +794,16 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
         )}
         <p className="eg-consequence">
           {replaces != null ? `Rejects i${replaces}, then creates` : 'Creates'} a nomination{t && platform ? ` of ${t.id} with ${platform}` : ''} in the Inbox
-          {replaces != null ? ' in its place' : ''}. Nothing moves until two operators with engagement authority, neither of them you, sign it.
+          {replaces != null ? ' in its place' : ''}. Nothing moves until two operators with engagement authority, neither of them you, sign it: an abstract effect, a point, a radius and a time.
         </p>
         {!ready.ok && <p className="eg-missing">Not yet: {ready.missing.join('; ')}.</p>}
         <div className="eg-go-row">
-          <button className="eg-nominate" data-tutorial="engage-nominate" disabled={!canNominate} onClick={() => void submit()} title="Ctrl+Enter">
+          <button className="eg-nominate" data-tutorial="engage-nominate" disabled={!canNominate} onClick={() => void submit()}>
             {replaces != null ? `Replace i${replaces}` : t ? `Nominate ${t.id}` : 'Nominate'}
           </button>
-          <button className="dc-btn quiet" onClick={onClose} title="Esc">
+          <button className="dc-btn quiet" onClick={onClose}>
             Cancel
           </button>
-          <span className="eg-keys" aria-hidden="true">
-            Ctrl+Enter
-          </span>
         </div>
         {refused && !refused.step && <p className="eg-refused">Not nominated: {refused.text}</p>}
         {error && <p className="error ix-error">{error}</p>}

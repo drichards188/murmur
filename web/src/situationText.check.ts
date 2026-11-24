@@ -3,7 +3,7 @@
 // are as eval/proxy.py writes them; the confirmation's reason is the one the panel showed in
 // hostile-act-engagement (logs/ui-sweep, T+8:29). Not part of the bundle.
 import assert from 'node:assert/strict'
-import { scriptedLine, situationZero } from './situationText.ts'
+import { opensInTopView, proposalState, scriptedLine, situationTime, situationZero, STALE_S, whatHappened, withoutCommands } from './situationText.ts'
 
 const nameOf = (uid: string) => ({ '1': 'HUNTER 1', '2': 'REAPER 1' })[uid] ?? `vehicle ${uid}`
 const zero = 1795517866.0
@@ -35,5 +35,49 @@ assert.equal(
 )
 assert.equal(situationZero({ t: zero + 509, elapsed_s: 509 }), zero)
 assert.equal(situationZero({ t: zero, elapsed_s: null }), null)
+
+// the clock on this console: run on from the last status while the runner runs, held otherwise
+const clock = { elapsed_s: 100, duration_s: 720 }
+assert.deepEqual(situationTime(clock, 'running', { elapsed: 100, at: 50 }, 53), { elapsed: 103, left: 617, stale: false, running: true, sincePost: 3 })
+assert.equal(situationTime(clock, 'running', { elapsed: 100, at: 50 }, 50 + STALE_S + 1).stale, true, 'no status for STALE_S: not reporting')
+assert.equal(situationTime(clock, 'running', { elapsed: 100, at: 50 }, 50 + STALE_S + 1).elapsed, 100, 'and its clock is held')
+assert.equal(situationTime(clock, 'ended', { elapsed: 720, at: 50 }, 90).left, 0, 'ended: nothing left')
+assert.equal(situationTime({ elapsed_s: 715, duration_s: 720 }, 'running', { elapsed: 715, at: 0 }, 9).elapsed, 720, 'never past its duration')
+assert.equal(situationTime({ elapsed_s: null, duration_s: 720 }, 'starting', null, 9).elapsed, null, 'before it starts')
+
+// the end line without the command
+assert.equal(
+  withoutCommands("the situation's time is up; the stack stays up for inspection until you end it (End in the menu, or make down)"),
+  "the situation's time is up; the stack stays up for inspection until you end it (End in the menu)",
+)
+assert.equal(withoutCommands('stopping the runner; the stack keeps running: make down stops it'), 'stopping the runner; the stack keeps running')
+
+// what happened: the timeline, the scripts' decisions and the AI's proposals, the newest first
+const happened = whatHappened(
+  [{ t_s: 230, kind: 'autoplay', text: 'op-auto (scripted) confirmed the rule declaration D-1 on T-0008' }, { t_s: 210, kind: 'red', text: 'T-0008 fires on our vehicle 1' }],
+  [{ id: 4, kind: 'orbit', created_t: (zero + 60) * 1000, state: 'dispatched', uids: ['1'], approval: { by: 'op-auto' }, rationale: 'cover the channel' }],
+  zero,
+  'Playbook',
+  new Set(['op-auto']),
+  nameOf,
+)
+assert.deepEqual(
+  happened.map((h) => [h.t_s, h.kind, h.text]),
+  [
+    [230, 'timeline', 'op-auto (scripted) confirmed the rule declaration D-1 on T-0008'],
+    [210, 'timeline', 'T-0008 fires on HUNTER 1'],
+    [60, 'ai', 'The AI (Playbook) proposed orbit i4 for HUNTER 1: approved by op-auto (scripted)'],
+  ],
+  'merged by time, in plain words, each scripted decision once (the timeline says it)',
+)
+assert.equal(happened[2].title, 'cover the channel', "the AI's rationale in the hover")
+assert.equal(proposalState({ state: 'pending_approval', approval: null }, new Set()), 'waiting for a decision')
+assert.equal(proposalState({ state: 'dispatched', approval: null }, new Set()), 'sent by policy')
+assert.equal(proposalState({ state: 'queued', approval: { by: 'op-1' } }, new Set()), 'approved by op-1, held for its link')
+
+// the map's first view: a situation with an armed platform opens in top view; the open world does not
+assert.equal(opensInTopView(true, [{ identity: { armed: false } }, { identity: { armed: true } }]), true)
+assert.equal(opensInTopView(true, [{ identity: { armed: false } }, { identity: null }]), false, 'no armed platform: as before')
+assert.equal(opensInTopView(false, [{ identity: { armed: true } }]), false, 'the open world: as before')
 
 console.log('situationText: ok')

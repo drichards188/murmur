@@ -14,8 +14,7 @@
 // observed (a console opened later) is not replayed: it is drawn as it would be by then.
 //
 // Pure functions, no DOM and no framework, so they can be checked on their own
-// (hostileAct.check.ts); actLayers.ts draws them, App.tsx shows the banner.
-import { sensorsText } from './engageSteps.ts'
+// (hostileAct.check.ts); actLayers.ts draws them, attackEvents.ts joins them into the banner.
 import type { Against, ObservedAct } from './ident'
 import type { LngLat } from './types'
 
@@ -33,22 +32,13 @@ export interface ActDrawing {
   /** `A-1@<observed_t>`: act ids start again in a new run */
   key: string
   act: string
-  observedT: number
   /** when its fire event starts on this console (animStart) */
   start: number
   /** where our sensors placed the author (the best observer's fix), and its 1-sigma error */
   author: LngLat
   sigma_m: number
-  /** the track the engine attributed it to, and the attribution; null: unattributed */
-  authorTrack: string | null
-  attribution: number | null
-  /** why it is unattributed, when the engine said ("flag F-2") */
-  unattributedNote: string | null
   /** null: no position for the victim (something we hold no track of, or not in the picture) */
   victim: Victim | null
-  victimName: string
-  /** "HUNTER 1 EO/IR and sonar; REAPER 1 EO/IR" */
-  seenBy: string
   /** it launched a modelled weapon (its report is a weapon track's): no arrow, the weapon is drawn */
   weapon: boolean
 }
@@ -63,14 +53,11 @@ export const LABEL_FADE_MS = 3000
 /** the faint line and marker after it: kept this long from the start, the last part fading */
 export const LINGER_MS = 60_000
 export const LINGER_FADE_MS = 15_000
-/** the banner */
-export const BANNER_MS = 45_000
 /** An act first seen within this of its observation plays from when it is first seen (it took
  *  the bridge a moment to report it); one seen later is placed at its observation. */
 export const FRESH_MS = 5000
-/** at most this many acts drawn at once (the newest), and full labels on at most this many */
+/** at most this many acts drawn at once (the newest) */
 export const MAX_DRAWN = 8
-export const MAX_LABELS = 2
 
 /** When an act's fire event starts on this console: when it was first seen, if that was soon
  *  after it was observed; else its observation (so an old act is not replayed). */
@@ -146,48 +133,6 @@ export function visibleActs(ds: ActDrawing[], now: number, dismissedAt: number |
     .slice(0, MAX_DRAWN)
 }
 
-/** Of the acts drawn, those with a full label (the newest MAX_LABELS whose label is still on);
- *  the rest carry only their id. */
-export function labelledKeys(visible: ActDrawing[], now: number): Set<string> {
-  return new Set(visible.filter((d) => labelAlpha(now - d.start) > 0).slice(0, MAX_LABELS).map((d) => d.key))
-}
-
-/** The banner's act: the newest started within BANNER_MS and not dismissed; with how many other
- *  acts started in the last LINGER_MS. */
-export function bannerAct(ds: ActDrawing[], now: number, dismissedAt: number | null): { d: ActDrawing; others: number } | null {
-  const v = visibleActs(ds, now, dismissedAt)
-  const d = v[0]
-  if (!d || now - d.start >= BANNER_MS) return null
-  return { d, others: v.length - 1 }
-}
-
-// ---- words -------------------------------------------------------------------------------------
-
-/** "Act A-1: fires on HUNTER 1" (a modelled weapon's launch), "Act A-1: reported fire on HUNTER 1"
- *  (an abstract act: a report, nothing modelled flew) */
-export function headline(d: ActDrawing): string {
-  return d.weapon ? `Act ${d.act}: launch at ${d.victimName}` : `Act ${d.act}: reported fire on ${d.victimName}`
-}
-
-/** "from T-0006 (0.97) · seen by HUNTER 1 EO/IR and sonar", or "author unattributed (flag F-2) · ..." */
-export function subline(d: ActDrawing): string {
-  const from = d.authorTrack
-    ? `from ${d.authorTrack}${d.attribution != null ? ` (${d.attribution.toFixed(2)})` : ''}`
-    : `author unattributed${d.unattributedNote ? ` (${d.unattributedNote})` : ''}`
-  return d.seenBy ? `${from} · seen by ${d.seenBy}` : from
-}
-
-/** the map's label: two lines */
-export function mapLabel(d: ActDrawing): string {
-  return `${headline(d)}\n${subline(d)}`
-}
-
-/** the banner's line: "T-0006 fired on HUNTER 1", "Unattributed fire on HUNTER 1" (an abstract
- *  act's banner says it is a report: App.tsx) */
-export function bannerLine(d: ActDrawing): string {
-  return d.authorTrack ? `${d.authorTrack} fired on ${d.victimName}` : `Unattributed fire on ${d.victimName}`
-}
-
 // ---- from what the bridge sends ----------------------------------------------------------------
 
 /** Who the engine says the author was: the track it declared on; on a recorded act (the rule off,
@@ -209,13 +154,12 @@ export interface Seen {
 /** The acts as drawn, from the inbox's `acts`. `seen` keeps, per act, when this console first
  *  saw it and where its victim was then (updated here: a new act is noted at `now`; a victim not
  *  found yet is looked for again while the act is fresh). `victimAt`: where the victim is, at the
- *  act's time where that can be said (a track's prediction); `nameOf`: a vehicle's callsign. */
+ *  act's time where that can be said (a track's prediction). */
 export function actDrawings(
   acts: ObservedAct[],
   seen: Map<string, Seen>,
   now: number,
   victimAt: (a: Against, t: number) => Victim | null,
-  nameOf: (uid: string) => string,
   weaponActs: ReadonlySet<string> = new Set(),
 ): ActDrawing[] {
   const out: ActDrawing[] = []
@@ -227,20 +171,13 @@ export function actDrawings(
       s = { start: animStart(r.observed_t, now), victim: victimAt(r.against, r.observed_t) }
       seen.set(key, s)
     } else if (!s.victim && now - s.start < FRESH_MS) s.victim = victimAt(r.against, r.observed_t)
-    const who = attributionOf(a)
     out.push({
       key,
       act: r.act,
-      observedT: r.observed_t,
       start: s.start,
       author: r.location,
       sigma_m: r.sigma_m,
-      authorTrack: who.track,
-      attribution: who.score,
-      unattributedNote: who.note,
       victim: s.victim,
-      victimName: r.against.kind === 'vehicle' ? nameOf(r.against.uid) : r.against.kind === 'track' ? `protected track ${r.against.track}` : 'something we hold no track of',
-      seenBy: sensorsText(r.sensors, nameOf),
       weapon: weaponActs.has(r.act),
     })
   }

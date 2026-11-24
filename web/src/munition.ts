@@ -284,35 +284,9 @@ export function munitionLabel(m: Munition, t: number): string {
   return `${munitionShort(m.name)} · ${secondsToImpact(m, t)} s`
 }
 
-/** how long a flash marks the launch, ms */
+/** how long a flash marks an opponent weapon's launch, ms (weaponLayers.ts; our own munition's
+ *  launch has none) */
 export const LAUNCH_FLASH_MS = 900
-
-/** The launch flash's progress at `t`, 0 at the launch to 1 as it ends; null outside it. */
-export function launchFlash(m: Munition, t: number): number | null {
-  const age = t - m.launch_t
-  return age >= 0 && age < LAUNCH_FLASH_MS ? age / LAUNCH_FLASH_MS : null
-}
-
-/** Something of it is drawn at `t`: it is in flight, or its launch flash is still on. */
-export function munitionShown(m: Munition, t: number): boolean {
-  return inFlight(m, t) || launchFlash(m, t) != null
-}
-
-/** how much flight the trail behind it covers, ms */
-export const TRAIL_MS = 3000
-
-/** The trail behind it at `t`, oldest point first, ending at the munition: the last TRAIL_MS of
- *  its flight (less just after the launch); empty when it has not moved yet. On a shaped path
- *  (`path`) it follows the path. */
-export function trailPoints(m: Munition, t: number, n = 8, path?: FlightPath): Pt3[] {
-  const f1 = flightFraction(m, t)
-  const f0 = flightFraction(m, t - TRAIL_MS)
-  if (!(f1 > f0)) return []
-  const at = (f: number) => (path ? path.point(path.flown(f)) : pointAlong(m, f))
-  const out: Pt3[] = []
-  for (let k = 0; k <= n; k++) out.push(at(f0 + ((f1 - f0) * k) / n))
-  return out
-}
 
 /** dash periods over the whole flight (each period's half nearer the impact drawn) */
 export const DASHES = 16
@@ -356,15 +330,21 @@ export interface MunitionFlight {
   target?: string
 }
 
-/** Its label on the map: "HELLFIRE · REAPER 1 > T-12 · 9 s PRED". No munition of ours reports
- *  its position in flight: where it is drawn is the model's, and the label says so (PRED). */
-export function flightLabel(f: MunitionFlight, t: number): string {
-  return [munitionShort(f.m.name), flightWho(f), `${secondsToImpact(f.m, t)} s PRED`].filter(Boolean).join(' · ')
+/** "Hellfire-class missile" -> "Hellfire": the name's first word as the catalog writes it */
+function munitionName(name: string): string {
+  return name.trim().split(/[\s-]/)[0] || name
 }
 
-/** "REAPER 1 > T-12", "REAPER 1", "T-12" or nothing */
-function flightWho(f: MunitionFlight): string | undefined {
-  return f.launcher ? (f.target ? `${f.launcher} > ${f.target}` : f.launcher) : f.target
+/** Its label on the map, in words: "Hellfire to T-12, 9 s" (the launcher is on the map beside
+ *  it; ledger 1, change 21). No munition of ours reports its position in flight: where it is
+ *  drawn is the model's. */
+export function flightLabel(f: MunitionFlight, t: number): string {
+  return `${munitionName(f.m.name)}${f.target ? ` to ${f.target}` : ''}, ${secondsToImpact(f.m, t)} s`
+}
+
+/** A round's own line when hovered: "Hellfire from REAPER 1 to T-12, 9 s". */
+export function flightTip(f: MunitionFlight, t: number): string {
+  return `${munitionName(f.m.name)}${f.launcher ? ` from ${f.launcher}` : ''}${f.target ? ` to ${f.target}` : ''}, ${secondsToImpact(f.m, t)} s`
 }
 
 /** Rounds in flight with the same weapon, launcher and target (a salvo's, rules 35, bd
@@ -374,14 +354,14 @@ export function flightGroupKey(f: MunitionFlight): string {
   return `${f.m.name}|${f.launcher ?? ''}|${f.target ?? ''}`
 }
 
-/** A group's one label: "HIV3 ×6 · HIVE 1 > T-0001 · 20–39 s PRED", the rounds in flight and the
- *  seconds to the first and the last impact; a group of one is `flightLabel`'s. */
+/** A group's one label: "HIV3 ×6 to T-0001, 20–39 s", the rounds in flight and the seconds to the
+ *  first and the last impact; a group of one is `flightLabel`'s. */
 export function flightGroupLabel(fs: readonly MunitionFlight[], t: number): string {
   if (fs.length === 1) return flightLabel(fs[0], t)
   const secs = fs.map((f) => secondsToImpact(f.m, t))
   const lo = Math.min(...secs)
   const hi = Math.max(...secs)
-  return [`${munitionShort(fs[0].m.name)} ×${fs.length}`, flightWho(fs[0]), `${lo === hi ? lo : `${lo}–${hi}`} s PRED`].filter(Boolean).join(' · ')
+  return `${munitionName(fs[0].m.name)} ×${fs.length}${fs[0].target ? ` to ${fs[0].target}` : ''}, ${lo === hi ? lo : `${lo}–${hi}`} s`
 }
 
 // ---- gun bursts (rules 26) ----

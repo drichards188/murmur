@@ -1,10 +1,9 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import type { Check, Decisions } from './decisions'
 import type { SituationStatus } from './SituationPanel'
-import { usePoll } from './space'
 import { kindLabel, type TracksMessage } from './tracks'
-import { coachPlace, CONSOLE_OPERATOR, type Facts, type IdentityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial'
-import { timeline } from './weapon'
+import { coachPlace, CONSOLE_OPERATOR, type Facts, type IdentityCheck, resumeAt, stepScene, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial'
+import type { LngLat } from './types'
 import './tutorial.css'
 
 /** The tutorial's coach card (sim/situations/tutorial.toml): shown only while the running
@@ -16,11 +15,9 @@ import './tutorial.css'
  *  console reads and never acts for the person. Its place in the walk is kept per run in this
  *  browser (a reload picks it up), wrapped against a storage that fails. */
 
-interface Envelope {
-  situation: SituationStatus | null
-}
-
 interface Props {
+  /** the situation runner's status (useSituation.ts), null where none runs */
+  situation: SituationStatus | null
   decisions: Decisions | null
   tracks: TracksMessage | null
   /** the bridge's clock, ms */
@@ -29,8 +26,10 @@ interface Props {
   onMenu?: () => void
   /** the nomination form's latest dry run on its target, while it is open */
   formChecks?: { track: string; checks: Check[] } | null
-  /** a vehicle's callsign by uid */
-  nameOf?: (uid: string) => string
+  /** where each of ours is now, by callsign, for the step's scene */
+  placeOf?: (callsign: string) => LngLat | null
+  /** frame these points on the map (once as a step comes up: the card keeps its scene in view) */
+  onFit?: (points: LngLat[]) => void
 }
 
 /** how long a done step shows its tick before the walk moves on (ms) */
@@ -91,11 +90,8 @@ function heldAs(T: string, c: IdentityCheck) {
 function stepView(
   id: StepId,
   f: Facts,
-  nowMs: number,
   sawIdentityBlock = false,
-  nameOf: (uid: string) => string = (u) => `vehicle ${u}`,
-  runStart: number | null = null,
-): { title: string; body: ReactNode; live?: ReactNode; targets: string[] } {
+): { title: string; body: ReactNode; note?: ReactNode; targets: string[] } {
   const T = f.boat?.id ?? 'the boat'
   const row = f.boat ? [q('track-row', `[data-track-id="${f.boat.id}"]`)] : []
   const N = f.nomination ? `i${f.nomination.id}` : 'your nomination'
@@ -149,7 +145,7 @@ function stepView(
       }
     case 'tracks':
       return {
-        title: 'Contacts: the Tracks drawer',
+        title: 'Contacts: the Tracks list',
         body: (
           <>
             <p>
@@ -204,27 +200,15 @@ function stepView(
             </p>
           </>
         ),
-        live: (
+        note: f.declared ? undefined : f.lastActNot ? (
           <>
-            {f.attack ? (
-              <span className="tut-attack" data-tutorial="attack-timeline">
-                {f.attack.status === 'in_flight' && !f.attack.struck ? 'Under attack now: ' : 'Last attack: '}
-                {timeline(f.attack, nameOf, runStart)}.
-              </span>
-            ) : null}
-            {f.declared ? (
-              <>The engine declared {T} hostile by rule{f.declarationAttribution != null ? `, the launch attributed to it at ${n2(f.declarationAttribution)}` : ''}.</>
-            ) : f.lastActNot ? (
-              <>
-                An act came, but it was {f.lastActNot}. On an unsure attribution the engine declares nothing. The boat fires again within 90 s: the next launch is another
-                chance.
-              </>
-            ) : f.attack && !f.attack.launch && f.attack.struck ? (
-              <>No sensor saw that launch, so no shooter was placed and the rule could declare nothing. The boat fires again within 90 s.</>
-            ) : (
-              <>Watching. In this tutorial the boat fires about every 90 s.</>
-            )}
+            An act came, but it was {f.lastActNot}. On an unsure attribution the engine declares nothing. The boat fires again within 90 s: the next launch is another
+            chance.
           </>
+        ) : f.attack && !f.attack.launch && f.attack.struck ? (
+          <>No sensor saw that launch, so no shooter was placed and the rule could declare nothing. The boat fires again within 90 s.</>
+        ) : (
+          <>Watching. In this tutorial the boat fires about every 90 s.</>
         ),
         targets: [...row, q('weapon-status'), q('tracks')],
       }
@@ -238,20 +222,13 @@ function stepView(
               confirms it: that confirmation is your threat designation.
             </p>
             <p>
-              Open the <b>Inbox</b> (top bar). Under <b>Review</b>, click <i>evidence, then confirm…</i> on {T} and read it: the act and whom it was against, which
-              sensors saw it, the attribution against the 0.9 threshold. If it holds, click <i>confirm {T} hostile</i>. (The track&apos;s card in Tracks has the same
-              Confirm.)
+              Open the <b>Inbox</b> (top bar). Under <b>Needs you</b>, read {T}&apos;s card: the act and whom it was against, which sensors saw it, the attribution against the 0.9
+              threshold. If it holds, click <i>Confirm hostile…</i>, then <i>Confirm {T} hostile</i>. (The track&apos;s card in Tracks has the same Confirm.)
             </p>
             <p className="tut-small">If it does not hold, revoke it: the next act may declare it again.</p>
           </>
         ),
-        live: f.confirmed ? (
-          <>Confirmed by {f.confirmedBy}.</>
-        ) : !f.declared ? (
-          <>No declaration stands on {T} now. The next act may declare it again.</>
-        ) : f.attack ? (
-          <span className="tut-attack">The latest attack: {timeline(f.attack, nameOf, runStart)}.</span>
-        ) : undefined,
+        note: !f.confirmed && !f.declared ? <>No declaration stands on {T} now. The next act may declare it again.</> : undefined,
         targets: [q('review-declaration', f.boat ? `[data-track-id="${f.boat.id}"]` : ''), q('confirm-declaration'), q('inbox-button')],
       }
     case 'nominate':
@@ -276,7 +253,7 @@ function stepView(
             </p>
           </>
         ),
-        live:
+        note:
           f.identity && !f.identity.passed ? (
             // the form blocks on the target's identity: what it means, and what clears it
             <>
@@ -312,21 +289,15 @@ function stepView(
             </p>
           </>
         ),
-        live: f.nominationEnded ? (
+        note: f.nominationEnded ? (
           <>
             {N} was {f.nominationEnded.state}
             {f.nominationEnded.reason ? `: ${f.nominationEnded.reason}` : ''}. Use Back to nominate again.
           </>
-        ) : (
-          <>
-            Signatures: {f.signed.length ? f.signed.join(', ') : 'none yet'} ({f.signed.length} of {f.needed}).
-            {f.livePassed === false && ` The signers wait: the engine's live picture does not pass (${f.failing.join(', ') || 'see the card'}).`}
-          </>
-        ),
+        ) : undefined,
         targets: [q('engage-card', f.nomination ? `[data-intent-id="${f.nomination.id}"]` : ''), q('inbox-button')],
       }
-    case 'strike': {
-      const inFlight = f.released && f.impactT != null && !f.impacted
+    case 'strike':
       return {
         title: 'Dispatch, release, flight',
         body: (
@@ -341,21 +312,16 @@ function stepView(
             </p>
           </>
         ),
-        live: f.nominationEnded ? (
+        note: f.nominationEnded ? (
           <>
             {N} was {f.nominationEnded.state}
             {f.nominationEnded.reason ? `: ${f.nominationEnded.reason}` : ''}. REAPER 1 takes its fallback. Use Back to nominate again.
           </>
-        ) : f.impacted ? (
-          <>Impact.</>
-        ) : inFlight ? (
-          <>Missile released: in flight, impact in {Math.max(0, Math.ceil(((f.impactT ?? 0) - nowMs) / 1000))} s.</>
-        ) : (
+        ) : f.released ? undefined : (
           <>REAPER 1 is on its way: the card counts down to the effect.</>
         ),
-        targets: [q('impact-status'), q('engage-run', f.nomination ? `[data-intent-id="${f.nomination.id}"]` : ''), q('inbox-button')],
+        targets: [q('engage-run', f.nomination ? `[data-intent-id="${f.nomination.id}"]` : ''), q('inbox-button')],
       }
-    }
     case 'assess':
       return {
         title: 'Impact and assessment',
@@ -379,13 +345,7 @@ function stepView(
             </ul>
           </>
         ),
-        live: f.assessment ? (
-          <>
-            Assessment: <b>{f.assessment.result.toUpperCase()}</b>. {f.assessment.evidence}
-          </>
-        ) : (
-          <>Waiting for our sensors: about 15 s.</>
-        ),
+        note: f.assessment ? undefined : <>Waiting for our sensors: about 15 s.</>,
         targets: [q('impact-status'), q('engage-run', f.nomination ? `[data-intent-id="${f.nomination.id}"]` : '')],
       }
     case 'done':
@@ -423,8 +383,6 @@ function Ring({ targets }: { targets: string[] }) {
   const pad = 4
   return <div className="tut-ring" aria-hidden="true" style={{ top: box.top - pad, left: box.left - pad, width: box.width + 2 * pad, height: box.height + 2 * pad }} />
 }
-
-const someVehicle = (uid: string) => `vehicle ${uid}`
 
 /** The coach card's place (tutorial.ts coachPlace) above the weather bar (WeatherLayer.tsx's
  *  `.weather-legend`, over the same corner of the map), measured while the card shows and again
@@ -469,9 +427,7 @@ function useCoachPlace(on: boolean): { bottom: number; maxHeight: number } | nul
   return place
 }
 
-export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, nameOf: nameOfVehicle = someVehicle }: Props) {
-  const { data } = usePoll<Envelope>('/api/situation', 2000)
-  const s = data?.situation
+export function Tutorial({ situation: s, decisions, tracks, now, onMenu, formChecks = null, placeOf, onFit }: Props) {
   const on = !!s?.modes?.tutorial
   const runKey = on && s?.run?.id ? `murmur.tutorial.${s.run.id}` : null
   const nowMs = now()
@@ -499,6 +455,21 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
   const idx = Math.min(saved?.idx ?? 0, STEPS.length - 1)
   const step = STEPS[idx]
   const done = stepDone(step.id, f)
+  // the step's scene kept in view (tutorial.ts stepScene): framed once as the step comes up, while
+  // the card shows; a scene not on the map yet (the boat not yet seen) is framed when it is
+  const framed = useRef<number | null>(null)
+  const boatAt = f.boat?.position ?? null
+  useEffect(() => {
+    if (!on || !saved || saved.closed || saved.hidden || framed.current === idx) return
+    const scene = stepScene(step.id)
+    const pts = [...(scene.boat && boatAt ? [boatAt] : []), ...scene.ours.flatMap((c) => {
+      const p = placeOf?.(c)
+      return p ? [p] : []
+    })]
+    if (!pts.length) return
+    framed.current = idx
+    onFit?.(pts)
+  })
   if (saved && shownAt?.idx !== idx) setShownAt({ idx, at: Date.now() })
   const elapsed = s?.clock?.elapsed_s ?? null
   // back on a step that is not done (a nomination to make again): it moves on by itself again
@@ -525,9 +496,7 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
         TUTORIAL <b>{idx + 1}</b>/{STEPS.length}
       </button>
     )
-  // the run's start on the bridge's clock, for the attack's timeline ("1:20.4")
-  const runStart = s?.clock && s.clock.elapsed_s != null ? (s.clock.t - s.clock.elapsed_s) * 1000 : null
-  const v = stepView(step.id, f, nowMs, sawIdentityBlock, nameOfVehicle, runStart)
+  const v = stepView(step.id, f, sawIdentityBlock)
   const last = step.id === 'done'
   return (
     <>
@@ -542,11 +511,6 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
             –
           </button>
         </header>
-        <div className="tut-bar" aria-hidden="true">
-          {STEPS.map((x, k) => (
-            <span key={x.id} className={k < idx ? 'done' : k === idx ? 'cur' : ''} />
-          ))}
-        </div>
         <h2 className="tut-title">
           {v.title}
           {step.kind === 'wait' && done && (
@@ -563,8 +527,7 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
                 engine&apos;s declaration, your confirmation, your nomination, two signatures that were not yours, the release and the assessment.
               </p>
               <p>
-                Every one of them is in the audit log{s?.run?.audit_log ? <> (<code>{s.run.audit_log}</code>)</> : ''}, with what the engine checked at each. After the run,{' '}
-                <code>murmur-replay</code> re-checks every decision from it.
+                Every one of them is recorded, with what the engine checked at each, and can be re-checked from the record after the run.
               </p>
               <p>What next:</p>
               <ul>
@@ -582,7 +545,7 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, na
           ) : (
             v.body
           )}
-          {v.live && <p className={`tut-live${done ? ' ok' : ''}`}>{v.live}</p>}
+          {v.note && <p className="tut-note">{v.note}</p>}
         </div>
         <footer className="tut-go">
           <button className="ghost" disabled={idx === 0} onClick={() => go(idx - 1, true)}>

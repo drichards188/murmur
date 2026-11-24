@@ -139,11 +139,6 @@
 .eg-what-list .bad {
   color: var(--bad);
 }
-.eg-nochange {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-}
 .eg-changes {
   padding: 6px 8px;
   border: 1px solid var(--line);
@@ -406,13 +401,6 @@
 .eg-top .close {
   margin-left: auto;
 }
-.eg-sub {
-  margin: 0;
-  padding: 0 14px 8px;
-  font-size: 12px;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-}
 .eg-steps {
   list-style: none;
   margin: 0;
@@ -462,10 +450,6 @@
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-}
-.eg-step-note {
-  font-size: 11.5px;
-  color: var(--muted);
 }
 .eg-step-status {
   margin-left: auto;
@@ -693,12 +677,6 @@
 }
 
 /* step 4 */
-.eg-code {
-  font-size: 10px;
-  padding: 0 3px;
-  background: none;
-  color: var(--muted);
-}
 .eg-accepts {
   margin: 0;
   padding-left: 16px;
@@ -759,12 +737,6 @@
 }
 .eg-nominate:disabled {
   opacity: 0.4;
-}
-.eg-keys {
-  margin-left: auto;
-  font: 10.5px var(--mono);
-  color: var(--muted);
-  white-space: nowrap;
 }
 .eg-engage-btn {
   border-color: #ff8a8a !important;
@@ -863,23 +835,6 @@
   padding: 4px 8px;
   background: #121a22;
   border: 1px solid #2c3742;
-}
-.ko-hint {
-  display: flex;
-  gap: 8px;
-  margin: 3px 0;
-  font-size: 12px;
-}
-.ko-hint b {
-  flex: 0 0 46px;
-  font: 600 10px var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #9aa6b2;
-  padding-top: 2px;
-}
-.ko-hint.move b {
-  color: #8ab4ff;
 }
 .ko-foot {
   margin: 4px 0 0;
@@ -1022,3 +977,9 @@
 .eg-btn.replace.primary:hover:not(:disabled) {
   background: #33270f;
 }
+
+/* an acceptance's long explanation, a rounds clause, an effect record: behind a click */
+.eg-why { display: inline; font-size: 12px; color: var(--muted); }
+.eg-why summary { display: inline; cursor: pointer; text-decoration: underline dotted; }
+.eg-follow { margin: 2px 0; }
+.eg-btn.replace.quiet { flex: 0 0 auto; color: var(--muted); border-color: transparent; font-weight: 500; }

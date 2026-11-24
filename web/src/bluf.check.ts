@@ -79,4 +79,9 @@ eq(
   'identify_meanwhile alert',
 )
 
+// the consequence first, naming the vehicle (R10, ledger 2 section 6.1)
+eq(alertParts({ kind: 'damaged', detail: 'reports propulsion lost since t=1795533627.2: it cannot move, so an order will not move it' }, '2 min', 'HUNTER 1').headline, 'HUNTER 1 cannot move', 'damaged: cannot move')
+eq(alertParts({ kind: 'damaged', detail: "reports weapons out: its weapons can't be used" }, '2 min', 'HUNTER 1').headline, 'HUNTER 1 cannot fire', 'damaged: cannot fire')
+eq(alertParts({ kind: 'lost_link', detail: 'no telemetry since t=1.0' }, '4 min', 'HUNTER 1').headline, 'HUNTER 1 has had no telemetry for 4 min: its link is down', 'lost link names the vehicle')
+
 console.log('bluf: ok')

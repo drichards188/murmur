@@ -21,17 +21,13 @@ import {
   headingPoint,
   loadoutProfile,
   inFlight,
-  launchFlash,
   munitionAt,
   munitionLabel,
   munitionShort,
-  munitionShown,
   pointAlong,
   screenAngle,
   secondsToImpact,
   straightPath,
-  trailPoints,
-  TRAIL_MS,
   type FlightPath,
   type GroundAt,
   type Munition,
@@ -80,22 +76,8 @@ check(munitionShort('Hellfire-class missile') === 'HELLFIRE', 'short name')
 check(munitionShort('JAGM') === 'JAGM', 'a one-word name')
 check(munitionLabel(m, m.impact_t - 8_600) === 'HELLFIRE · 9 s', 'map label')
 
-// the launch flash: from the launch, under a second
-check(launchFlash(m, T0 - 1) === null && launchFlash(m, T0) === 0, 'flash starts at the launch')
-check(launchFlash(m, T0 + 450)! > 0.4 && launchFlash(m, T0 + 450)! < 0.6, 'flash half way')
-check(launchFlash(m, T0 + 5000) === null, 'flash over')
-check(munitionShown(m, T0 + 5000) && !munitionShown(m, m.impact_t), 'shown in flight, gone at the impact')
-// a flight shorter than the flash still shows the flash out
-const quick: Munition = { ...m, impact_t: T0 + 300, tof_s: 0.3 }
-check(munitionShown(quick, T0 + 600) && !inFlight(quick, T0 + 600), 'the flash outlasts a short flight')
-
-// the trail: ends at the munition, covers TRAIL_MS of flight, less just after the launch
-const trail = trailPoints(m, mid)
-check(trail.length === 9, 'trail points')
-check(near(trail[8][2], munitionAt(m, mid)[2]) && near(trail[8][0], munitionAt(m, mid)[0]), 'trail ends at the munition')
-check(near(trail[0][2], munitionAt(m, mid - TRAIL_MS)[2], 1e-6), 'trail starts TRAIL_MS back')
-check(near(trailPoints(m, T0 + 500)[0][2], 7600), 'just after the launch the trail starts at the launch point')
-check(trailPoints(m, T0).length === 0, 'no trail before it moves')
+// drawn in flight only: no flash at its launch
+check(inFlight(m, T0 + 5000) && !inFlight(m, m.impact_t) && !inFlight(m, T0 - 1), 'drawn in flight, gone at the impact')
 
 // the dashes ahead: from the munition to the impact, fixed in space as it flies
 const ahead = dashesAhead(m, T0)
@@ -143,7 +125,7 @@ for (const t of [T0 - 1000, T0, T0 + 3000, mid, m.impact_t - 1, m.impact_t + 100
   const [x, y] = [munitionAt(m, t), munitionAt(m, t, line)]
   check(x[0] === y[0] && x[1] === y[1] && x[2] === y[2], 'the straight path is the line, at every time')
 }
-check(JSON.stringify(dashesAhead(m, mid, line)) === JSON.stringify(dashesAhead(m, mid)) && JSON.stringify(trailPoints(m, mid, 8, line)) === JSON.stringify(trailPoints(m, mid)), 'and its trail and dashes')
+check(JSON.stringify(dashesAhead(m, mid, line)) === JSON.stringify(dashesAhead(m, mid)), 'and its dashes')
 
 const dive = divePath(d1)
 const at = (t: number, p: FlightPath = dive) => munitionAt(d1, t, p)
@@ -232,11 +214,8 @@ for (const mm of [shot([-122.4768, 37.8064], 60, [-122.4806, 37.8064], 0), shot(
 // no length or no time: the straight line
 check(!divePath({ ...d1, impact_point: d1.launch_point }).shaped && !divePath({ ...d1, impact_t: T0 }).shaped, 'degenerate: straight')
 
-// its trail and dashes follow the path
+// its dashes follow the path
 const tm = T1 - 4000
-const trail2 = trailPoints(d1, tm, 16, dive)
-check(trail2.length === 17 && same(trail2[16], at(tm)) && same(trail2[0], at(tm - TRAIL_MS)), 'the trail ends at it and starts TRAIL_MS back')
-check(trail2.every((p, k) => k === 0 || p[2] <= trail2[k - 1][2] + 1e-9), 'in the dive the trail comes down behind it')
 const ahead2 = dashesAhead(d1, T0, dive)
 check(ahead2.length === DASHES && ahead2.every((d) => d.length > 2), 'a dash per period, each bending with the path')
 check(same(ahead2[0][ahead2[0].length - 1], I0), 'the first dash ends at the impact point')

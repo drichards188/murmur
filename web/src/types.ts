@@ -222,7 +222,6 @@ export interface ViewSubscription {
   pin: number[]
 }
 
-export const LIFECYCLE: OpState[] = ['queued', 'sent', 'starting', 'acked', 'active', 'done']
 
 /** An op that ended short, in a word: failed, replaced, back to the queue (rules 5: its link
  *  was lost before the vehicle started it), or NOT SENT (after a bridge restart another
