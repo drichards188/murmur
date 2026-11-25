@@ -117,7 +117,7 @@
 .oc-why { margin: 0; font-size: 12px; line-height: 1.35; color: var(--warn); }
 .oc-why:empty { display: none; }
 
-/* the top bar's Views (ViewsMenu.tsx): the reference views, one click away, quiet */
+/* the top bar's Layers (ViewsMenu.tsx): the map layers and panels, one click away, quiet */
 .views { position: relative; }
 .views-n { margin-left: 6px; font: 600 10.5px var(--mono); color: var(--muted); }
 .platforms-btn.on .views-n { color: var(--bg); }
@@ -129,3 +129,5 @@
 .views-menu button:disabled:hover { background: none; }
 .views-off { margin-left: auto; padding-left: 12px; font-size: 11px; color: var(--muted); }
 .oc-count + .oc-send { margin-left: 0; }
+
+.views-rule { margin: 4px 6px 2px; padding-top: 6px; border-top: 1px solid var(--line); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }

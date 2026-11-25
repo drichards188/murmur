@@ -70,7 +70,7 @@ function lightNote(sunDeg: number | null | undefined): string | null {
 /** The map's weather bar, one quiet row: the animated effects' toggles, the light only when it
  *  takes cameras' sight, a word only when the weather is stale or unavailable; its open part holds
  *  the sensor reach rings' control and key. The colour field and the figures are the Weather
- *  view's (the top bar's Views). */
+ *  view's (the top bar's Layers). */
 export function WeatherLegend({ mode, effects, onEffects, grid, error, reach }: {
   mode: WeatherMode
   effects: Effects; onEffects: (fx: Effects) => void; grid: WeatherGrid | null

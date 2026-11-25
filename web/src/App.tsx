@@ -862,14 +862,14 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   }, [trouble])
   const queuedN = decisions?.inbox.queued?.length ?? 0
   const fleetSwarms = hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0
-  // the reference views behind the top bar's one Views button: Space (its timeline with the globe
+  // the reference views behind the top bar's one Layers button: Space (its timeline with the globe
   // of satellites by class) only where the bridge has a space segment
   const spaceSegment = !!decisions?.space?.loaded
   const views: ViewEntry[] = [
     { key: 'weather', label: 'Weather', title: 'The weather here and at the selected vehicle, and a colour field on the map', on: showWeather, onToggle: () => setShowWeather((v) => !v) },
     { key: 'space', label: 'Space', title: 'Space timeline (imaging access, SATCOM, GNSS) and the globe of satellites by class', on: showSpace, onToggle: () => (showSpace ? closeSpace() : setShowSpace(true)), off: spaceSegment ? null : 'no space segment in this run' },
     { key: 'links', label: 'Links', title: 'Predicted link coverage on the map: up, degraded and down for a link class at an altitude', on: showCoverage, onToggle: () => setShowCoverage((v) => !v) },
-    { key: 'platforms', label: 'Platforms', title: 'The platform catalog: each type, its speeds, endurance, sensors and weapons', on: showPlatforms, onToggle: () => setShowPlatforms((v) => !v) },
+    { key: 'platforms', group: 'reference', label: 'Platforms', title: 'The platform catalog: each type, its speeds, endurance, sensors and weapons', on: showPlatforms, onToggle: () => setShowPlatforms((v) => !v) },
   ]
 
   /** an inbox item was clicked: highlight its vehicles and frame them with the task's preview */

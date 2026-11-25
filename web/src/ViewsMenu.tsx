@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 
 /** One reference view the menu turns on and off. */
 export interface ViewEntry {
@@ -10,6 +10,8 @@ export interface ViewEntry {
   onToggle: () => void
   /** why this run cannot show it ("no space segment in this run"): listed, greyed, not hidden */
   off?: string | null
+  /** 'reference' entries (a catalog, not something drawn on the map) sit below a rule */
+  group?: 'layer' | 'reference'
 }
 
 /** The top bar's reference views (the cutdown's ledger 1 section 1: Weather, Space with its globe,
@@ -36,14 +38,15 @@ export function ViewsMenu({ entries }: { entries: ViewEntry[] }) {
   const on = entries.filter((e) => e.on).length
   return (
     <span className="views" ref={box}>
-      <button className={`ghost platforms-btn ${open ? 'on' : ''}`} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((o) => !o)} title="Reference views: weather, space, link coverage, the platforms">
-        Views{on > 0 && <span className="views-n">{on}</span>}
+      <button className={`ghost platforms-btn ${open ? 'on' : ''}`} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((o) => !o)} title="Map layers and panels: weather, space, link coverage; the platform catalog below">
+        Layers{on > 0 && <span className="views-n">{on}</span>}
       </button>
       {open && (
         <span className="views-menu" role="menu">
-          {entries.map((e) => (
+          {entries.map((e, i) => (
+            <Fragment key={e.key}>
+              {e.group === 'reference' && entries[i - 1]?.group !== 'reference' && <span className="views-rule" role="separator">Reference</span>}
             <button
-              key={e.key}
               role="menuitemcheckbox"
               aria-checked={e.on}
               className={e.on ? 'on' : ''}
@@ -58,6 +61,7 @@ export function ViewsMenu({ entries }: { entries: ViewEntry[] }) {
               {e.label}
               {e.off && <span className="views-off">{e.off}</span>}
             </button>
+            </Fragment>
           ))}
         </span>
       )}
