@@ -2,36 +2,38 @@
 .login { height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
 .login-card { width: 340px; display: flex; flex-direction: column; gap: 12px; padding: 22px 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 .login-card header { display: flex; align-items: baseline; gap: 12px; }
-.login-card .sub { color: var(--muted); font-size: 13px; letter-spacing: 0.04em; }
-.login-card h1 { margin: 6px 0 0; font-size: 12px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
-.login-card label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-.login-card input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; font: 13px var(--mono); }
+.login-card .sub { color: var(--muted); font-size: var(--text-body); }
+.login-card h1 { margin: 6px 0 0; font: 600 var(--text-heading)/var(--leading-heading) var(--font-ui); color: var(--muted); }
+.login-card label { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-label); color: var(--muted); }
+.login-card input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; font: var(--text-body)/var(--leading-body) var(--font-data); }
 .login-card .ix-approve { align-self: flex-start; }
-.login-note { margin: 0; font-size: 12.5px; color: var(--warn); }
-.login-foot { margin: 0; font-size: 11.5px; }
+.login-note { margin: 0; font-size: var(--text-body); color: var(--warn); }
+.login-foot { margin: 0; font-size: var(--text-label); }
 
-.op-badge { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.op-badge { display: flex; align-items: center; gap: 10px; font-size: var(--text-body); }
 /* the quiet mark: "DEV op-1" in a dev run (a standing mode, not an alarm: no red), the operator's
    name in a credentials run; a click opens the operator menu */
-.op-mark { display: inline-flex; align-items: center; gap: 7px; min-width: 0; padding: 3px 8px; border: 1px solid var(--line); border-radius: 3px; background: none; color: var(--muted); font-size: 12px; }
+.op-mark { display: inline-flex; align-items: center; gap: 7px; min-width: 0; padding: 3px 8px; border: 1px solid var(--line); border-radius: 3px; background: none; color: var(--muted); font-size: var(--text-body); }
 .op-mark:hover { background: var(--panel-2); }
-.op-mark b, .op-as { font: 600 12.5px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dev-mark { font: 600 10.5px var(--mono); letter-spacing: 0.1em; color: var(--muted); border: 1px solid #3a4a5c; border-radius: 2px; padding: 1px 4px; }
+.op-mark b, .op-as { font: 600 var(--text-body)/var(--leading-body) var(--font-data); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-mark { font: 600 var(--text-label)/var(--leading-label) var(--font-ui); letter-spacing: var(--caps-tracking); text-transform: uppercase; color: var(--muted); border: 1px solid #3a4a5c; border-radius: 2px; padding: 1px 4px; }
 .op-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; display: flex; flex-direction: column; width: 280px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
-.op-menu > button { display: flex; align-items: baseline; gap: 6px; padding: 5px 10px 5px 6px; border: 0; border-radius: 4px; background: none; text-align: left; font: 13px var(--mono); color: var(--text); }
+.op-menu > button { display: flex; align-items: baseline; gap: 6px; padding: 5px 10px 5px 6px; border: 0; border-radius: 4px; background: none; text-align: left; font: var(--text-body)/var(--leading-body) var(--font-ui); color: var(--text); }
+/* "Act as": each item an operator's id */
+.op-menu > button[role='menuitemradio'] { font-family: var(--font-data); }
 .op-menu > button:hover { background: var(--panel-2); }
-.op-menu > button .muted { font: 11.5px var(--sans); }
-.op-menu-h { padding: 4px 8px 2px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-.op-menu-note { padding: 6px 8px 4px; margin-top: 4px; border-top: 1px solid var(--line); font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+.op-menu > button .muted { font: var(--text-label)/var(--leading-label) var(--font-ui); }
+.op-menu-h { padding: 4px 8px 2px; font: 600 var(--text-label)/var(--leading-label) var(--font-ui); letter-spacing: var(--caps-tracking); text-transform: uppercase; color: var(--muted); }
+.op-menu-note { padding: 6px 8px 4px; margin-top: 4px; border-top: 1px solid var(--line); font-size: var(--text-label); line-height: var(--leading-label); color: var(--muted); }
 
 .login-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .login-card a, .pk-menu a { color: var(--accent, #6cf); }
 
 /* rules 10: the operator menu's passkeys (registration, with the password again) */
 .op-badge { position: relative; }
-.pk-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 300px; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); font-size: 12px; }
+.pk-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 300px; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); font-size: var(--text-body); }
 .pk-menu label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
-.pk-menu input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; font: 12.5px var(--mono); }
+.pk-menu input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; font: var(--text-body)/var(--leading-body) var(--font-ui); }
 .pk-menu .ix-approve, .pk-menu .ghost { align-self: flex-start; }
 
 /* rules 10: a step-up by passkey (the authenticator asks when the act is sent) */
@@ -40,6 +42,6 @@
 .tk-stepup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* the step-up at signing: the signer's password, sent with the signature and dropped */
-.ix-stepup { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.ix-stepup input { flex: 1; min-width: 120px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; font: 12.5px var(--mono); }
+.ix-stepup { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; font-size: var(--text-body); color: var(--muted); }
+.ix-stepup input { flex: 1; min-width: 120px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; font: var(--text-body)/var(--leading-body) var(--font-ui); }
 .ix-stepup.bad input { border-color: var(--bad); }

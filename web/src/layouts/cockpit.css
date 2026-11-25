@@ -1,0 +1,279 @@
+/* The cockpit layout (Cockpit.tsx, CockpitBar.tsx; bd epic murmur-iobd, direction 1). Every rule keeps
+   to .app[data-layout=cockpit]: index.css lays out the grid, each part's own CSS the rest, and these
+   rules only redo the top bar.
+
+   The bar: one row, grouped by job with space between the groups (no rules, no boxes). Two sizes,
+   the console's label (12 px) and body (14 px); Plex Sans Condensed for words, Plex Mono for data
+   (the type tokens, with fallbacks until they land). One quiet text button for every control but
+   the Inbox, which alone is raised; one count badge, red only when something urgent waits; one
+   status chip (who decides, DEV, the bridge's state). Colour only where something is wrong or
+   needs the person; the time is the quietest thing on it. */
+
+.app[data-layout=cockpit] {
+  --cp-label: var(--text-label, 0.75rem);
+  --cp-body: var(--text-body, 0.875rem);
+  --cp-ui: var(--font-ui, var(--sans));
+  --cp-data: var(--font-data, var(--mono));
+  /* the space between two groups of the bar, narrower as the window is */
+  --cp-gap: 28px;
+  /* secondary words (the beat, the drawer buttons), a quiet control under the pointer, the raised
+     Inbox's ground and edge, a count's ground, the glance's punctuation; tinted to the panels' blue */
+  --cp-soft: oklch(0.8 0.02 250);
+  --cp-hover: oklch(0.255 0.02 250);
+  --cp-raise: oklch(0.235 0.022 250);
+  --cp-raise-hover: oklch(0.285 0.024 250);
+  --cp-edge: oklch(0.42 0.03 250);
+  --cp-badge: oklch(0.37 0.025 250);
+  --cp-faint: oklch(0.46 0.02 250);
+  --cp-ease: cubic-bezier(0.25, 1, 0.5, 1);
+  /* one row, always (dock.css gives other layouts a second row below 1400 px) */
+  grid-template-rows: 44px 1fr;
+}
+.app.waiting[data-layout=cockpit] { grid-template-rows: 44px auto 1fr; }
+
+.app[data-layout=cockpit] .cp-bar {
+  flex-wrap: nowrap;
+  gap: var(--cp-gap);
+  min-width: 0;
+  min-height: 0;
+  padding: 0 16px;
+  font: 400 var(--cp-body) / 1.2 var(--cp-ui);
+}
+/* each group a row of its own; none gives way unless said below */
+.app[data-layout=cockpit] .cp-bar > * { flex: none; display: flex; align-items: center; min-width: 0; }
+
+/* ---- the groups ----------------------------------------------------------------------------- */
+.app[data-layout=cockpit] .cp-home { gap: 10px; }
+/* the run gives way first (its beat, then its title: CockpitBar.tsx), far ahead of the operator */
+.app[data-layout=cockpit] .cp-run { flex: 0 100 auto; gap: 8px; overflow: clip; overflow-clip-margin: 4px; }
+.app[data-layout=cockpit] .cp-status { gap: 12px; }
+/* a glance folded to nothing (nothing wrong) and the bridge live: the group takes no gap of its own
+   (it stays laid out: the fold measures the whole line inside it) */
+.app[data-layout=cockpit] .cp-status:not(:has(> .pill)):has(> .cp-glance:empty) { margin-right: calc(-1 * var(--cp-gap)); }
+/* the actions keep to the right, whatever the left holds */
+.app[data-layout=cockpit] .cp-work { margin-left: auto; gap: 2px; }
+.app[data-layout=cockpit] .cp-inbox { display: flex; margin-right: 10px; }
+/* the operator and the time never give way: the run and the glance have before them */
+.app[data-layout=cockpit] .cp-who { gap: 16px; }
+
+/* ---- one quiet button: the menu, the drawers, Views, the operator ----------------------------- */
+.app[data-layout=cockpit] .cp-bar .menu-btn,
+.app[data-layout=cockpit] .cp-work .ix-btn,
+.app[data-layout=cockpit] .cp-ref .platforms-btn,
+.app[data-layout=cockpit] .cp-who .op-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--cp-soft);
+  font: 500 var(--cp-body) / 1 var(--cp-ui);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  opacity: 1;
+  transition: background-color 150ms var(--cp-ease), color 150ms var(--cp-ease), border-color 150ms var(--cp-ease);
+}
+.app[data-layout=cockpit] .cp-bar .menu-btn:hover,
+.app[data-layout=cockpit] .cp-work .ix-btn:hover:not(:disabled),
+.app[data-layout=cockpit] .cp-ref .platforms-btn:hover,
+.app[data-layout=cockpit] .cp-who .op-mark:hover {
+  background: var(--cp-hover);
+  color: var(--text);
+}
+.app[data-layout=cockpit] .cp-bar .menu-btn:active,
+.app[data-layout=cockpit] .cp-work .ix-btn:active:not(:disabled),
+.app[data-layout=cockpit] .cp-ref .platforms-btn:active,
+.app[data-layout=cockpit] .cp-who .op-mark:active { background: var(--cp-raise); }
+.app[data-layout=cockpit] .cp-bar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* the menu: the quietest control (R24) */
+.app[data-layout=cockpit] .cp-bar .menu-btn { color: var(--muted); }
+/* a drawer that is open, Views while its menu is: marked as a tab is, not lit up */
+.app[data-layout=cockpit] .cp-work .ix-btn.on,
+.app[data-layout=cockpit] .cp-ref .platforms-btn.on {
+  background: var(--cp-hover);
+  color: var(--text);
+  border-color: transparent;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+/* a drawer with nothing in this run: listed, greyed, the reason on hover (OffButton.tsx) */
+.app[data-layout=cockpit] .cp-work .ix-btn.is-off,
+.app[data-layout=cockpit] .cp-work .ix-btn.is-off:hover {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- the Inbox: the one raised button --------------------------------------------------------- */
+.app[data-layout=cockpit] .cp-inbox > .ix-btn {
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  border-color: var(--cp-edge);
+  background: var(--cp-raise);
+  color: var(--text);
+  font-weight: 600;
+}
+.app[data-layout=cockpit] .cp-work .cp-inbox > .ix-btn:hover:not(:disabled) { background: var(--cp-raise-hover); color: var(--text); }
+.app[data-layout=cockpit] .cp-inbox > .ix-btn.on { background: var(--cp-raise-hover); border-color: var(--cp-edge); }
+/* the officer not connected: its ring on the open tab as on the closed one */
+.app[data-layout=cockpit] .cp-work .ix-btn.on .tko-dot.off { border-color: var(--muted); }
+/* the time left on the soonest to expire: data, quiet, red only with the badge */
+.app[data-layout=cockpit] .cp-bar .ix-left { font: 500 var(--cp-label) / 1 var(--cp-data); color: var(--muted); }
+.app[data-layout=cockpit] .cp-bar .ix-left.urgent { color: var(--bad); }
+
+/* ---- one count badge (the Inbox, the Queue, Groups, the Officer, Views on) -------------------- */
+.app[data-layout=cockpit] .cp-bar .ix-badge,
+.app[data-layout=cockpit] .cp-bar .views-n {
+  min-width: 20px;
+  margin: 0;
+  padding: 3px 6px;
+  border-radius: 10px;
+  background: var(--cp-badge);
+  color: var(--text);
+  font: 600 var(--cp-label) / 1 var(--cp-data);
+  text-align: center;
+}
+.app[data-layout=cockpit] .cp-bar .ix-badge.urgent { background: var(--bad); color: oklch(0.2 0.05 25); }
+
+/* ---- one status chip (who decides, DEV, the bridge connecting or down) ------------------------ */
+.app[data-layout=cockpit] .cp-chip,
+.app[data-layout=cockpit] .cp-bar .pill,
+.app[data-layout=cockpit] .cp-bar .dev-mark {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--cp-edge);
+  border-radius: 3px;
+  background: none;
+  color: var(--cp-soft);
+  font: 600 var(--cp-label) / 1 var(--cp-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.app[data-layout=cockpit] .cp-chip.warn,
+.app[data-layout=cockpit] .cp-bar .pill.connecting { color: var(--warn); border-color: currentColor; }
+.app[data-layout=cockpit] .cp-bar .pill.down { color: var(--bad); border-color: currentColor; }
+
+/* ---- the brand: small ------------------------------------------------------------------------- */
+.app[data-layout=cockpit] .cp-bar .brand { font: 600 var(--cp-label) / 1 var(--cp-data); letter-spacing: 0.14em; color: var(--muted); }
+
+/* ---- the run: who decides, the scenario, its newest beat (SituationPanel.tsx's chip, in the bar) */
+.app[data-layout=cockpit] .cp-run .sit-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: 0;
+}
+/* the chip's own "SITUATION" goes (the standing chip beside it says more); its title and beat stay */
+.app[data-layout=cockpit] .cp-run .sit-chip-open {
+  gap: 0;
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 0;
+  transition: background-color 150ms var(--cp-ease);
+}
+.app[data-layout=cockpit] .cp-run .sit-chip-open:hover { background: var(--cp-hover); }
+.app[data-layout=cockpit] .cp-run .sit-chip-open:active { background: var(--cp-raise); }
+.app[data-layout=cockpit] .cp-run .sit-chip b {
+  flex: 0 1 auto;
+  min-width: 4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 600 var(--cp-body) / 1.2 var(--cp-ui);
+  letter-spacing: 0;
+  color: var(--text);
+}
+/* the beat truncates first: it gives way a hundred to one before the title does */
+.app[data-layout=cockpit] .cp-run .sit-chip-next {
+  flex: 0 1000 auto;
+  min-width: 0;
+  margin-left: 12px;
+  font: 400 var(--cp-body) / 1.2 var(--cp-ui);
+  color: var(--cp-soft);
+}
+.app[data-layout=cockpit] .cp-run .sit-dot { margin-left: 8px; }
+/* too short to read once the glance has folded: hidden, kept laid out for its width (CockpitBar.tsx) */
+.app[data-layout=cockpit] .cp-bar[data-fold=beat] .cp-run .sit-chip-next { max-width: 0; margin-left: 0; visibility: hidden; }
+
+/* ---- the glance: words quiet, numbers in the data face, colour only on a problem -------------- */
+.app[data-layout=cockpit] .cp-glance { display: block; white-space: nowrap; color: var(--muted); font: 400 var(--cp-body) / 1.2 var(--cp-ui); }
+.app[data-layout=cockpit] .cp-glance b { font: 600 var(--cp-body) / 1 var(--cp-data); color: var(--text); }
+/* the totals stay a step quieter than a problem's count */
+.app[data-layout=cockpit] .cp-total b { color: var(--cp-soft); }
+.app[data-layout=cockpit] .cp-sep { color: var(--cp-faint); }
+/* a problem count links to what it counts */
+.app[data-layout=cockpit] .cp-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline 1px;
+  text-decoration-color: color-mix(in oklch, currentColor 40%, transparent);
+  text-underline-offset: 4px;
+  transition: text-decoration-color 150ms var(--cp-ease);
+}
+.app[data-layout=cockpit] .cp-link b { color: inherit; }
+.app[data-layout=cockpit] .cp-link:hover { text-decoration-color: currentColor; }
+.app[data-layout=cockpit] .cp-link.bad { color: var(--bad); }
+.app[data-layout=cockpit] .cp-link.warn { color: var(--warn); }
+.app[data-layout=cockpit] .cp-link.settled { color: var(--cp-soft); }
+/* the bridge not answering: the figures are its last, dimmed beside the chip that says so */
+.app[data-layout=cockpit] .cp-status.stale .cp-glance { opacity: 0.45; }
+/* the whole line, unseen and taking no room, measured for the fold (CockpitBar.tsx) */
+.app[data-layout=cockpit] .cp-measure-box { position: absolute; width: 0; height: 0; overflow: hidden; }
+.app[data-layout=cockpit] .cp-measure { position: absolute; top: 0; left: 0; width: max-content; visibility: hidden; pointer-events: none; }
+
+/* ---- who acts, and the time: last and quietest ----------------------------------------------- */
+.app[data-layout=cockpit] .cp-who .op-badge { flex: none; gap: 0; font-size: inherit; }
+.app[data-layout=cockpit] .cp-who .op-mark { min-width: 0; max-width: 280px; gap: 8px; padding: 0 8px; }
+.app[data-layout=cockpit] .cp-who .op-mark b,
+.app[data-layout=cockpit] .cp-who .op-as { font: 500 var(--cp-body) / 1 var(--cp-data); color: inherit; }
+.app[data-layout=cockpit] .cp-who .op-mark .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--cp-label); color: var(--muted); }
+.app[data-layout=cockpit] .cp-who .dev-mark { height: 18px; padding: 0 5px; }
+.app[data-layout=cockpit] .cp-who .clock {
+  min-width: 0;
+  font: 400 var(--cp-label) / 1 var(--cp-data);
+  font-variant-numeric: tabular-nums;
+  color: var(--cp-soft);
+  text-align: right;
+}
+.app[data-layout=cockpit] .cp-who .clock-run { margin-left: 10px; font-size: inherit; color: var(--muted); }
+
+/* ---- narrower windows: the groups closer, the buttons tighter ---------------------------------- */
+@media (max-width: 1599px) {
+  .app[data-layout=cockpit] { --cp-gap: 20px; }
+  .app[data-layout=cockpit] .cp-bar { padding: 0 12px; }
+}
+/* (the buttons' own padding is the space within a group, so it narrows with the gap between groups:
+   12 px between two labels of one group, 24 px between two groups) */
+@media (max-width: 1439px) {
+  .app[data-layout=cockpit] { --cp-gap: 12px; }
+  .app[data-layout=cockpit] .cp-work { gap: 0; }
+  .app[data-layout=cockpit] .cp-bar .menu-btn,
+  .app[data-layout=cockpit] .cp-work .ix-btn,
+  .app[data-layout=cockpit] .cp-ref .platforms-btn { padding: 0 6px; }
+  .app[data-layout=cockpit] .cp-inbox > .ix-btn { padding: 0 8px 0 10px; }
+  .app[data-layout=cockpit] .cp-inbox { margin-right: 6px; }
+  .app[data-layout=cockpit] .cp-who { gap: 12px; }
+  .app[data-layout=cockpit] .cp-run .sit-chip-next { margin-left: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app[data-layout=cockpit] .cp-bar * { transition: none; }
+}

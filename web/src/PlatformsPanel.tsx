@@ -2,6 +2,8 @@ import ms from 'milsymbol'
 import { useEffect, useState } from 'react'
 import type { Domain } from './types'
 import { LINKS } from './catalogLabels'
+import { useFloatBar } from './floating'
+import { FloatGrip } from './FloatingPanel'
 
 export interface Platform {
   id: string
@@ -78,10 +80,12 @@ export function PlatformsPanel({ onClose, onFocus }: Props) {
   }, [onClose])
 
   const fielded = platforms?.filter((p) => p.in_fleet.length).length ?? 0
+  const bar = useFloatBar()
 
   return (
     <div className="platforms" role="dialog" aria-label="Platform capabilities">
-      <header className="platforms-head">
+      <header className="platforms-head" {...bar}>
+        <FloatGrip />
         <h2>Platforms</h2>
         {platforms && (
           <span className="muted">

@@ -1,0 +1,190 @@
+/* The rail layout's own styles (Rail.tsx, RailLists.tsx, RailNeeds.tsx), every rule under
+   .app[data-layout=rail]: every layout's CSS loads whatever layout runs.
+
+   The grid: the rail (its tabs, and its lists unless folded) | the map | Needs you (or its strip, or
+   a drawer over it). The edges' widths are variables the folded states change through :has(), so
+   the map's element is always exactly what the edges leave: the floating panels keep to it and a
+   fit of the map needs no padding for anything over it. Nothing animates a width (the map would
+   redraw every frame); a fold is immediate. Type from the shared scale where it exists (another
+   change brings the tokens), each with its value today as the fallback. */
+
+.app[data-layout=rail] {
+  --rl-tabs: 64px; /* the tab strip, always shown */
+  --rl-lists: 316px; /* the lists beside it */
+  --rn-open: 380px; /* Needs you */
+  --rn-shut: 40px; /* its strip */
+  --rn-drawer: 430px; /* a drawer over it (dock.ts DOCK_WIDTH) */
+  --rl-w: calc(var(--rl-tabs) + var(--rl-lists));
+  --rn-w: var(--rn-open);
+  --rl-edge: #0d1218; /* the strips: the top bar's ground */
+  --rl-ui: var(--font-ui, 'IBM Plex Sans Condensed', 'Arial Narrow', system-ui, sans-serif);
+  --rl-data: var(--font-data, 'IBM Plex Mono', ui-monospace, monospace);
+  grid-template-columns: var(--rl-w) minmax(0, 1fr) var(--rn-w);
+  grid-template-rows: 36px minmax(0, 1fr);
+  grid-template-areas: 'top top top' 'rail map needs';
+}
+.app.waiting[data-layout=rail] {
+  grid-template-rows: 36px auto minmax(0, 1fr);
+  grid-template-areas: 'top top top' 'wait wait wait' 'rail map needs';
+}
+.app[data-layout=rail]:has(> .rl.shut) { --rl-w: var(--rl-tabs); }
+/* a nomination docked in the rail takes the lists' room even while they are folded */
+.app[data-layout=rail]:has(> .rl.shut .rl-dock .float.docked) { --rl-w: calc(var(--rl-tabs) + var(--rl-lists)); }
+.app[data-layout=rail]:has(> .rn.shut) { --rn-w: var(--rn-shut); }
+.app[data-layout=rail]:has(> .rn.drawer) { --rn-w: var(--rn-drawer); }
+
+@media (max-width: 1599px) {
+  .app[data-layout=rail] { --rl-tabs: 60px; --rl-lists: 300px; --rn-open: 360px; }
+}
+@media (max-width: 1439px) {
+  .app[data-layout=rail] { --rl-tabs: 58px; --rl-lists: 284px; --rn-open: 340px; }
+}
+
+/* ---- the top bar: one status line ------------------------------------------------------------- */
+
+.app[data-layout=rail] .topbar {
+  height: 36px; min-height: 0; flex-wrap: nowrap; gap: 22px; padding: 0 12px;
+  background: var(--rl-edge);
+}
+.app[data-layout=rail] .topbar .spacer { flex: 1 1 0; min-width: 0; }
+/* the groups by job: tight inside, room between */
+.app[data-layout=rail] :is(.rl-top-run, .rl-top-status, .rl-top-acts, .rl-top-who) { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* short of room the run's title gives way first, then the glance */
+.app[data-layout=rail] .rl-top-run { flex: 0 4 auto; }
+.app[data-layout=rail] .rl-top-status { flex: 0 1 auto; overflow: hidden; }
+.app[data-layout=rail] .rl-top-acts { flex: none; gap: 8px; }
+.app[data-layout=rail] .rl-top-who { flex: none; gap: 12px; }
+.app[data-layout=rail] .rl-drawers { display: flex; align-items: center; gap: 2px; }
+
+.app[data-layout=rail] .topbar .ghost { padding: 2px 8px; line-height: 18px; font-size: var(--text-label, 0.75rem); }
+/* the Inbox the one outlined button; the drawers and Views quiet until pointed at */
+.app[data-layout=rail] .topbar :is(.rl-drawers, .views) .ghost { border-color: transparent; }
+.app[data-layout=rail] .topbar :is(.rl-drawers, .views) .ghost:not(:disabled):hover { border-color: var(--line); }
+.app[data-layout=rail] .topbar :is(.rl-drawers, .views) .ghost.on { border-color: var(--accent); }
+.app[data-layout=rail] .topbar .platforms-btn { margin-right: 0; }
+.app[data-layout=rail] .topbar .menu-btn { margin-right: 0; padding: 2px 6px; }
+.app[data-layout=rail] .topbar .brand { font-size: 11px; letter-spacing: 0.2em; }
+.app[data-layout=rail] .topbar .glance { font-size: 12.5px; gap: 7px; }
+.app[data-layout=rail] .topbar .glance b { font-size: 12.5px; }
+.app[data-layout=rail] .topbar .trouble { padding: 0 6px; line-height: 18px; }
+.app[data-layout=rail] .topbar .pill { padding: 2px 6px; }
+/* the clock: plain, no louder than the rest of the line */
+.app[data-layout=rail] .topbar .clock { min-width: 0; font: 500 13px var(--rl-data); }
+.app[data-layout=rail] .topbar .clock-run { margin-left: 8px; font-size: 12px; }
+.app[data-layout=rail] .topbar .op-mark { padding: 1px 7px; }
+
+/* the run (bar.run, the Situation chip) as words in the line, not a box: its title, then the
+   newest thing to watch, which gives way first */
+.app[data-layout=rail] .topbar .sit-chip {
+  flex: 0 1 auto; min-width: 0; padding: 0; background: none; border: 0; border-radius: 0;
+  color: var(--muted); font-size: 10px;
+}
+.app[data-layout=rail] .topbar .sit-chip-open { min-width: 0; overflow: hidden; gap: 7px; color: inherit; }
+.app[data-layout=rail] .topbar .sit-chip-open:hover b { color: var(--accent); }
+.app[data-layout=rail] .topbar .sit-chip-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.app[data-layout=rail] .topbar .sit-chip b { font: 600 var(--text-body, 0.875rem) var(--rl-ui); letter-spacing: 0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.app[data-layout=rail] .topbar .sit-chip-next { font-size: 12.5px; color: var(--muted); }
+.app[data-layout=rail] .topbar .float-grip { display: none; }
+
+@media (max-width: 1599px) {
+  .app[data-layout=rail] .topbar { gap: 16px; }
+  .app[data-layout=rail] .topbar .sit-chip-next { display: none; }
+  .app[data-layout=rail] .topbar .sit-chip b { max-width: 240px; }
+}
+@media (max-width: 1439px) {
+  .app[data-layout=rail] .topbar { gap: 12px; padding: 0 8px; }
+  .app[data-layout=rail] :is(.rl-top-run, .rl-top-status) { gap: 8px; }
+  .app[data-layout=rail] .rl-top-acts { gap: 4px; }
+  .app[data-layout=rail] .rl-top-who { gap: 8px; }
+  .app[data-layout=rail] .topbar .ghost { padding: 2px 6px; }
+  .app[data-layout=rail] .topbar .brand { letter-spacing: 0.12em; }
+  .app[data-layout=rail] .topbar .sit-chip b { max-width: 180px; }
+  /* the run's title alone, without its SITUATION label */
+  .app[data-layout=rail] .topbar .sit-chip-open { font-size: 0; gap: 0; }
+  .app[data-layout=rail] .topbar .op-mark { max-width: 120px; }
+}
+
+/* ---- the rail: tabs, and one list ------------------------------------------------------------- */
+
+.app[data-layout=rail] .rl { grid-area: rail; position: relative; display: flex; min-width: 0; min-height: 0; background: var(--panel); }
+.app[data-layout=rail] .rl-tabs {
+  flex: 0 0 var(--rl-tabs); width: var(--rl-tabs); display: flex; flex-direction: column; gap: 8px; padding: 10px 5px 8px;
+  background: var(--rl-edge); border-right: 1px solid var(--line);
+}
+.app[data-layout=rail] .rl-tab {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 9px 0 8px; background: none; border: 1px solid transparent; border-radius: 6px;
+  color: var(--muted); transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+.app[data-layout=rail] .rl-tab:hover { background: var(--panel); color: var(--text); }
+.app[data-layout=rail] .rl-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* the tab in front while the lists show: filled, as the one the lists beside it belong to */
+.app[data-layout=rail] .rl.open .rl-tab.front { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+/* the order form waits for the vehicles selected */
+.app[data-layout=rail] .rl-tab.ready { border-color: rgba(255, 179, 71, 0.55); }
+.app[data-layout=rail] .rl-count { font: 600 var(--text-title, 1rem)/1 var(--rl-data); color: var(--text); font-variant-numeric: tabular-nums; min-height: 1em; }
+.app[data-layout=rail] .rl-count.none { color: var(--muted); }
+.app[data-layout=rail] .rl-label { max-width: 100%; overflow: hidden; white-space: nowrap; font: 500 var(--text-label, 0.75rem)/1.1 var(--rl-ui); }
+/* the mark: the Inbox badge's shape, its tone the worst in the list (red only when urgent) */
+.app[data-layout=rail] .rl-mark { position: absolute; top: -5px; right: -5px; min-width: 17px; padding: 2px 4px; font-size: 10.5px; box-shadow: 0 0 0 2px var(--rl-edge); }
+.app[data-layout=rail] .rl-mark.bad { background: var(--bad); color: #1c0707; }
+.app[data-layout=rail] .rl-mark.warn { background: var(--warn); color: #1d1405; }
+.app[data-layout=rail] .rl-mark.settled { background: #3a4654; color: var(--text); }
+.app[data-layout=rail] .rl-fill { flex: 1; }
+.app[data-layout=rail] .rl-fold {
+  padding: 6px 0 8px; background: none; border: 1px solid transparent; border-radius: 6px;
+  font: 400 20px/1 var(--rl-ui); color: var(--muted);
+}
+.app[data-layout=rail] .rl-fold:hover { background: var(--panel); color: var(--text); }
+.app[data-layout=rail] .rl-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.app[data-layout=rail] .rl-body { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.app[data-layout=rail] .rl.shut .rl-body { display: none; }
+/* every list mounted, one in sight */
+.app[data-layout=rail] .rl-list { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.app[data-layout=rail] .rl-list.front { display: flex; }
+.app[data-layout=rail] .rl-list > * { flex: 1 1 auto; min-height: 0; }
+/* the tab names each list: the lists' own titles go, their controls stay */
+.app[data-layout=rail] .rl-list > .fleet { border-right: 0; }
+.app[data-layout=rail] .rl-list > .fleet > .panel-head { padding: 10px 12px 6px; }
+.app[data-layout=rail] .rl-list > .fleet > .panel-head h2 { display: none; }
+.app[data-layout=rail] .rl-list > .fleet .fleet-pick { margin-left: 0; max-width: 100%; }
+.app[data-layout=rail] .rl-list > .tk { max-height: none; border-bottom: 0; }
+.app[data-layout=rail] .rl-list > .tk > .tk-top { display: none; }
+.app[data-layout=rail] .rl-list > .tk .tk-scroll { padding-top: 10px; }
+.app[data-layout=rail] .rl-list > .tasking { border-left: 0; }
+
+/* the way to the order form while it is out of sight */
+.app[data-layout=rail] .rl-go {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin: 6px 10px 10px; padding: 7px 12px; text-align: left;
+  background: rgba(255, 179, 71, 0.07); border: 1px solid rgba(255, 179, 71, 0.45); border-radius: 6px;
+  font: 600 var(--text-label, 0.75rem)/1.3 var(--rl-ui); letter-spacing: 0.02em; color: var(--accent);
+}
+.app[data-layout=rail] .rl-go span { font-size: 16px; line-height: 1; }
+.app[data-layout=rail] .rl-go:hover { background: rgba(255, 179, 71, 0.13); }
+.app[data-layout=rail] .rl-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* the nomination form's dock, over the lists (the tabs stay in reach); its layer reaches right over
+   the map, to Needs you, so the form can be dragged out there (floating.ts measureRail) */
+.app[data-layout=rail] .rl-dock { position: absolute; top: 0; bottom: 0; left: var(--rl-tabs); width: var(--rl-lists); pointer-events: none; }
+.app[data-layout=rail] .rl-dock > .floats.rail { right: auto; width: calc(100vw - var(--rl-tabs) - var(--rn-w)); }
+
+/* ---- Needs you, its strip, and a drawer over it ----------------------------------------------- */
+
+.app[data-layout=rail] .rn { grid-area: needs; position: relative; min-width: 0; min-height: 0; background: var(--panel); border-left: 1px solid var(--line); }
+/* the Inbox's panel and every drawer (aside.ix, made to lie over the map) fill the edge instead */
+.app[data-layout=rail] .rn .ix { position: absolute; inset: 0; width: auto; max-width: none; z-index: auto; background: var(--panel); border-left: 0; box-shadow: none; }
+.app[data-layout=rail] .rn-strip {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 12px 0; background: var(--rl-edge); border: 0; color: var(--muted);
+  transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+.app[data-layout=rail] .rn-strip:hover { background: var(--panel); color: var(--text); }
+.app[data-layout=rail] .rn-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.app[data-layout=rail] .rn-strip-label { writing-mode: vertical-rl; font: 600 var(--text-label, 0.75rem)/1 var(--rl-ui); letter-spacing: 0.16em; text-transform: uppercase; }
+.app[data-layout=rail] .rn-strip[data-urgent] .rn-strip-label { color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .app[data-layout=rail] :is(.rl-tab, .rn-strip) { transition: none; }
+}

@@ -16,6 +16,8 @@ import { orbitRange, usePlatformLimits } from './taskDefaults'
 import type { Estimate, Tasking, Vehicle } from './types'
 import { callsign, domainOf, isStale } from './types'
 import { exceptionOf, type ExceptionContext, NO_EXCEPTIONS } from './vehicleException'
+import { useFloatBar } from './floating'
+import { FloatGrip } from './FloatingPanel'
 
 interface Props {
   v: Vehicle
@@ -412,10 +414,12 @@ function StandingSection({ v, nodes, row, now, onReview, nameOf }: { v: Vehicle;
  *  crashed them when opened from the fleet list or the Sitrep. Opening it pins it, so its full
  *  report comes with the next frame; until then the panel says so. */
 export function VehicleDetailsWhenFull(p: Props) {
+  const bar = useFloatBar()
   if (Array.isArray(p.v.statustext)) return <VehicleDetails {...p} />
   return (
     <aside className="vdetails" aria-label={`Details for ${callsign(p.v)}`}>
-      <header className="vd-head">
+      <header className="vd-head" {...bar}>
+        <FloatGrip />
         <div className="vd-title">
           <div className="vd-name">{callsign(p.v)}</div>
           <div className="muted">Out of view until now: its full report comes with the next update.</div>
@@ -456,10 +460,12 @@ export function VehicleDetails({ v, taskings, intents, reach, exceptions = NO_EX
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+  const bar = useFloatBar()
 
   return (
     <aside className="vdetails" aria-label={`Details for ${callsign(v)}`}>
-      <header className="vd-head">
+      <header className="vd-head" {...bar}>
+        <FloatGrip />
         <span className="vd-sym" dangerouslySetInnerHTML={{ __html: symbolSvg(v, { stale, size: 22, labels: false }).svg }} />
         <div className="vd-title">
           <div className="vd-name">
@@ -488,6 +494,7 @@ export function VehicleDetails({ v, taskings, intents, reach, exceptions = NO_EX
           ✕
         </button>
       </header>
+      <div className="vd-body">
 
       {v.identity?.armed && onEngage && !lost && (
         <button className="vd-select eg-engage-btn" onClick={onEngage} title="Nominate an engagement with this armed platform on a declared-hostile track (two operators with engagement authority decide)">
@@ -573,6 +580,7 @@ export function VehicleDetails({ v, taskings, intents, reach, exceptions = NO_EX
           </dl>
         </section>
       )}
+      </div>
     </aside>
   )
 }

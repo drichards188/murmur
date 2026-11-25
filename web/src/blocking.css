@@ -21,20 +21,21 @@
   grid-area: wait; display: flex; align-items: center; gap: 12px; min-width: 0;
   padding: 6px 16px 6px 12px; color: var(--urgent-text); background: var(--urgent-bg);
   border-bottom: 1px solid var(--urgent-line); box-shadow: inset 4px 0 0 var(--urgent);
-  font-size: 13px; line-height: 1.3;
+  font-size: var(--text-body); line-height: var(--leading-title);
 }
 .wait-tag {
-  flex: none; font: 700 11px var(--mono); letter-spacing: 0.12em; color: #1c0712;
+  flex: none; font: 600 var(--text-label)/var(--leading-label) var(--font-ui); letter-spacing: var(--caps-tracking);
+  text-transform: uppercase; color: #1c0712;
   background: var(--urgent); padding: 3px 7px; border-radius: 3px;
   /* once, as the item arrives: a standing pulse is fatigue */
   animation: wait-pulse 2.4s ease-in-out 1;
 }
 .wait-line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wait-line strong { color: #fff; font-weight: 600; }
-.wait-more { flex: none; font: 12px var(--mono); color: var(--urgent-soft); }
+.wait-more { flex: none; font: var(--text-label)/var(--leading-label) var(--font-ui); font-variant-numeric: tabular-nums; color: var(--urgent-soft); }
 .wait-open {
   flex: none; border: 1px solid var(--urgent); background: #3d1530; color: var(--urgent-text);
-  border-radius: 3px; padding: 4px 10px; font: 600 12.5px var(--sans); cursor: pointer;
+  border-radius: 3px; padding: 4px 10px; font: 600 var(--text-body)/var(--leading-title) var(--font-ui); cursor: pointer;
 }
 .wait-open:hover { background: #5a1d45; }
 .wait-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -56,7 +57,7 @@
 }
 
 /* a track's declaration that holds up a nomination (Declaration.tsx) */
-.dc-holding { margin: 0; padding: 5px 8px; border-left: 3px solid var(--urgent); background: rgba(255, 79, 154, 0.08); font-size: 12px; color: var(--urgent-text); }
+.dc-holding { margin: 0; padding: 5px 8px; border-left: 3px solid var(--urgent); background: rgba(255, 79, 154, 0.08); font-size: var(--text-body); color: var(--urgent-text); }
 
 @media (prefers-reduced-motion: reduce) {
   .wait-tag { animation: none; }

@@ -5,6 +5,8 @@ import type { AreaInfo, LinkNow, Positions, Track } from './space'
 import { CLASS_COLOR, getJson, usePoll } from './space'
 import type { LngLat } from './types'
 import { DEBUG_ON } from './perf'
+import { useFloatBar } from './floating'
+import { FloatGrip } from './FloatingPanel'
 
 interface Props {
   /** theater map centre; the globe follows it until the operator grabs it */
@@ -192,11 +194,13 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
     })
   }, [area, links, ready])
 
+  const bar = useFloatBar()
   return (
     <div className={`globe${big ? ' big' : ''}`} aria-label="Globe inset">
       <div ref={container} className="globe-map" />
       {lost && <div className="globe-lost">Globe paused: graphics context lost</div>}
-      <div className="globe-head">
+      <div className="globe-head" {...bar}>
+        <FloatGrip />
         <span className="globe-tools">
           {!follow && (
             <button className="ghost mini" onClick={recenter} title="Follow the theater map again (resets tilt and rotation)">

@@ -111,10 +111,10 @@ const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
 
 // Windowed list (murmur-ica): every row and group header has a fixed height (index.css keeps
 // them in step), so only the rows in view, plus a margin, are in the DOM, whatever the fleet size.
-export const ROW_H = 52
+export const ROW_H = 56
 export const HEAD_H = 32
 /** a group's row (name, counts by state) and the line under a folded group's listed members */
-export const GROUP_H = 54
+export const GROUP_H = 56
 export const MORE_H = 28
 const OVERSCAN_PX = 400
 

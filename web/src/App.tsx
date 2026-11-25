@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { type Check, useBridgeClock, useHiddenAlerts, type Intent } from './decisions'
 import { FleetPanel } from './FleetPanel'
 import { GlobeInset } from './GlobeInset'
@@ -20,6 +20,7 @@ import type { LngLat, Vehicle } from './types'
 import { callsign, isStale, vehicleNamer, type Tasking } from './types'
 import { useBridge } from './useBridge'
 import { ErrorBoundary } from './ErrorBoundary'
+import { FloatingPanel, FloatLayer } from './FloatingPanel'
 import { EngagePanel } from './EngagePanel'
 import { isEngage, previewOf, RUNNING, type EngagePreview, type KeepOutExplanation } from './engage'
 import { buildEngageLayers, buildKeepOutLayers, engageLabelCandidates, type EngageDrawing } from './engageLayers'
@@ -55,7 +56,9 @@ import { reachFeatures, reachQuery, type ReachAnswer, type ReachMode } from './s
 import { minefieldFeatures, type MinefieldsAnswer } from './minefields'
 import { SituationPanel } from './SituationPanel'
 import { waitingItems } from './blocking'
-import { settledFlags } from './needsYou'
+import { needsYou, settledFlags } from './needsYou'
+import { shownEngagements } from './inboxOrder'
+import { urgentInbox } from './inboxBadge'
 import { WaitingStrip } from './WaitingStrip'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
@@ -78,7 +81,7 @@ import { groupOfSelection } from './groups'
 import { Sitrep } from './Sitrep'
 import { TaskingButton, TaskingPanel } from './TaskingPanel'
 import { useTasking } from './useTasking'
-import { closeDock, fitPad, headsWithWaiting, toggleDock, type DockId } from './dock'
+import { closeDock, FIT_PAD, fitPad, headsWithWaiting, toggleDock, type DockId } from './dock'
 import { awaitingRows, officerShown, selectionInsert, turnOf } from './officer'
 import { askSentence } from './approvalText'
 import { askFleet } from './approvalFleet'
@@ -87,9 +90,14 @@ import { OfficerCompose, type ComposeInsert } from './OfficerCompose'
 import { damageOf, type Damage, type ExceptionContext, type LoadoutWeapon, outOfRounds } from './vehicleException'
 import { clockText, runClock, type ScenarioClockAnswer, setWorldClock } from './scenarioClock'
 import { opensInTopView } from './situationText'
+import { watchParts } from './bluf'
 import { useSituation } from './useSituation'
-import { glanceOf, groupScale, mattersText, nextTrouble, troubleOf } from './topbar'
+import { GROUP_SCALE, glanceOf, groupScale, mattersOf, mattersText, nextTrouble, troubleOf } from './topbar'
 import { type ViewEntry, ViewsMenu } from './ViewsMenu'
+// last, so each layout's own CSS comes after the parts' (layouts/parts.ts says what it may move)
+import type { BarParts, ConsoleParts, MapSlot } from './layouts/parts'
+import { LAYOUT, ShownLayout } from './layouts'
+import { OffButton } from './OffButton'
 
 /** The bridge's scenario clock (scenarioClock.ts, `scenario` in GET /api/weather): asked once the
  *  bridge answers, again on each reconnect (a restarted bridge has a new start) and each minute. A
@@ -197,6 +205,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
   const [showWeather, setShowWeather] = useState(false)
   const [showSpace, setShowSpace] = useState(false)
+  // the Situation panel open, or closed to its chip (one line at the glance; the panel a click
+  // away): held here so its floating place follows it (FloatingPanel.tsx `variant`)
+  const [sitOpen, setSitOpen] = useState(false)
+  // the map: the floating panels keep to it (FloatingPanel.tsx), the nomination form's reach too
+  const mapRef = useRef<HTMLElement>(null)
   // the right dock (dock.ts): one drawer at a time over the map's right edge, the top bar's buttons
   // its tabs: the Inbox; the AI watch officer (TaskingPanel.tsx: requests it carries out, never an
   // approval or a decision); rules 5's Queue of orders held for vehicles the link can't reach now; the situation
@@ -263,7 +276,17 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   useEffect(() => {
     if (selectedTrack) noteTrackViewed(selectedTrack)
   }, [selectedTrack])
-  const [fit, setFit] = useState<{ points: LngLat[]; n: number; padRight: number } | null>(null)
+  const [fit, setFit] = useState<{ points: LngLat[]; n: number; padRight: number; aloft?: [number, number, number][] } | null>(null)
+  // the drawer shown lies beside the map rather than over its right edge (the layout's choice, set
+  // where the map is laid out: `map` below; never in Cockpit): nothing covers the map then
+  const dockBeside = useRef(false)
+  /** frame these points on the map (MapView's `fit`), `padRight` px kept clear on its right for the
+   *  drawer over it (the usual margin when the drawer lies beside the map); `aloft`, points up in
+   *  the air that must be in view too */
+  const frame = useCallback((points: LngLat[], padRight: number, aloft?: [number, number, number][]) => {
+    const pad = dockBeside.current ? FIT_PAD : padRight
+    setFit((f) => ({ points, aloft, n: (f?.n ?? 0) + 1, padRight: pad }))
+  }, [])
   // predicted link coverage (docs/LINK-COVERAGE.md): the map layer, off by default, and the
   // drafted order's predicted link (the task panel's dry run)
   const [showCoverage, setShowCoverage] = useState(false)
@@ -551,16 +574,16 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   /** frame the strike: its effect circle, with room around it */
   const focusImpact = useCallback((impact: ImpactEvent) => {
     const ring = circle(impact.point, Math.max(impact.radius_m * 4, 450)).filter((_, k) => k % 8 === 0)
-    setFit((f) => ({ points: [impact.point, ...ring], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
-  }, [dock])
+    frame([impact.point, ...ring], fitPad(dock))
+  }, [dock, frame])
   /** frame a munition's flight: its launch point (up where it was released), the impact point
    *  and the effect circle, so the operator watches it fly and strike */
   const focusFlight = useCallback((impact: ImpactEvent) => {
     const m = impact.munition
     if (!m) return focusImpact(impact)
     const ring = circle(impact.point, Math.max(impact.radius_m * 4, 450)).filter((_, k) => k % 8 === 0)
-    setFit((f) => ({ points: [m.launch_point, impact.point, ...ring], aloft: [[...m.launch_point, m.launch_alt_m]], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
-  }, [dock, focusImpact])
+    frame([m.launch_point, impact.point, ...ring], fitPad(dock), [[...m.launch_point, m.launch_alt_m]])
+  }, [dock, focusImpact, frame])
   // the view goes to a munition at its launch (its flight and strike), to any other strike as
   // it lands; one seen too late for either (a console that reconnects) is left alone
   useEffect(() => {
@@ -632,8 +655,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     const ring = circle(d.author, Math.max(d.sigma_m * 3, 300)).filter((_, k) => k % 8 === 0)
     const points = d.victim ? [d.author, d.victim.at, ...ring] : [d.author, ...ring]
     const aloft: [number, number, number][] | undefined = d.victim && d.victim.alt > 50 ? [[d.victim.at[0], d.victim.at[1], d.victim.alt]] : undefined
-    setFit((f) => ({ points, aloft, n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
-  }, [dock])
+    frame(points, fitPad(dock), aloft)
+  }, [dock, frame])
   // platforms that are their own munition (catalog expended_by_effect) on their way: tagged on
   // the map, so the operator sees what is on the way (bd murmur-64z)
   // its tag says what it is doing to which track, in words: "striking T-0012"
@@ -690,7 +713,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     if (!engageDraft) return
     const ring = circle(engageDraft.effect_point, engageDraft.keep_out_m).filter((_, k) => k % 8 === 0)
     // the form sits in the right rail, beside the map: only the dock covers its right edge
-    setFit((f) => ({ points: [...engageDraft.path, ...ring], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
+    frame([...engageDraft.path, ...ring], fitPad(dock))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey])
   // silent vehicles' estimates (murmur-4y9): the bridge's motion models evaluated every clock
@@ -798,10 +821,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       if (!m) return
       const members = new Set(m.members)
       const pts = allVehicles.flatMap((v) => (members.has(v.uid) && v.position ? [v.position] : []))
-      if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
+      if (pts.length) frame(pts, fitPad(dock))
       setFlashGroup(id)
     },
-    [marks, allVehicles, dock],
+    [marks, allVehicles, dock, frame],
   )
   const alertedUids = useMemo(() => new Set(unfolded(listAlerts ?? []).map((a) => a.uid)), [listAlerts])
   // the full block of a track, lost contact or estimate under the pointer, while its label is not
@@ -811,12 +834,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     [now],
   )
   const focusTrack = useCallback(
-    (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
-    [now],
+    (t: Track) => frame([trackPredicted(t, now())], 400),
+    [now, frame],
   )
   // the tutorial's card keeps its step's scene in view: where each of ours is, by callsign, and a fit
   const placeOfCallsign = useCallback((c: string) => vehicles.find((v) => callsign(v) === c)?.position ?? null, [vehicles])
-  const fitPoints = useCallback((points: LngLat[]) => setFit((f) => ({ points, n: (f?.n ?? 0) + 1, padRight: fitPad(dock) })), [dock])
+  const fitPoints = useCallback((points: LngLat[]) => frame(points, fitPad(dock)), [dock, frame])
   const { mem: alertMem, hidden: hiddenAlerts } = useHiddenAlerts(decisions)
   const pending = decisions?.inbox.pending
   const pendingIds = useMemo(() => new Set((pending ?? []).map((i) => i.id)), [pending])
@@ -852,6 +875,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // the top bar's glance (topbar.ts): ours, the contacts, ours in trouble by the rows' own slot
   const glance = useMemo(() => glanceOf(vehicles, tracks?.tracks ?? NO_TRACKS), [vehicles, tracks?.tracks])
   const matters = mattersText(glance)
+  // the hostile and suspect contacts, for a layout whose glance links its counts to them (BarFigures)
+  const matterIds = useMemo(() => mattersOf(tracks?.tracks ?? NO_TRACKS), [tracks?.tracks])
   const trouble = useMemo(() => troubleOf(vehicles, exceptions), [vehicles, exceptions])
   // a click on the trouble count shows the next one in trouble in the Fleet list
   const troubleShown = useRef<number | null>(null)
@@ -860,7 +885,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     troubleShown.current = uid
     if (uid != null) setRevealVeh({ ids: [String(uid)] })
   }, [trouble])
-  const queuedN = decisions?.inbox.queued?.length ?? 0
   const fleetSwarms = hasSwarms || (swarmFeed.doc?.swarms.length ?? 0) > 0
   // the reference views behind the top bar's one Layers button: Space (its timeline with the globe
   // of satellites by class) only where the bridge has a space segment
@@ -880,9 +904,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       revealVehicles(uids)
       const vs = state?.vehicles ?? []
       const pts: LngLat[] = intent ? intentPoints(intent, vs) : uids.map((u) => vs.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
-      if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
+      if (pts.length) frame(pts, 430)
     },
-    [state?.vehicles, revealVehicles],
+    [state?.vehicles, revealVehicles, frame],
   )
   // what a person alone is holding up (blocking.ts): the strip, and the links that open its card
   const waiting = useMemo(() => waitingItems(decisions?.inbox.blocking), [decisions?.inbox.blocking])
@@ -984,6 +1008,38 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     [drawing, selected],
   )
 
+  // what a layout may do for the person (layouts/parts.ts `ConsoleActs`), each as the console's own
+  // controls already do it
+  /** one of ours' details open, the map flying there and following it */
+  const showVehicle = useCallback((uid: number) => {
+    setDetailsUid(uid)
+    setFollowing(true)
+    setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
+  }, [])
+  /** these vehicles selected, the first of them shown in the Fleet list */
+  const selectVehicles = useCallback(
+    (uids: number[]) => {
+      setSelected(new Set(uids))
+      revealVehicles(uids)
+    },
+    [revealVehicles],
+  )
+  /** a track selected, its row shown in the Tracks list, the map centred on it */
+  const showTrack = useCallback(
+    (id: string) => {
+      revealTrackId(id)
+      const t = tracks?.tracks.find((x) => x.id === id)
+      if (t) focusTrack(t)
+    },
+    [revealTrackId, tracks, focusTrack],
+  )
+  // the Inbox badge's own count (InboxPanel.tsx InboxButton), for a layout that shows it elsewhere
+  const needs = useMemo(
+    () => needsYou(decisions?.inbox, hiddenAlerts, new Set(settled.keys()), shownEngagements(decisions?.intents ?? [])),
+    [decisions?.inbox, decisions?.intents, hiddenAlerts, settled],
+  )
+  const urgent = useMemo(() => urgentInbox(decisions?.inbox, hiddenAlerts), [decisions?.inbox, hiddenAlerts])
+
   // last effect of the tree for this state: children's effects (map, list) have run
   useLayoutEffect(() => perfCommitted(), [state])
   useEffect(() => perfUpdateEnd(), [state])
@@ -999,7 +1055,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // stopped and waits. The drawer the dock shows (430 px over the map's right edge, the Sitrep 760)
   // takes them at its head instead, under its own header: centred on the map they sat over that
   // header and the Review's, its urgent item included (bd murmur-76gv).
-  const drawer = dock
   const attacks = attackEvents(inboxActs ?? [], weapons, damage, (id) => tracks?.tracks.find((t) => t.id === id)?.declared ?? null, nameOf, impactNowMs, actsDismissedAt, (id) => {
     const e = trackEngagement(decisions?.intents, id, nameOf)
     return e?.inPlay ? e.line.replace(/^Engagement/, 'engagement') : null
@@ -1013,15 +1068,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     if (!w) return
     const at = weaponVictim(w)
     const from = w.launch?.point ?? w.fixes[0]?.point ?? at
-    if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: fitPad(dock) }))
+    if (from) frame(at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], fitPad(dock))
   }
   /** where the attack's response is decided: its review item's card, else the attacker's track card */
   const respondAttack = (e: AttackEvent) => {
     if (e.review) return openWaiting(e.review)
     if (!e.track) return
-    revealTrackId(e.track)
-    const t = tracks?.tracks.find((x) => x.id === e.track)
-    if (t) focusTrack(t)
+    showTrack(e.track)
   }
   const groupBan = groupAlarms[0]
   const bannersAbove = [attack, assessAsk].filter(Boolean).length
@@ -1101,430 +1154,532 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // a weapon situation (a situation whose fleet has an armed platform) opens in top view, once a run
   const topView = opensInTopView(situation.s != null, allVehicles) ? (situation.s?.run.id ?? null) : null
 
-  return (
-    <div className={`app${waiting.length ? ' waiting' : ''}`}>
-      <PerfMark />
-      <header className="topbar">
-        {onMenu && (
-          <button className="ghost menu-btn" onClick={onMenu} title="The main menu: the scenario running, ending it, and the others to start">
-            Menu
+  // ---- the console's parts (layouts/parts.ts) ------------------------------------------------------
+  // Each is built here, once a render, from the state above; the layout `?layout=` chose
+  // (layouts/index.ts) only says where each sits. Cockpit.tsx sets them as the console always was.
+
+  // the top bar's pieces
+  const bar: BarParts = {
+    menu: onMenu ? (
+      <button className="ghost menu-btn" onClick={onMenu} title="The main menu: the scenario running, ending it, and the others to start">
+        Menu
+      </button>
+    ) : null,
+    brand: <span className="brand">MURMUR</span>,
+    // the Situation chip, for a layout that puts it in the bar (else the map floats it): a click
+    // opens the panel over the map, a second closes it
+    run:
+      situation.s && situation.time ? (
+        <ErrorBoundary name="Situation">
+          <SituationPanel s={situation.s} time={situation.time} decisions={decisions} nameOf={nameOf} open={false} onOpen={() => setSitOpen((o) => !o)} />
+        </ErrorBoundary>
+      ) : null,
+    // the Sitrep's bottom line (topbar.ts): ours, the one count of ours in trouble (the rows' own
+    // slot), the contacts and how many matter; quiet while nothing is wrong
+    glance: (
+      <span className="glance">
+        <span title={`${glance.ours} of ours in the fleet`}>
+          <b>{glance.ours}</b> vehicles
+        </span>
+        {trouble.n > 0 && (
+          <button className={`trouble ${trouble.tone ?? ''}`} onClick={showTrouble} title={trouble.says} aria-label={trouble.says}>
+            {trouble.n} of ours in trouble
           </button>
         )}
-        <span className="brand">MURMUR</span>
-        <span className="spacer" />
-        {/* the Sitrep's bottom line (topbar.ts): ours, the one count of ours in trouble (the rows'
-            own slot), the contacts and how many matter; quiet while nothing is wrong */}
-        <span className="glance">
-          <span title={`${glance.ours} of ours in the fleet`}>
-            <b>{glance.ours}</b> vehicles
-          </span>
-          {trouble.n > 0 && (
-            <button className={`trouble ${trouble.tone ?? ''}`} onClick={showTrouble} title={trouble.says} aria-label={trouble.says}>
-              {trouble.n} in trouble
-            </button>
-          )}
-          <span className="glance-sep" aria-hidden="true">·</span>
-          <span title={`${glance.contacts} contacts our sensors hold${matters ? `, ${matters}` : ''}`}>
-            <b>{glance.contacts}</b> contacts
-            {matters && <span className={glance.hostile ? 'bad' : 'warn'}>: {matters}</span>}
-          </span>
+        <span className="glance-sep" aria-hidden="true">·</span>
+        <span title={`${glance.contacts} contacts our sensors hold${matters ? `, ${matters}` : ''}`}>
+          <b>{glance.contacts}</b> contacts
+          {matters && <span className={glance.hostile ? 'bad' : 'warn'}>, {matters}</span>}
         </span>
-        {status !== 'live' && (
-          <span className={`pill ${status}`} title={status === 'connecting' ? 'Connecting to the bridge' : 'The bridge is not answering: the console is not live'}>
-            {status === 'connecting' ? 'CONNECTING' : 'BRIDGE DOWN'}
-          </span>
-        )}
-        {/* the dock's tabs (dock.ts): one drawer at a time over the map's right edge */}
-        <nav className="dock-tabs" aria-label="Drawers over the map's right edge, one at a time">
-          <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} settled={settled} now={now} onClick={() => setDock((d) => toggleDock(d, 'inbox'))} />
-          {officerVisible && <TaskingButton api={taskingApi} open={showTasking} onClick={() => setDock((d) => toggleDock(d, 'officer'))} />}
-          {/* the Queue only while something is held for a link (or its drawer is open) */}
-          {(queuedN > 0 || showQueue) && <QueueButton decisions={decisions} now={now} open={showQueue} onClick={() => setDock((d) => toggleDock(d, 'queue'))} />}
-          {/* the Sitrep only at group scale (topbar.ts GROUP_SCALE): below it the lists are the report */}
-          {(groupScale(vehicles.length) || showSitrep) && (
-            <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} aria-pressed={showSitrep} onClick={() => setDock((d) => toggleDock(d, 'sitrep'))} title="The situation report: the whole picture, top-down, read-only">
-              Sitrep
-            </button>
-          )}
-          {/* Groups only when the fleet has swarms or the person made a group (the Fleet list makes one) */}
-          {(fleetSwarms || groupsApi.groups.length > 0 || showSwarms) && (
-            <SwarmsButton feed={swarmFeed} mine={fleetSwarms ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setDock((d) => toggleDock(d, 'swarms'))} />
-          )}
-        </nav>
-        <ViewsMenu entries={views} />
-        <OperatorBadge />
-        <span className="clock" title={runTime ? `${clock.title}. The situation: ${runTime}` : clock.title}>
-          {clock.text}
-          {runTime && <span className="clock-run">{runTime}</span>}
+      </span>
+    ),
+    connection:
+      status !== 'live' ? (
+        <span className={`pill ${status}`} title={status === 'connecting' ? 'Connecting to the bridge' : 'The bridge is not answering: the console is not live'}>
+          {status === 'connecting' ? 'CONNECTING' : 'BRIDGE DOWN'}
         </span>
-      </header>
-      {/* the one strip: only while something alone holds up a step (R8) */}
-      <WaitingStrip items={waiting} onOpen={openWaiting} victim={actVictim} />
-      <ErrorBoundary name="Fleet list" className="slot fleet">
-      <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle}
-        onDeselect={deselect}
-        detailsUid={detailsUid}
-        onDetails={(uid) => {
-          // a second click on the same row closes it; opening flies the map there
-          setDetailsUid((d) => (d === uid ? null : uid))
-          if (detailsUid !== uid) {
-            setFollowing(true)
-            setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
-          }
+      ) : null,
+    // the dock's tabs (dock.ts): one drawer at a time over the map's right edge
+    inbox: <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} settled={settled} now={now} onClick={() => setDock((d) => toggleDock(d, 'inbox'))} />,
+    // every drawer button stays on the bar, greyed with the reason when the run has nothing for it
+    officer: <TaskingButton api={taskingApi} open={showTasking} onClick={() => setDock((d) => toggleDock(d, 'officer'))} off={officerVisible ? null : situationAi === undefined || situationAi === null ? 'no watch officer is connected to this run' : "this run's AI takes no requests"} />,
+    // the Queue only while something is held for a link (or its drawer is open)
+    queue: <QueueButton decisions={decisions} now={now} open={showQueue} onClick={() => setDock((d) => toggleDock(d, 'queue'))} />,
+    // the Sitrep only at group scale (topbar.ts GROUP_SCALE): below it the lists are the report
+    sitrep:
+      groupScale(vehicles.length) || showSitrep ? (
+        <button className={`ghost platforms-btn ix-btn ${showSitrep ? 'on' : ''}`} aria-pressed={showSitrep} onClick={() => setDock((d) => toggleDock(d, 'sitrep'))} title="The situation report: the whole picture, top-down, read-only">
+          Sitrep
+        </button>
+      ) : (
+        <OffButton label="Sitrep" off={`for a fleet of more than ${GROUP_SCALE}: below that the lists are the report`} />
+      ),
+    // Groups only when the fleet has swarms or the person made a group (the Fleet list makes one)
+    groups:
+      fleetSwarms || groupsApi.groups.length > 0 || showSwarms ? (
+        <SwarmsButton feed={swarmFeed} mine={fleetSwarms ? null : groupsApi.groups.length} open={showSwarms} onClick={() => setDock((d) => toggleDock(d, 'swarms'))} />
+      ) : (
+        <OffButton label="Groups" off="no swarms in this fleet and no groups yet: make one from the Fleet list's selection" />
+      ),
+    views: <ViewsMenu entries={views} />,
+    operator: <OperatorBadge />,
+    clock: (
+      <span className="clock" title={runTime ? `${clock.title}. The situation: ${runTime}` : clock.title}>
+        {clock.text}
+        {runTime && <span className="clock-run">{runTime}</span>}
+      </span>
+    ),
+    // the figures behind the glance and the run chip, for a layout that words them itself
+    figures: {
+      glance,
+      trouble,
+      showTrouble,
+      hostile: matterIds.hostile,
+      suspect: matterIds.suspect,
+      run: situation.s && situation.time ? { operator: situation.s.modes.operator, tutorial: !!situation.s.modes.tutorial, phase: situation.s.phase, stale: situation.time.stale } : null,
+    },
+  }
+
+  // the Inbox's content: the dock's drawer while it is the one shown, or wherever a layout keeps it
+  const inbox = (
+    <ErrorBoundary key="inbox" name="Inbox" className="floating">
+      <InboxPanel
+        banners={banners}
+        decisions={decisions}
+        vehicles={allVehicles}
+        now={now}
+        tab={inboxTab}
+        setTab={setInboxTab}
+        selection={inboxSel}
+        onFocus={focusInbox}
+        onClose={() => setDock((d) => closeDock(d, 'inbox'))}
+        mem={alertMem}
+        hidden={hiddenAlerts}
+        settled={settled}
+        notice={inboxNotice}
+        focus={reviewFocus}
+        onReplace={(i) => setEngageForm({ replaces: i.id })}
+        cause={(i) => {
+          const link = turnOf(i, taskingApi.items)
+          return link ? <TurnCause link={link} onShow={() => setDock('officer')} /> : null
         }}
-        onSelect={(ids) => setSelected(new Set(ids))}
-        groups={groupsApi}
-        reveal={revealVeh}
-        swarms={swarmFeed.doc?.swarms}
         taskings={state?.taskings}
-        intents={allIntents}
-        damaged={damagedUids}
-        alerted={alertedUids}
-        exceptions={exceptions}
+        tracks={tracks?.tracks}
+        onTrack={(id) => {
+          setDock((d) => closeDock(d, 'inbox'))
+          showTrack(id)
+        }}
       />
-      </ErrorBoundary>
-      <main className={`mapwrap ${showSpace ? 'space-open' : ''}${dock ? ' docked' : ''}`}>
-        <ErrorBoundary name="Map" className="floating">
-        <MapView
-          vehicles={allVehicles}
-          hiddenUids={spent}
-          impacts={impacts}
-          impactNowMs={impactNowMs}
-          bridgeNow={now}
-          oneWay={oneWay}
-          exceptions={exceptions}
-          tracers={tracers}
-          acts={actDraws}
-          actsDismissedAt={actsDismissedAt}
-          weapons={weapons}
-          weaponVictim={weaponVictim}
-          nameOf={nameOf}
-          viewedAct={viewedAct}
-          taskings={mapTaskings}
-          selected={selected}
-          draft={mapDraft}
-          focus={focus}
-          follow={detailsUid}
-          onFollowing={setFollowing}
-          preview={preview}
-          fit={fit}
-          onToggle={toggleOutside}
-          onDeselect={deselect}
-          onMapClick={onMapClick}
-          space={overlay}
-          onView={onView}
-          layers={mapLayers}
-          clusters={state?.clusters ?? null}
-          coverage={coverageImage}
-          weather={showCoverage ? null : weatherView}
-          reach={reachRings}
-          linkRoute={shownRoute}
-          onHover={onMapHover}
-          labels={mapLabels}
-          tooltip={mapTooltip}
-          topView={topView}
-          groups={groupsOnMap}
+    </ErrorBoundary>
+  )
+  // the drawer the dock shows (dock.ts), keyed by which it is: a switch mounts the new one afresh
+  let drawer: ReactNode = null
+  if (showInbox) drawer = inbox
+  else if (showQueue)
+    drawer = (
+      <ErrorBoundary key="queue" name="Queue" className="floating">
+        <QueuePanel
+          banners={dockHead}
+          decisions={decisions}
+          vehicles={vehicles}
+          now={now}
+          onFocus={(uids) => {
+            selectVehicles(uids)
+            const pts = uids.map((u) => vehicles.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
+            if (pts.length) frame(pts, 430)
+          }}
+          onClose={() => setDock((d) => closeDock(d, 'queue'))}
         />
+      </ErrorBoundary>
+    )
+  else if (showTasking)
+    drawer = (
+      <ErrorBoundary key="officer" name="Watch officer" className="floating">
+        <TaskingPanel
+          api={taskingApi}
+          now={now}
+          banners={dockHead}
+          onClose={() => setDock((d) => closeDock(d, 'officer'))}
+          compose={<OfficerCompose api={taskingApi} draft={officerDraft} setDraft={setOfficerDraft} inserts={composeInserts} />}
+          groups={groupsApi.groups}
+          intents={allIntents ?? NO_INTENTS}
+          // an order the officer proposed for a request: its card, in the Inbox while it waits
+          onIntent={openIntent}
+          // a group the officer made for it: its members selected, nothing sent
+          onGroup={selectVehicles}
+        />
+      </ErrorBoundary>
+    )
+  else if (showSitrep)
+    drawer = (
+      <ErrorBoundary key="sitrep" name="Sitrep" className="floating">
+        <Sitrep
+          banners={dockHead}
+          vehicles={vehicles}
+          taskings={state?.taskings ?? NO_TASKINGS}
+          swarms={swarmFeed.doc?.swarms ?? NO_SWARMS}
+          marks={marks}
+          groups={groupsApi.groups}
+          damaged={damagedUids}
+          onVehicle={(uid) => {
+            // its details, as a click on its fleet row opens them (the map flies there); they
+            // open over the map's left edge, under this wide drawer, so the report gives way
+            setDock((d) => closeDock(d, 'sitrep'))
+            showVehicle(uid)
+          }}
+          onSelect={selectVehicles}
+          onClose={() => setDock((d) => closeDock(d, 'sitrep'))}
+        />
+      </ErrorBoundary>
+    )
+  else if (showSwarms)
+    drawer = (
+      <ErrorBoundary key="swarms" name="Swarms" className="floating">
+        <SwarmsPanel
+          banners={dockHead}
+          feed={swarmFeed}
+          selected={swarmSel}
+          focus={swarmFocus}
+          hovered={hoverGroup}
+          onHover={setHoverGroup}
+          alerts={decisions?.inbox.swarm_alerts ?? []}
+          groups={{
+            api: groupsApi,
+            selected,
+            present: presentUids,
+            nameOf: (uid) => nameOf(String(uid)),
+            onSelect: (uids) => {
+              // a group of yours is a named selection: the order form then commands it
+              selectVehicles(uids)
+              const pts = allVehicles.flatMap((v) => (v.position && uids.includes(v.uid) ? [v.position] : []))
+              if (pts.length) frame(pts, 430)
+            },
+          }}
+          onSelect={(sw) => {
+            // every member, so the order form sends one intent to the whole swarm
+            selectVehicles(sw.members)
+            const pts = sw.hull && sw.hull.length ? sw.hull : sw.centroid ? [sw.centroid] : []
+            if (pts.length) frame(pts, 430)
+          }}
+          onClose={() => setDock((d) => closeDock(d, 'swarms'))}
+          heard={(uid) => {
+            const v = allVehicles.find((x) => String(x.uid) === uid)
+            return v != null && !isStale(v)
+          }}
+        />
+      </ErrorBoundary>
+    )
+
+  /** The map and everything on it (layouts/parts.ts `map`): what the layout docks over its right
+   *  edge, and whether the banners and the Situation chip sit on it. */
+  const renderMap = (slot: MapSlot = {}): ReactNode => {
+    const docked = Boolean(slot.drawer)
+    // the drawer shown over the map (it makes room for it, a fit pads for it) or beside it (frame)
+    dockBeside.current = slot.beside ?? (dock != null && !docked)
+    const showBanners = slot.banners ?? !dock
+    const runChip = slot.runChip ?? true
+    return (
+      <main ref={mapRef} className={`mapwrap ${showSpace ? 'space-open' : ''}${docked ? ' docked' : ''}`}>
+        <ErrorBoundary name="Map" className="floating">
+          <MapView
+            vehicles={allVehicles}
+            hiddenUids={spent}
+            impacts={impacts}
+            impactNowMs={impactNowMs}
+            bridgeNow={now}
+            oneWay={oneWay}
+            exceptions={exceptions}
+            tracers={tracers}
+            acts={actDraws}
+            actsDismissedAt={actsDismissedAt}
+            weapons={weapons}
+            weaponVictim={weaponVictim}
+            nameOf={nameOf}
+            viewedAct={viewedAct}
+            taskings={mapTaskings}
+            selected={selected}
+            draft={mapDraft}
+            focus={focus}
+            follow={detailsUid}
+            onFollowing={setFollowing}
+            preview={preview}
+            fit={fit}
+            onToggle={toggleOutside}
+            onDeselect={deselect}
+            onMapClick={onMapClick}
+            space={overlay}
+            onView={onView}
+            layers={mapLayers}
+            clusters={state?.clusters ?? null}
+            coverage={coverageImage}
+            weather={showCoverage ? null : weatherView}
+            reach={reachRings}
+            linkRoute={shownRoute}
+            onHover={onMapHover}
+            labels={mapLabels}
+            tooltip={mapTooltip}
+            topView={topView}
+            groups={groupsOnMap}
+          />
         </ErrorBoundary>
-        {showCoverage && (
-          <ErrorBoundary name="Link coverage" className="floating">
-            <CoverageControl
-              view={mapView}
-              vehicle={selected.size === 1 ? (vehicles.find((v) => selected.has(v.uid)) ?? null) : null}
-              onGrid={setCoverageGrid}
-              onClose={() => setShowCoverage(false)}
-            />
-          </ErrorBoundary>
-        )}
+        {/* the panels that pop out over the map (FloatingPanel.tsx): each opens on the free spot
+            nearest its own corner, clear of the others and of what is fixed on the map, and moves
+            by the bar at its top (R20; rule 6) */}
+        <FloatLayer kind="map">
+          {showCoverage && (
+            <FloatingPanel id="links" prefer="bottom-left" reserve={230}>
+              <ErrorBoundary name="Link coverage" className="floating">
+                <CoverageControl
+                  view={mapView}
+                  vehicle={selected.size === 1 ? (vehicles.find((v) => selected.has(v.uid)) ?? null) : null}
+                  onGrid={setCoverageGrid}
+                  onClose={() => setShowCoverage(false)}
+                />
+              </ErrorBoundary>
+            </FloatingPanel>
+          )}
+          {showWeather && (
+            <FloatingPanel id="weather" prefer="top-right" reserve={380}>
+              <ErrorBoundary name="Weather" className="floating">
+                <WeatherPanel optical={spaceSegment} center={mapView?.center ?? [-122.4783, 37.8199]} vehicle={selected.size === 1 ? vehicles.find(v => selected.has(v.uid)) ?? null : null} onClose={() => setShowWeather(false)}
+                  mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }} grid={weatherField.grid} />
+              </ErrorBoundary>
+            </FloatingPanel>
+          )}
+          {/* a situation runner's status (make situation): shown only while one has posted it; its
+              chip here unless the layout shows it in the bar (bar.run), the open panel here always */}
+          {situation.s && situation.time && (runChip || sitOpen) && (
+            <FloatingPanel id="situation" prefer="top-left" variant={sitOpen ? 'open' : 'chip'} reserve={sitOpen ? 420 : 0}>
+              <ErrorBoundary name="Situation" className="floating">
+                <SituationPanel s={situation.s} time={situation.time} decisions={decisions} nameOf={nameOf} open={sitOpen} onOpen={setSitOpen} />
+              </ErrorBoundary>
+            </FloatingPanel>
+          )}
+          {showSpace && (
+            <FloatingPanel id="globe" prefer="top-right">
+              <ErrorBoundary name="Globe" className="floating">
+                <GlobeInset
+                  center={mapView?.center ?? null}
+                  area={catalog.data?.area ?? null}
+                  links={linksNow.data?.links ?? []}
+                  norad={spaceSel.norad}
+                  onClose={closeSpace}
+                />
+              </ErrorBoundary>
+            </FloatingPanel>
+          )}
+          {detailsUid != null && byUidDetails(vehicles, detailsUid) && (
+            <FloatingPanel id="vehicle-details" prefer="top-left" reserve={480}>
+              <ErrorBoundary name="Vehicle details" className="floating">
+                <VehicleDetailsWhenFull
+                  v={byUidDetails(vehicles, detailsUid)!}
+                  taskings={taskings}
+                  intents={allIntents}
+                  reach={reach.data}
+                  exceptions={exceptions}
+                  now={now}
+                  selected={selected.has(detailsUid)}
+                  onToggleSelect={() => toggleOutside(detailsUid)}
+                  onClose={() => setDetailsUid(null)}
+                  following={following}
+                  onFollow={() => {
+                    setFollowing(true)
+                    setFocus((f) => ({ uid: detailsUid, n: (f?.n ?? 0) + 1 }))
+                  }}
+                  onEngage={() => setEngageForm({ uid: detailsUid })}
+                  nodeLoss={nodeLoss}
+                  nodeRow={nodeRows.get(detailsUid)}
+                  onReview={openWaiting}
+                  nameOf={nameOf}
+                />
+              </ErrorBoundary>
+            </FloatingPanel>
+          )}
+          {showPlatforms && (
+            <FloatingPanel id="platforms" prefer="top-left" reserve={600}>
+              <ErrorBoundary name="Platforms" className="floating">
+                <PlatformsPanel
+                  onClose={() => setShowPlatforms(false)}
+                  onFocus={(uid) => {
+                    setSelected(new Set([uid]))
+                    revealVehicles([uid])
+                    setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
+                    setShowPlatforms(false)
+                  }}
+                />
+              </ErrorBoundary>
+            </FloatingPanel>
+          )}
+        </FloatLayer>
         <WeatherLegend mode={weatherMode}
           effects={weatherEffects} onEffects={fx => { setWeatherEffects(fx); saveEffects(fx); setShowCoverage(false) }}
           grid={weatherField.grid} error={showCoverage ? 'Hidden while the Links layer is on' : weatherField.error}
           reach={{ mode: reachMode, onMode: setReachMode, answer: reach.data, error: reach.error, selected: selected.size }} />
-        {showWeather && <ErrorBoundary name="Weather" className="floating">
-          <WeatherPanel optical={spaceSegment} center={mapView?.center ?? [-122.4783, 37.8199]} vehicle={selected.size === 1 ? vehicles.find(v => selected.has(v.uid)) ?? null : null} onClose={() => setShowWeather(false)}
-            mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }} grid={weatherField.grid} />
-        </ErrorBoundary>}
-        {/* a situation runner's status (make situation): shown only while one has posted it */}
-        {situation.s && situation.time && (
-          <ErrorBoundary name="Situation" className="floating">
-            <SituationPanel s={situation.s} time={situation.time} decisions={decisions} nameOf={nameOf} />
-          </ErrorBoundary>
-        )}
         {/* the tutorial's coach card (sim/situations/tutorial.toml): only while the situation running is the tutorial */}
         <ErrorBoundary name="Tutorial" className="floating">
           <Tutorial situation={situation.s ?? null} decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} placeOf={placeOfCallsign} onFit={fitPoints} />
         </ErrorBoundary>
-        {!drawer && banners}
+        {showBanners && banners}
         {groupsOnMap && (
           <ErrorBoundary name="Group strip" className="floating">
-            <GroupStrip marks={marks.list} states={groupStates} selected={swarmSel} hovered={hoverGroup ?? flashGroup} onHover={setHoverGroup} onShow={showGroup} drawer={drawer != null} />
+            <GroupStrip marks={marks.list} states={groupStates} selected={swarmSel} hovered={hoverGroup ?? flashGroup} onHover={setHoverGroup} onShow={showGroup} drawer={docked} />
           </ErrorBoundary>
         )}
-        {showSpace && (
-          <ErrorBoundary name="Globe" className="floating">
-          <GlobeInset
-            center={mapView?.center ?? null}
-            area={catalog.data?.area ?? null}
-            links={linksNow.data?.links ?? []}
-            norad={spaceSel.norad}
-            onClose={closeSpace}
-          />
-          </ErrorBoundary>
-        )}
+        {/* the Space timeline: a full-width sheet docked at the map's bottom (the floating panels
+            keep above it) */}
         {showSpace && (
           <ErrorBoundary name="Space panel" className="floating">
-          <SpacePanel
-            catalog={catalog.data}
-            catalogError={catalog.error}
-            mapBounds={mapView?.bounds ?? null}
-            box={drawing && drawing !== 'start' ? null : box}
-            drawing={drawing != null}
-            onDrawBox={() => setDrawing('start')}
-            onClearBox={() => setBox(null)}
-            onSelect={setSpaceSel}
-            space={spaceRuns}
-            bridgeNow={now}
-            onIntent={openIntent}
-            onClose={closeSpace}
-          />
-          </ErrorBoundary>
-        )}
-        {showInbox && (
-          <ErrorBoundary name="Inbox" className="floating">
-          <InboxPanel
-            banners={banners}
-            decisions={decisions}
-            vehicles={allVehicles}
-            now={now}
-            tab={inboxTab}
-            setTab={setInboxTab}
-            selection={inboxSel}
-            onFocus={focusInbox}
-            onClose={() => setDock((d) => closeDock(d, 'inbox'))}
-            mem={alertMem}
-            hidden={hiddenAlerts}
-            settled={settled}
-            notice={inboxNotice}
-            focus={reviewFocus}
-            onReplace={(i) => setEngageForm({ replaces: i.id })}
-            cause={(i) => {
-              const link = turnOf(i, taskingApi.items)
-              return link ? <TurnCause link={link} onShow={() => setDock('officer')} /> : null
-            }}
-            taskings={state?.taskings}
-            tracks={tracks?.tracks}
-            onTrack={(id) => {
-              setDock((d) => closeDock(d, 'inbox'))
-              revealTrackId(id)
-              const t = tracks?.tracks.find((x) => x.id === id)
-              if (t) focusTrack(t)
-            }}
-          />
-          </ErrorBoundary>
-        )}
-        {showQueue && (
-          <ErrorBoundary name="Queue" className="floating">
-          <QueuePanel
-            banners={dockHead}
-            decisions={decisions}
-            vehicles={vehicles}
-            now={now}
-            onFocus={(uids) => {
-              setSelected(new Set(uids))
-              revealVehicles(uids)
-              const pts = uids.map((u) => vehicles.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
-              if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
-            }}
-            onClose={() => setDock((d) => closeDock(d, 'queue'))}
-          />
-          </ErrorBoundary>
-        )}
-        {showTasking && (
-          <ErrorBoundary name="Watch officer" className="floating">
-            <TaskingPanel
-              api={taskingApi}
-              now={now}
-              banners={dockHead}
-              onClose={() => setDock((d) => closeDock(d, 'officer'))}
-              compose={<OfficerCompose api={taskingApi} draft={officerDraft} setDraft={setOfficerDraft} inserts={composeInserts} />}
-              groups={groupsApi.groups}
-              intents={allIntents ?? NO_INTENTS}
-              // an order the officer proposed for a request: its card, in the Inbox while it waits
+            <SpacePanel
+              catalog={catalog.data}
+              catalogError={catalog.error}
+              mapBounds={mapView?.bounds ?? null}
+              box={drawing && drawing !== 'start' ? null : box}
+              drawing={drawing != null}
+              onDrawBox={() => setDrawing('start')}
+              onClearBox={() => setBox(null)}
+              onSelect={setSpaceSel}
+              space={spaceRuns}
+              bridgeNow={now}
               onIntent={openIntent}
-              onGroup={(uids) => {
-                // a group the officer made for it: its members selected, nothing sent
-                setSelected(new Set(uids))
-                revealVehicles(uids)
-              }}
+              onClose={closeSpace}
             />
           </ErrorBoundary>
         )}
-        {showSitrep && (
-          <ErrorBoundary name="Sitrep" className="floating">
-            <Sitrep
-              banners={dockHead}
-              vehicles={vehicles}
-              taskings={state?.taskings ?? NO_TASKINGS}
-              swarms={swarmFeed.doc?.swarms ?? NO_SWARMS}
-              marks={marks}
-              groups={groupsApi.groups}
-              damaged={damagedUids}
-              onVehicle={(uid) => {
-                // its details, as a click on its fleet row opens them (the map flies there); they
-                // open over the map's left edge, under this wide drawer, so the report gives way
-                setDock((d) => closeDock(d, 'sitrep'))
-                setDetailsUid(uid)
-                setFollowing(true)
-                setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
-              }}
-              onSelect={(uids) => {
-                setSelected(new Set(uids))
-                revealVehicles(uids)
-              }}
-              onClose={() => setDock((d) => closeDock(d, 'sitrep'))}
-            />
-          </ErrorBoundary>
-        )}
-        {showSwarms && (
-          <ErrorBoundary name="Swarms" className="floating">
-          <SwarmsPanel
-            banners={dockHead}
-            feed={swarmFeed}
-            selected={swarmSel}
-            focus={swarmFocus}
-            hovered={hoverGroup}
-            onHover={setHoverGroup}
-            alerts={decisions?.inbox.swarm_alerts ?? []}
-            groups={{
-              api: groupsApi,
-              selected,
-              present: presentUids,
-              nameOf: (uid) => nameOf(String(uid)),
-              onSelect: (uids) => {
-                // a group of yours is a named selection: the order form then commands it
-                setSelected(new Set(uids))
-                revealVehicles(uids)
-                const pts = allVehicles.flatMap((v) => (v.position && uids.includes(v.uid) ? [v.position] : []))
-                if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
-              },
-            }}
-            onSelect={(sw) => {
-              // every member, so the order form sends one intent to the whole swarm
-              setSelected(new Set(sw.members))
-              revealVehicles(sw.members)
-              const pts = sw.hull && sw.hull.length ? sw.hull : sw.centroid ? [sw.centroid] : []
-              if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
-            }}
-            onClose={() => setDock((d) => closeDock(d, 'swarms'))}
-            heard={(uid) => {
-              const v = allVehicles.find((x) => String(x.uid) === uid)
-              return v != null && !isStale(v)
-            }}
-          />
-          </ErrorBoundary>
-        )}
-        {detailsUid != null && byUidDetails(vehicles, detailsUid) && (
-          <ErrorBoundary name="Vehicle details" className="floating">
-          <VehicleDetailsWhenFull
-            v={byUidDetails(vehicles, detailsUid)!}
-            taskings={taskings}
-            intents={allIntents}
-            reach={reach.data}
-            exceptions={exceptions}
-            now={now}
-            selected={selected.has(detailsUid)}
-            onToggleSelect={() => toggleOutside(detailsUid)}
-            onClose={() => setDetailsUid(null)}
-            following={following}
-            onFollow={() => {
-              setFollowing(true)
-              setFocus((f) => ({ uid: detailsUid, n: (f?.n ?? 0) + 1 }))
-            }}
-            onEngage={() => setEngageForm({ uid: detailsUid })}
-            nodeLoss={nodeLoss}
-            nodeRow={nodeRows.get(detailsUid)}
-            onReview={openWaiting}
-            nameOf={nameOf}
-          />
-          </ErrorBoundary>
-        )}
+        {/* the drawer docked over the map's right edge (Cockpit: the dock's), a direct child: the
+            floating panels' area stops at it (floating.ts measureMap) */}
+        {slot.drawer}
         {drawing && <div className="banner info">Click two opposite corners of the collection box. Esc cancels.</div>}
-        {showPlatforms && (
-          <ErrorBoundary name="Platforms" className="floating">
-          <PlatformsPanel
-            onClose={() => setShowPlatforms(false)}
-            onFocus={(uid) => {
-              setSelected(new Set([uid]))
-              revealVehicles([uid])
-              setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
-              setShowPlatforms(false)
-            }}
-          />
-          </ErrorBoundary>
-        )}
         {status !== 'live' && (
           <div className="banner" role="status">Lost contact with the bridge: reconnecting</div>
         )}
         {PERF_ON && <PerfOverlay />}
       </main>
-      <div className="rail">
-        <div className="tk-slot">
-          <ErrorBoundary name="Tracks" className="slot">
-          <TracksPanel
-            tracks={tracks}
-            vehicles={allVehicles}
-            now={now}
-            selected={selectedTrack}
-            onSelect={setSelectedTrack}
-            onFocus={focusTrack}
-            collapsed={tracksCollapsed}
-            onCollapse={() => setTracksCollapsed((v) => !v)}
-            reveal={revealTrack}
-            onEngage={(track) => setEngageForm({ track })}
-            intents={allIntents}
-            onOpenEngagement={openEngagement}
-            blocking={decisions?.inbox.blocking}
-            settled={settled}
-            focus={trackFocus}
-            crowded={crowded}
-          />
-          </ErrorBoundary>
-        </div>
-        <ErrorBoundary name="Task panel" className="slot tasking">
+    )
+  }
+
+  const parts: ConsoleParts = {
+    bar,
+    // the one strip: only while something alone holds up a step (R8)
+    waiting: <WaitingStrip items={waiting} onOpen={openWaiting} victim={actVictim} />,
+    fleet: (
+      <ErrorBoundary name="Fleet list" className="slot fleet">
+        <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle}
+          onDeselect={deselect}
+          detailsUid={detailsUid}
+          onDetails={(uid) => {
+            // a second click on the same row closes it; opening flies the map there
+            setDetailsUid((d) => (d === uid ? null : uid))
+            if (detailsUid !== uid) {
+              setFollowing(true)
+              setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
+            }
+          }}
+          onSelect={(ids) => setSelected(new Set(ids))}
+          groups={groupsApi}
+          reveal={revealVeh}
+          swarms={swarmFeed.doc?.swarms}
+          taskings={state?.taskings}
+          intents={allIntents}
+          damaged={damagedUids}
+          alerted={alertedUids}
+          exceptions={exceptions}
+        />
+      </ErrorBoundary>
+    ),
+    tracks: (
+      <ErrorBoundary name="Tracks" className="slot">
+        <TracksPanel
+          tracks={tracks}
+          vehicles={allVehicles}
+          now={now}
+          selected={selectedTrack}
+          onSelect={setSelectedTrack}
+          onFocus={focusTrack}
+          collapsed={tracksCollapsed}
+          onCollapse={() => setTracksCollapsed((v) => !v)}
+          reveal={revealTrack}
+          onEngage={(track) => setEngageForm({ track })}
+          intents={allIntents}
+          onOpenEngagement={openEngagement}
+          blocking={decisions?.inbox.blocking}
+          settled={settled}
+          focus={trackFocus}
+          crowded={crowded}
+        />
+      </ErrorBoundary>
+    ),
+    command: (
+      <ErrorBoundary name="Task panel" className="slot tasking">
         <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} groupLabel={groupLabel} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} />
-        </ErrorBoundary>
-        {/* the nomination form (Phase E) takes the rail while open: the map keeps its preview and the inbox stays clear */}
+      </ErrorBoundary>
+    ),
+    // the nomination form (Phase E) takes the rail while open: the map keeps its preview and the
+    // inbox stays clear. Its header drags it out over the map (FloatingPanel.tsx); a double-click
+    // there docks it again.
+    nominate: (
+      <FloatLayer kind="rail" over={mapRef}>
         {engageForm && (
-          <ErrorBoundary name="Engagement" className="floating">
-          <EngagePanel
-            // a Replace from a card starts the form afresh on that nomination's plan
-            key={engageForm.replaces != null ? `replace-${engageForm.replaces}` : 'nominate'}
-            tracks={tracks}
-            vehicles={vehicles}
-            now={now}
-            initial={engageForm}
-            intents={allIntents ?? []}
-            onPreview={setEngageDraft}
-            onKeepOuts={setEngageKeepOuts}
-            onChecks={setEngageChecks}
-            onNominated={(id, replaced) => {
-              if (replaced != null) setInboxNotice({ n: Date.now(), text: `i${replaced} replaced by i${id}`, tone: 'ok' })
-              setEngageForm(null)
-              setEngageDraft(null)
-              setEngageKeepOuts(null)
-              setDock('inbox')
-              setInboxTab('inbox')
-              setInboxSel({ kind: 'intent', id })
-            }}
-            onClose={() => {
-              setEngageForm(null)
-              setEngageDraft(null)
-              setEngageKeepOuts(null)
-            }}
-          />
-          </ErrorBoundary>
+          <FloatingPanel id="nominate" prefer="top-right" docked>
+            <ErrorBoundary name="Engagement" className="floating">
+              <EngagePanel
+                // a Replace from a card starts the form afresh on that nomination's plan
+                key={engageForm.replaces != null ? `replace-${engageForm.replaces}` : 'nominate'}
+                tracks={tracks}
+                vehicles={vehicles}
+                now={now}
+                initial={engageForm}
+                intents={allIntents ?? []}
+                onPreview={setEngageDraft}
+                onKeepOuts={setEngageKeepOuts}
+                onChecks={setEngageChecks}
+                onNominated={(id, replaced) => {
+                  if (replaced != null) setInboxNotice({ n: Date.now(), text: `i${replaced} replaced by i${id}`, tone: 'ok' })
+                  setEngageForm(null)
+                  setEngageDraft(null)
+                  setEngageKeepOuts(null)
+                  setDock('inbox')
+                  setInboxTab('inbox')
+                  setInboxSel({ kind: 'intent', id })
+                }}
+                onClose={() => {
+                  setEngageForm(null)
+                  setEngageDraft(null)
+                  setEngageKeepOuts(null)
+                }}
+              />
+            </ErrorBoundary>
+          </FloatingPanel>
         )}
-      </div>
+      </FloatLayer>
+    ),
+    map: renderMap,
+    dock: { open: dock, drawer, toggle: (id) => setDock((d) => toggleDock(d, id)), show: setDock },
+    inbox,
+    banners,
+    facts: {
+      vehicles: glance.ours,
+      selected: selected.size,
+      situation: !!(situation.s && situation.time),
+      needsYou: needs,
+      urgent,
+      waiting: waiting.length > 0,
+      drawerOpen: dock != null,
+      live: status === 'live',
+      glance,
+      trouble,
+      reveal: { fleet: revealVeh, tracks: revealTrack },
+      orders: { taskings, intents: allIntents ?? null },
+      watch: situation.s?.watch.length ? watchParts(situation.s.watch[situation.s.watch.length - 1]).headline : null,
+      trackShown: revealTrack,
+    },
+    act: { showVehicle, selectVehicles, showTrack, focusInbox, openIntent, openReview: openWaiting, openEngagement, fit: fitPoints },
+  }
+
+  // the root: the layout's name on it, so each layout's CSS keeps to its own (layouts/parts.ts)
+  return (
+    <div className={`app${waiting.length ? ' waiting' : ''}`} data-layout={LAYOUT}>
+      <PerfMark />
+      <ShownLayout parts={parts} />
     </div>
   )
 }

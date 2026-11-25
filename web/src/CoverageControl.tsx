@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ALT_PRESETS, CLASSES, GRID_BUDGET, gridRequest, gridUrl, SAT_GRID_BUDGET, satcomClass, STATE_RGB, type CoverageGrid, type GridTarget } from './coverage'
 import type { LngLat, Vehicle } from './types'
 import { callsign } from './types'
+import { useFloatBar } from './floating'
+import { FloatGrip } from './FloatingPanel'
 import './coverage.css'
 
 /** Asks the bridge for the grid of the view (coverage.ts gridRequest), again when the view
@@ -109,9 +111,11 @@ export function CoverageControl({
     if (c) pickAlt(c.alt, c.above)
   }
   const shownAlt = grid ? (grid.alt_ref === 'surface' ? `${grid.alt_m} m above surface` : fmtAlt(grid.alt_m, false)) : null
+  const bar = useFloatBar()
   return (
     <section className="cov" aria-label="Predicted link coverage">
-      <header className="cov-head">
+      <header className="cov-head" {...bar}>
+        <FloatGrip />
         <h3>Link coverage</h3>
         <span className="cov-pred" title="The link emulator's geometry, not what the links do now">
           predicted

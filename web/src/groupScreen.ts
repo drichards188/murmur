@@ -129,8 +129,8 @@ export function chipLine(m: Pick<GroupMark, 'parts'>): string {
 }
 
 /** A group chip's size, px, as swarms.css lays it out (IBM Plex Mono's advance is 0.6 em; the name
- *  is in the condensed sans, narrower, counted as mono to be safe): one line, two with an
- *  exception. */
+ *  and the exception line are in the condensed sans, narrower, counted as mono to be safe): one
+ *  line, two with an exception. */
 export function chipSize(m: Pick<GroupMark, 'code' | 'id' | 'name' | 'parts'>): { w: number; h: number } {
   const line1 = PAD_X + textWidth(m.code, 11) + 10 + 6 + textWidth(m.id, 14) + (m.name ? 6 + textWidth(chipName(m.name), 12) : 0) + PAD_X
   const text = chipLine(m)

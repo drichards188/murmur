@@ -1,0 +1,163 @@
+/* The decisions layout's own styles (Decisions.tsx), every rule under .app[data-layout=decisions]:
+   every layout's CSS loads whatever layout runs. What needs the person is the main column on the
+   left (the Inbox, standing), the map the stage on the right, the reference lists drawers over the
+   map's right edge on demand, the nomination form a column of its own while it is open. The type
+   tokens come from the console's type pass, with fallbacks until it lands. */
+
+/* the grid: the bar, then the column, the map and (while nominating) the form's column */
+.app[data-layout=decisions],
+.app.waiting[data-layout=decisions] {
+  /* the column takes the width its content needs now (a quiet state is narrow, a card wide), never
+     under 320 px nor over a third of the screen (560 px at most) */
+  --dc-col-w: fit-content(min(33vw, 560px));
+  --dc-nom-w: 0px;
+  grid-template-columns: var(--dc-col-w) minmax(0, 1fr) var(--dc-nom-w);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: 'top top top' 'needs map nom';
+}
+/* the nomination form open: its column, as wide as Cockpit's rail it docks on there */
+.app[data-layout=decisions]:has(> .dc-nom.on) { --dc-nom-w: 400px; }
+
+/* the top bar: brand, the run, the glance, then the lists and drawers, Views, who, time; one row
+   at every width down to 1280 px: the run's line gives way first, then the glance */
+.app[data-layout=decisions] .topbar { min-height: 44px; flex-wrap: nowrap; gap: 14px; padding: 0 14px; }
+.app[data-layout=decisions] .dc-run { display: flex; flex: 0 3 auto; min-width: 96px; max-width: 360px; }
+.app[data-layout=decisions] .dc-run > .sit-chip {
+  flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 10px;
+  background: none; border: 1px solid var(--line); border-radius: 3px; color: var(--muted);
+}
+.app[data-layout=decisions] .dc-run > .sit-chip:hover { background: var(--panel-2); }
+.app[data-layout=decisions] .dc-run .sit-chip-open { flex: 1 1 auto; align-self: stretch; overflow: hidden; color: inherit; }
+.app[data-layout=decisions] .dc-run .sit-chip-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.app[data-layout=decisions] .dc-run .sit-chip b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* the beat truncates before the title does */
+.app[data-layout=decisions] .dc-run .sit-chip-next { flex: 0 1000 auto; color: #aab6c3; }
+/* the glance and the operator keep their full width: the run's title and beat give way first */
+.app[data-layout=decisions] .dc-glance { display: flex; flex: 0 0 auto; min-width: 0; overflow: hidden; }
+.app[data-layout=decisions] .topbar > .op-badge, .app[data-layout=decisions] .topbar > .clock { flex: 0 0 auto; }
+.app[data-layout=decisions] .topbar .spacer { min-width: 0; }
+/* the lists (Fleet, Tracks, Log) and the dock's drawers: one group, a little room between the two */
+.app[data-layout=decisions] .dc-tabs-gap { flex: none; width: 8px; }
+@media (max-width: 1599px) {
+  .app[data-layout=decisions] .topbar { gap: 10px; padding: 0 10px; }
+}
+@media (max-width: 1399px) {
+  .app[data-layout=decisions] .topbar { gap: 8px; padding: 0 8px; }
+  .app[data-layout=decisions] .dc-tabs-gap { width: 4px; }
+  /* the run's title before its label: the word SITUATION gives way (the title and beat set their
+     own size in situation.css) */
+  .app[data-layout=decisions] .dc-run .sit-chip-open { gap: 0; font-size: 0; letter-spacing: 0; }
+  .app[data-layout=decisions] .dc-run .sit-chip-next,
+  .app[data-layout=decisions] .dc-run .sit-dot { margin-left: 8px; }
+}
+
+/* the main column: what waits on the person alone, then the Inbox, standing */
+.app[data-layout=decisions] .dc-col {
+  grid-area: needs; position: relative; display: flex; flex-direction: column; min-width: 320px; min-height: 0;
+  background: var(--panel); border-right: 1px solid var(--line);
+}
+/* the waiting strip at the column's head: its sentence under its tag and Open, not cut short */
+.app[data-layout=decisions] .dc-col > .wait-strip { flex: none; flex-wrap: wrap; row-gap: 6px; padding: 10px 16px; }
+.app[data-layout=decisions] .dc-col > .wait-strip .wait-line { order: 1; flex: 1 1 100%; white-space: normal; }
+.app[data-layout=decisions] .dc-col > .wait-strip .wait-open { margin-left: auto; }
+/* the Inbox as a column, not a drawer: in the flow, no shadow, no close (it never closes) */
+.app[data-layout=decisions] .dc-col > .ix {
+  position: static; z-index: auto; flex: 1 1 auto; min-height: 0; width: auto; max-width: none;
+  background: none; border-left: 0; box-shadow: none;
+}
+.app[data-layout=decisions] .dc-col .ix-top { min-height: 46px; padding: 8px 16px; }
+.app[data-layout=decisions] .dc-col .ix-top h2 { color: var(--text); }
+.app[data-layout=decisions] .dc-col .ix-top .close { display: none; }
+.app[data-layout=decisions] .dc-col .ix-banners { padding: 12px 16px 0; }
+.app[data-layout=decisions] .dc-col .ix-notices { padding: 8px 16px 0; }
+.app[data-layout=decisions] .dc-col .ix-scroll { padding: 0 16px 24px; }
+
+/* For information, folded under Needs you: its heading is the toggle */
+.app[data-layout=decisions] .dc-col[data-info=folded] .ix-scroll > .ix-h-quiet ~ :not(.dc-quiet) { display: none; }
+.app[data-layout=decisions] .dc-col .ix-scroll > .ix-h-quiet {
+  margin-top: 14px; padding: 6px 2px; border-radius: 3px; cursor: pointer; user-select: none;
+}
+.app[data-layout=decisions] .dc-col .ix-scroll > .ix-h-quiet::after {
+  content: 'Show'; margin-left: auto;
+  font: 500 var(--text-label, 0.75rem) var(--font-ui, var(--sans)); letter-spacing: 0.02em; text-transform: none; color: var(--muted);
+}
+.app[data-layout=decisions] .dc-col[data-info=open] .ix-scroll > .ix-h-quiet::after { content: 'Hide'; }
+.app[data-layout=decisions] .dc-col .ix-scroll > .ix-h-quiet:hover,
+.app[data-layout=decisions] .dc-col .ix-scroll > .ix-h-quiet:hover::after { color: var(--text); }
+.app[data-layout=decisions] .dc-col .ix-scroll > .ix-h-quiet:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* the column's quiet state (DecisionsQuiet.tsx): only where the Inbox says nothing needs you,
+   in place of that line, ahead of For information */
+.app[data-layout=decisions] .ix-scroll > .dc-quiet { display: none; order: -1; flex-direction: column; gap: 24px; padding: 28px 2px 8px; }
+.app[data-layout=decisions] .ix-scroll:has(> .ix-h:not(.ix-h-quiet) + .empty) > .dc-quiet { display: flex; }
+.app[data-layout=decisions] .ix-scroll:has(> .dc-quiet) > .ix-h:not(.ix-h-quiet):has(+ .empty),
+.app[data-layout=decisions] .ix-scroll:has(> .dc-quiet) > .ix-h:not(.ix-h-quiet) + .empty { display: none; }
+.app[data-layout=decisions] .dc-quiet-head { display: flex; flex-direction: column; gap: 6px; }
+.app[data-layout=decisions] .dc-quiet-h {
+  margin: 0; font: 600 var(--text-heading, 1.25rem)/1.2 var(--font-ui, var(--sans)); color: var(--text);
+}
+.app[data-layout=decisions] .dc-quiet-sub,
+.app[data-layout=decisions] .dc-quiet-watch p {
+  margin: 0; max-width: 52ch; font: var(--text-body, 0.875rem)/1.45 var(--font-ui, var(--sans));
+}
+.app[data-layout=decisions] .dc-quiet-sub { color: var(--muted); }
+.app[data-layout=decisions] .dc-quiet-watch { display: flex; flex-direction: column; gap: 6px; }
+.app[data-layout=decisions] .dc-quiet-watch p { color: var(--text); }
+.app[data-layout=decisions] .dc-label {
+  display: block; font: 600 var(--text-label, 0.75rem)/1.2 var(--font-ui, var(--sans));
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+}
+.app[data-layout=decisions] .dc-quiet-glance { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px 16px; margin: 0; }
+.app[data-layout=decisions] .dc-quiet-glance dd { margin: 0; font: var(--text-body, 0.875rem)/1.35 var(--font-ui, var(--sans)); color: #c8d0d9; }
+.app[data-layout=decisions] .dc-quiet-glance dd b { margin-right: 2px; font: 600 var(--text-body, 0.875rem) var(--font-data, var(--mono)); color: var(--text); }
+.app[data-layout=decisions] .dc-quiet-glance button:hover { background: var(--panel-2); }
+.app[data-layout=decisions] .dc-quiet-glance button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.app[data-layout=decisions] .dc-quiet-hint { margin: 0; font: var(--text-label, 0.75rem)/1.4 var(--font-ui, var(--sans)); color: var(--muted); }
+
+/* the reference lists over the map's right edge (`.ix`: placed by inbox.css and dock.css as
+   every drawer is), each list's own head with a close beside it */
+.app[data-layout=decisions] .dc-ref > .panel,
+.app[data-layout=decisions] .dc-ref > .tk { flex: 1 1 auto; min-height: 0; max-height: none; border: 0; }
+/* the order form taller than the drawer: the drawer scrolls (the log under it gives way first) */
+.app[data-layout=decisions] .dc-ref > .panel { overflow-y: auto; }
+.app[data-layout=decisions] .dc-ref > .crash { margin: 12px; }
+/* each list's empty line as it sits in Cockpit (the drawer's own `.ix .empty` is the Inbox's) */
+.app[data-layout=decisions] .dc-ref .empty { padding: 8px 16px; }
+.app[data-layout=decisions] .dc-ref .tk .empty { padding: 8px 4px; }
+/* a drawer closes rather than fold: the Tracks list's fold is not needed here */
+.app[data-layout=decisions] .dc-ref .tk-top .close { display: none; }
+.app[data-layout=decisions] .dc-ref > .panel > .panel-head:first-child,
+.app[data-layout=decisions] .dc-ref > .tk > .tk-top { min-height: 46px; padding-right: 84px; }
+.app[data-layout=decisions] .dc-ref > .panel > .panel-head.sub:first-child { border-top: 0; }
+.app[data-layout=decisions] .dc-ref-close { position: absolute; top: 11px; right: 12px; }
+.app[data-layout=decisions] .dc-ref-close:hover { background: var(--panel-2); }
+/* the dock's drawers over the map head with the banners and the orders waiting: here the column
+   holds both, always in view, so they are not said twice */
+.app[data-layout=decisions] .mapwrap .ix-banners { display: none; }
+
+/* the nomination form's column (empty and 0 wide until a nomination is opened) */
+.app[data-layout=decisions] .dc-nom { grid-area: nom; position: relative; min-width: 0; min-height: 0; }
+.app[data-layout=decisions] .dc-nom.on { background: var(--panel); border-left: 1px solid var(--line); }
+.app[data-layout=decisions] .dc-nom-hint {
+  margin: 0; padding: 24px 20px; max-width: 36ch;
+  font: var(--text-body, 0.875rem)/1.45 var(--font-ui, var(--sans)); color: var(--muted);
+}
+
+/* the Fleet and Tracks lists as one drawer in two halves (Decisions.tsx): ours above, the contacts
+   we do not control below, each its own scroll, the head of the top one clear of the Close button */
+.app[data-layout=decisions] .dc-split { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.app[data-layout=decisions] .dc-half { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.app[data-layout=decisions] .dc-half + .dc-half { border-top: 1px solid var(--line); }
+.app[data-layout=decisions] .dc-half > .panel,
+.app[data-layout=decisions] .dc-half > .tk { flex: 1 1 auto; min-height: 0; max-height: none; border: 0; grid-area: auto; }
+.app[data-layout=decisions] .dc-half > .panel { overflow-y: auto; }
+.app[data-layout=decisions] .dc-half > .panel > .panel-head:first-child,
+.app[data-layout=decisions] .dc-half > .tk > .tk-top { min-height: 40px; }
+.app[data-layout=decisions] .dc-half[data-half=fleet] > .panel > .panel-head:first-child { padding-right: 84px; }
+.app[data-layout=decisions] .dc-half .tk .empty { padding: 8px 14px; }
+
+/* the reference lists (Fleet and Tracks and the rest over the map's right edge) are 340 px, the
+   width the left column's list rows need, not the dock's 430 (inbox.css `.ix`); what sits beside
+   the drawer (dock.css `--dock-w`, `--dock-px`) follows it */
+.app[data-layout=decisions] .dc-ref { width: 340px; }
+.app[data-layout=decisions] .mapwrap.docked:has(> .dc-ref) { --dock-w: min(340px, 100%); --dock-px: 340px; }

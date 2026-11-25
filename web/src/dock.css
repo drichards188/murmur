@@ -7,13 +7,12 @@
 .mapwrap.docked { --dock-w: min(430px, 100%); --dock-px: 430px; }
 .mapwrap.docked .ix { z-index: 14; }
 
-/* beside the dock: the group strip, the weather details, the globe, the map's zoom and compass,
-   the perf overlay */
+/* beside the dock: the group strip, the map's zoom and compass, the perf overlay, the graphics
+   banner. The floating panels (FloatingPanel.tsx) keep to the map less the drawer: one kept from
+   the map's right edge moves beside the drawer, and none is dragged under it. */
 /* (56 px: clear of the zoom buttons beside the dock, as the strip keeps clear of them undocked) */
 .mapwrap.docked .gstrip.drawer { right: calc(var(--dock-w) + 56px); max-width: calc(100% - var(--dock-w) - 450px); }
-.mapwrap.docked .weather-panel,
 .mapwrap.docked .banner.gl-banner { right: calc(var(--dock-w) + 16px); }
-.mapwrap.docked .globe { right: calc(var(--dock-w) + 12px); }
 /* (in px: a percentage in a transform is the control's own width) */
 .mapwrap.docked .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group { transform: translateX(calc(-1 * var(--dock-px))); }
 .mapwrap.docked .perf { right: calc(var(--dock-w) + 52px); }
@@ -26,12 +25,8 @@
 @container map (max-width: 1499px) {
   .mapwrap.docked.dock-wide .gstrip.drawer { bottom: 124px; max-width: calc(100% - var(--dock-w) - 68px); }
 }
-/* the map's left: the Situation panel, the vehicle details, the tutorial's card, the weather
-   legend and the link coverage control narrow to what the dock leaves */
-.mapwrap.docked .sit,
-.mapwrap.docked .sit-chip,
-.mapwrap.docked .vdetails,
-.mapwrap.docked .cov { max-width: max(220px, calc(100% - var(--dock-w) - 24px)); }
+/* the map's left: the tutorial's card and the weather legend narrow to what the dock leaves (the
+   floating panels narrow with their area) */
 .mapwrap.docked .tut { max-width: max(260px, calc(100% - var(--dock-w) - 24px)); }
 .mapwrap.docked .weather-legend { width: min(360px, max(220px, calc(100% - var(--dock-w) - 28px))); }
 .mapwrap.docked .weather-legend > div:first-child { flex-wrap: wrap; }
@@ -52,13 +47,11 @@
   .topbar { gap: 10px; padding: 0 10px; }
   .topbar .op-mark { max-width: 140px; }
   .topbar .platforms-btn { padding: 4px 8px; }
-  .topbar .brand { letter-spacing: 0.18em; }
 }
 @media (max-width: 1399px) {
   .topbar { gap: 6px; }
   .dock-tabs { gap: 2px; padding: 2px; }
   .topbar .platforms-btn { padding: 4px 6px; }
-  .topbar .brand { letter-spacing: 0.1em; }
   /* the last resort: a second row rather than a page that scrolls sideways or items on each other */
   .app { grid-template-rows: auto 1fr; }
   .app.waiting { grid-template-rows: auto auto 1fr; }
@@ -73,61 +66,61 @@
 /* Waiting for you (Awaiting.tsx): at the head of every drawer but the Inbox, in the approvals'
    violet. One line an order; a line opens its card in the Inbox. */
 .aw { display: flex; flex-direction: column; gap: 4px; padding: 7px 8px 8px; border: 1px solid #4b3a66; border-left: 3px solid var(--violet); border-radius: 4px; background: rgba(196, 155, 255, 0.06); }
-.aw-h { margin: 0 2px; display: flex; align-items: baseline; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--violet); }
-.aw-h span { font-family: var(--mono); color: var(--text); }
+.aw-h { margin: 0 2px; display: flex; align-items: baseline; gap: 6px; font: 600 var(--text-label)/var(--leading-label) var(--font-ui); letter-spacing: var(--caps-tracking); text-transform: uppercase; color: var(--violet); }
+.aw-h span { font-family: var(--font-data); color: var(--text); }
 .aw-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .aw-row { width: 100%; display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 5px 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
 .aw-row:hover { border-color: #4b3a66; background: #1a2230; }
 .aw-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .aw-row.engage { border-color: #5a2a2a; }
-.aw-main { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: 12.5px; }
-.aw-what { flex: 1; min-width: 0; font: 12px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aw-main { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: var(--text-body); }
+.aw-what { flex: 1; min-width: 0; font: var(--text-body)/var(--leading-body) var(--font-ui); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .aw-main .ix-src { flex: none; }
-.aw-left { flex: none; font: 600 12px var(--mono); color: var(--text); }
+.aw-left { flex: none; font: 600 var(--text-body)/var(--leading-body) var(--font-data); font-variant-numeric: tabular-nums; color: var(--text); }
 .aw-left.urgent { color: var(--warn); }
 .aw-left.out { color: var(--bad); }
-.aw-more { align-self: flex-start; background: none; border: 0; padding: 1px 2px; font-size: 12px; color: var(--violet); text-decoration: underline; cursor: pointer; }
+.aw-more { align-self: flex-start; background: none; border: 0; padding: 1px 2px; font-size: var(--text-label); color: var(--violet); text-decoration: underline; cursor: pointer; }
 
 /* on an order's card in the Inbox: the guidance read in the turn that proposed it */
 .ix-turn { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 6px 10px; border: 1px dashed #4b3a66; border-radius: 3px; background: rgba(196, 155, 255, 0.04); }
 .ix-turn .ix-label { flex-basis: 100%; margin: 0; }
-.ix-turn-text { flex: 1; min-width: 0; font-size: 13px; color: #d8cdea; overflow-wrap: anywhere; }
+.ix-turn-text { flex: 1; min-width: 0; font-size: var(--text-body); color: #d8cdea; overflow-wrap: anywhere; }
 
 /* the message box (OfficerCompose.tsx), pinned under the officer's drawer head */
 .oc { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px; border-bottom: 1px solid var(--line); background: #0e141b; }
 .oc-text {
   width: 100%; resize: vertical; min-height: 62px; max-height: 40vh; field-sizing: content;
-  font: 13px/1.4 var(--sans); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px;
+  font: var(--text-body)/var(--leading-body) var(--font-ui); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px;
 }
 .oc-text::placeholder { color: var(--muted); }
 .oc-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
 .oc-text[aria-invalid='true'] { border-color: var(--bad); }
 .oc-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .oc-insert { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
-.oc-chip { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; font: 11px var(--mono); color: var(--accent); background: none; border: 1px solid #4a3a1f; border-radius: 10px; }
+.oc-chip { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; font: var(--text-label)/var(--leading-label) var(--font-data); color: var(--accent); background: none; border: 1px solid #4a3a1f; border-radius: 10px; }
 .oc-chip:hover:not(:disabled) { background: #221c12; }
 .oc-chip:disabled { color: var(--muted); border-color: var(--line); }
 .oc-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.oc-count { flex: none; margin-left: auto; font: 11.5px var(--mono); color: var(--muted); min-width: 52px; text-align: right; }
+.oc-count { flex: none; margin-left: auto; font: var(--text-label)/var(--leading-label) var(--font-data); color: var(--muted); min-width: 52px; text-align: right; }
 .oc-count.warn { color: var(--warn); }
 .oc-count.bad { color: var(--bad); }
-.oc-send { flex: none; margin-left: auto; padding: 5px 16px; font: 700 12px var(--sans); letter-spacing: 0.05em; color: #1a1205; background: var(--accent); border: 0; border-radius: 4px; }
+.oc-send { flex: none; margin-left: auto; padding: 5px 16px; font: 600 var(--text-body)/var(--leading-body) var(--font-ui); color: #1a1205; background: var(--accent); border: 0; border-radius: 4px; }
 .oc-send:disabled { color: var(--muted); background: var(--panel-2); }
 .oc-send:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
-.oc-why { margin: 0; font-size: 12px; line-height: 1.35; color: var(--warn); }
+.oc-why { margin: 0; font-size: var(--text-label); line-height: var(--leading-label); color: var(--warn); }
 .oc-why:empty { display: none; }
 
 /* the top bar's Layers (ViewsMenu.tsx): the map layers and panels, one click away, quiet */
 .views { position: relative; }
-.views-n { margin-left: 6px; font: 600 10.5px var(--mono); color: var(--muted); }
+.views-n { margin-left: 6px; font: 600 var(--text-label)/var(--leading-label) var(--font-data); color: var(--muted); }
 .platforms-btn.on .views-n { color: var(--bg); }
 .views-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; display: flex; flex-direction: column; min-width: 150px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
-.views-menu button { display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 6px; border: 0; border-radius: 4px; background: none; text-align: left; font-size: 13px; color: var(--text); }
+.views-menu button { display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 6px; border: 0; border-radius: 4px; background: none; text-align: left; font-size: var(--text-body); color: var(--text); }
 .views-menu button:hover { background: var(--panel-2); }
 .views-tick { width: 12px; color: var(--accent); }
 .views-menu button:disabled { color: var(--muted); cursor: default; }
 .views-menu button:disabled:hover { background: none; }
-.views-off { margin-left: auto; padding-left: 12px; font-size: 11px; color: var(--muted); }
+.views-off { margin-left: auto; padding-left: 12px; font-size: var(--text-label); color: var(--muted); }
 .oc-count + .oc-send { margin-left: 0; }
 
 .views-rule { margin: 4px 6px 2px; padding-top: 6px; border-top: 1px solid var(--line); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }

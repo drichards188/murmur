@@ -5,6 +5,7 @@ import { leftWords, queueShown, RECENT_MS, whyLine } from './queueWords'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 import './queue.css'
+import { OffButton } from './OffButton'
 
 /** The safe command queue (rules 5, murmur-5p4): orders that were approved but are held,
  *  not sent into a dead link, because a vehicle they are for can't be reached right now (a
@@ -39,7 +40,8 @@ function recentOf(decisions: Decisions | null, nowMs: number): Intent[] {
  *  nothing); the open drawer keeps its button so it can be closed. */
 export function QueueButton({ decisions, open, onClick, now }: { decisions: Decisions | null; open: boolean; onClick: () => void; now: () => number }) {
   const n = decisions?.inbox.queued?.length ?? 0
-  if (!queueShown(n, recentOf(decisions, now()).length, open)) return null
+  // nothing held and nothing just sent from it: the button stays, greyed, saying so
+  if (!queueShown(n, recentOf(decisions, now()).length, open)) return <OffButton label="Queue" off="nothing queued: an order the link cannot carry now would wait here" />
   const title = `${n} order${n === 1 ? '' : 's'} held for vehicles the link can't reach now`
   return (
     <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} aria-pressed={open} onClick={onClick} title={title} aria-label={`Queue: ${title}`}>

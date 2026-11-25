@@ -4,9 +4,10 @@
 // on top of each other, and the one shown is the one its button marks. What waits for a person
 // stays in sight whichever is shown (Awaiting.tsx at the head of every drawer but the Inbox, the
 // Inbox button's badges, the waiting strip across the top), and everything else anchored to the
-// map's right edge (the group strip, the weather details, the globe, the map's zoom buttons) sits beside the dock, `--dock-w` from that edge. The vehicle details, the
-// Situation panel and the tutorial's card keep to the map's left and give way to the dock rather
-// than lie under it. The Officer tab is there only where the run's AI takes requests (officer.ts
+// map's right edge sits beside the dock: the group strip and the map's zoom buttons `--dock-w` from
+// that edge, the floating panels (Weather, the globe, FloatingPanel.tsx) because their area stops
+// at the drawer. The floating panels on the map's left and the tutorial's card give way to the dock
+// rather than lie under it. The Officer tab is there only where the run's AI takes requests (officer.ts
 // `officerShown`): a situation's model officer, or in the open world one that has read the tasking.
 // Pure: dock.check.ts.
 

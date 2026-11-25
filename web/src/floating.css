@@ -1,0 +1,31 @@
+/* The floating panels (FloatingPanel.tsx): each sits where floatPlace.ts puts it or the person
+   drags it, by the bar at its top (its header row, a grip mark at its start). The panels keep their
+   own widths; the height each takes is the room from its spot to the area's far edge. */
+.floats { position: absolute; inset: 0; pointer-events: none; }
+/* the map's: over the map's canvas and labels, under its banners (8), the tutorial's coach card (9),
+   the weather bar (12) and a docked drawer (14), so an alarm is never under a panel */
+.floats.map { z-index: 7; }
+/* the nomination form's: over the rail as the form always was, reaching left over the map (its left
+   set by floating.ts measureRail) so the form can be dragged out there */
+.floats.rail { z-index: 6; overflow: hidden; }
+
+.float { position: absolute; display: flex; flex-direction: column; pointer-events: auto; }
+.float > * { flex: 0 1 auto; min-height: 0; max-width: 100%; }
+/* measured, then placed, before the browser paints it */
+.float.placing { visibility: hidden; }
+/* the nomination form in the rail, until it is dragged out (its place measured; this until then) */
+.float.docked { top: 0; right: 0; bottom: 0; width: 400px; }
+.float.docked > * { flex: 1 1 auto; }
+/* a panel that crashed (ErrorBoundary) shows its banner where the panel was */
+.float > .crash { position: static; transform: none; max-width: none; width: 320px; }
+
+/* the bar: it shows it can be dragged; its buttons and fields work as before */
+[data-float-bar] { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+[data-float-bar] :is(input, select, textarea) { cursor: auto; }
+.float.dragging [data-float-bar] { cursor: grabbing; }
+.float-grip {
+  flex: none; align-self: center; width: 8px; height: 12px; opacity: 0.6;
+  background: radial-gradient(circle, var(--muted) 1px, transparent 1.4px) 0 0 / 4px 4px;
+}
+[data-float-bar]:hover .float-grip,
+.float.dragging .float-grip { opacity: 1; }

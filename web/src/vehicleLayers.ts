@@ -31,7 +31,7 @@
 // Picking ('vehicles', 'vehicle-callsigns', 'vehicle-aloft') drives click to select and right
 // click to deselect.
 import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
-import { centred, type LabelCandidate, type LabelLevel, type Priority, rightOf } from './declutter'
+import { type Box, centred, type LabelCandidate, type LabelLevel, type Priority, rightOf } from './declutter'
 import { drawnTick, drawnXYZ, lastKnownAlt } from './drawn'
 import { HEIGHT_EXAGGERATION, NO_NEAR_GROWTH } from './map3d'
 import { emuCause } from './linkEmu'
@@ -79,6 +79,14 @@ export function heightLabel(v: Vehicle): string | null {
   return last == null ? unknown : `${unknown} (last ${fmt(last)})`
 }
 
+/** a node's id as the map shows it under its callsign: its fleet uid, the id the Fleet list and the
+ *  orders name it by */
+export function idLine(v: Pick<Vehicle, 'uid'>): string {
+  return `id ${v.uid}`
+}
+/** px one id line adds to a vehicle label's box */
+const ID_LINE_PX = 11
+
 /** Callsign and height or depth: "PUMA 2 · 120 m", "AUV 1 · 35.0 m dp", "MAGURA 1". */
 export function vehicleLabel(v: Vehicle): string {
   const h = heightLabel(v)
@@ -93,9 +101,12 @@ export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, 
   const stale = isStale(v)
   const icon = frameIcon(v, stale)
   const text = focused ? vehicleLabel(v) : callsign(v)
+  // the node's id sits on a line under its callsign (idLine), so each box is a line taller
+  const aloftBox = (t: string): Box => { const b = centred(t, 11, -8, 5); return [b[0], b[1] - ID_LINE_PX, b[2], b[3]] }
+  const rightBox = (t: string): Box => { const b = rightOf(icon.halfW, t, 12); return [b[0], b[1], b[2], b[3] + ID_LINE_PX] }
   const out: LabelCandidate[] = aloft
-    ? [{ key: `v:${v.uid}`, at, short: centred(`▲ ${callsign(v)}`, 11, -8, 5), full: centred(`▲ ${text}`, 11, -8, 5), priority, force: focused }]
-    : [{ key: `v:${v.uid}`, at, short: rightOf(icon.halfW, callsign(v), 12), full: rightOf(icon.halfW, text, 12), priority, force: focused }]
+    ? [{ key: `v:${v.uid}`, at, short: aloftBox(`▲ ${callsign(v)}`), full: aloftBox(`▲ ${text}`), priority, force: focused }]
+    : [{ key: `v:${v.uid}`, at, short: rightBox(callsign(v)), full: rightBox(text), priority, force: focused }]
   const x = aloft ? null : exceptionOf(v, exceptions ?? NO_EXCEPTIONS, emuCause)
   if (x) {
     const badge = centred(x.text, 10, icon.halfH + 4, 5)
@@ -343,6 +354,26 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({
+      id: 'vehicle-ids',
+      data: labelled,
+      getPosition: at,
+      getText: idLine,
+      getSize: 10,
+      getColor: (v) => (isStale(v) ? TEXT_STALE : [...TEXT.slice(0, 3), 190] as RGBA),
+      getTextAnchor: 'start',
+      getAlignmentBaseline: 'center',
+      getPixelOffset: (v) => [frameIcon(v, isStale(v)).halfW + 4, 12],
+      fontFamily: FONT,
+      fontWeight: 500,
+      outlineWidth: 3,
+      outlineColor: OUTLINE,
+      fontSettings: FONT_SETTINGS,
+      characterSet: 'auto',
+      updateTriggers: posTrigger,
+      extensions: NO_NEAR_GROWTH,
+      parameters: onTop,
+    }),
+    new TextLayer<Vehicle>({
       id: 'vehicle-exception',
       data: slotted,
       getPosition: at,
@@ -390,7 +421,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       data: aloft,
       pickable: true,
       getPosition: foot,
-      getText: (v) => `▲ ${full(v) ? vehicleLabel(v) : callsign(v)}`,
+      getText: (v) => `▲ ${full(v) ? vehicleLabel(v) : callsign(v)}\n${idLine(v)}`,
       getSize: 11,
       getColor: tint,
       getTextAnchor: 'middle',

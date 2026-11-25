@@ -4,8 +4,8 @@
 .rf-lines { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
 .rf-lines > li.fail { color: #ff9d9d; }
 .rf-lines > li.warn { color: var(--warn); }
-.rf-hint { display: block; color: #d9c6a0; font-size: 12px; margin-top: 2px; }
-.rf-members { font-size: 12px; margin-top: 2px; }
+.rf-hint { display: block; color: #d9c6a0; font-size: var(--text-label); margin-top: 2px; }
+.rf-members { font-size: var(--text-label); margin-top: 2px; }
 .rf-members summary { cursor: pointer; opacity: .8; }
 .rf-members ul { margin: 3px 0 0; padding-left: 16px; max-height: 160px; overflow: auto; }
 .rf-members li { color: inherit; }

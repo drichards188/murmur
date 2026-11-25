@@ -5,7 +5,7 @@
   width: max-content; max-width: min(680px, calc(100% - 32px)); padding: 10px 13px;
   color: #fff1db; background: rgba(30, 18, 15, .96); border: 1px solid #ffac61;
   border-radius: 5px; box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(255, 121, 46, .35);
-  font: 600 13px/1.25 var(--mono);
+  font: 600 var(--text-body)/var(--leading-title) var(--font-ui);
 }
 .impact-status strong { color: #ffbf79; }
 .impact-status button { flex: none; border: 1px solid #ffbf79; background: #3e271b; border-radius: 3px; padding: 5px 8px; font: inherit; }

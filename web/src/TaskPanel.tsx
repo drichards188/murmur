@@ -140,7 +140,7 @@ const TaskingCard = memo(
         <>
         <div className="tcard-head">
           <strong>{label}</strong>
-          <span className="muted" title={numTitle}>
+          <span className="ix-id" title={numTitle}>
             {num}
           </span>
           {t.ops.length > OPS_FOLD && <span className="muted">{t.ops.length} vehicles</span>}

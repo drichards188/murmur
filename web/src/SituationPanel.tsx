@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import type { Decisions } from './decisions'
+import { useFloatBar } from './floating'
+import { FloatGrip } from './FloatingPanel'
 import { Bluf } from './Bluf'
 import { watchParts } from './bluf'
 import { setScriptedBadges } from './situationIds'
@@ -96,15 +98,19 @@ export function SituationPanel({
   time,
   decisions,
   nameOf,
+  open,
+  onOpen,
 }: {
+  /** the panel open, or closed to its chip (the console holds it: its floating place follows it) */
+  open: boolean
+  onOpen: (open: boolean) => void
   s: SituationStatus
   time: SituationTime
   decisions: Decisions | null
   /** one of ours by its uid (its callsign), for the engine's words the panel shows */
   nameOf?: (uid: string) => string
 }) {
-  // closed to its chip at the start (one line at the glance; the panel a click away)
-  const [open, setOpen] = useState(false)
+  const bar = useFloatBar()
   // the Inbox badges a scripted id's card (kept outside React: a few ids, display only)
   const badges = s.scripted
   useEffect(() => setScriptedBadges(badges), [badges])
@@ -127,21 +133,25 @@ export function SituationPanel({
   if (!open) {
     const head = latestWatch ? watchParts(latestWatch).headline : null
     return (
-      <button className="sit-chip" onClick={() => setOpen(true)} title="Show the situation panel: what this run is, your job, what to watch for">
-        SITUATION <b>{s.title}</b>
-        {head && <span className="sit-chip-next">{head}</span>}
-        {latestWatch && fresh(latestWatch.at_s) && <i className="sit-dot" aria-label="new item to watch for" />}
-      </button>
+      <div className="sit-chip" {...bar}>
+        <FloatGrip />
+        <button className="sit-chip-open" onClick={() => onOpen(true)} title="Show the situation panel: what this run is, your job, what to watch for">
+          SITUATION <b>{s.title}</b>
+          {head && <span className="sit-chip-next">{head}</span>}
+          {latestWatch && fresh(latestWatch.at_s) && <i className="sit-dot" aria-label="new item to watch for" />}
+        </button>
+      </div>
     )
   }
 
   const earlier = watch.slice(1)
   return (
     <aside className="sit" aria-label="Situation">
-      <div className="sit-top">
+      <div className="sit-top" {...bar}>
+        <FloatGrip />
         <span className="sit-label">Situation</span>
         <h2>{s.title}</h2>
-        <button className="ghost close" onClick={() => setOpen(false)} aria-label="Collapse the situation panel" title="Collapse">
+        <button className="ghost close" onClick={() => onOpen(false)} aria-label="Collapse the situation panel" title="Collapse">
           –
         </button>
       </div>

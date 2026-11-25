@@ -1,9 +1,9 @@
 /* the command surface at scale (TaskPanel.tsx, FleetPanel.tsx; commandModel.ts) */
 
 /* the fleet list's selection bar, with a selection: how many, and Clear */
-.fleet-sel { display: flex; align-items: center; gap: 8px; padding: 4px 10px 6px; font: 11.5px var(--mono); color: var(--muted); }
+.fleet-sel { display: flex; align-items: center; gap: 8px; padding: 4px 10px 6px; font: var(--text-label)/var(--leading-label) var(--font-ui); font-variant-numeric: tabular-nums; color: var(--muted); }
 .fleet-sel b { color: var(--accent); font-weight: 600; }
-.fleet-sel button { font-size: 11px; padding: 1px 7px; }
+.fleet-sel button { font-size: var(--text-label); padding: 1px 7px; }
 /* the one Select menu (all, a domain, a kind), in the list's header */
-.fleet-pick { margin-left: auto; max-width: 60%; font: 11.5px var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.fleet-pick { margin-left: auto; max-width: 60%; font: var(--text-body)/var(--leading-body) var(--font-ui); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
 .fleet-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

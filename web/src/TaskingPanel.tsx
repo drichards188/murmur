@@ -7,6 +7,7 @@ import { proposedIn } from './officer'
 import { awaitsReply, BOUNDARY, deliveryOf, lastReply, officerOf, outcomeView, split, type Reply, type TaskingItem } from './tasking'
 import type { TaskingApi } from './useTasking'
 import './tasking.css'
+import { OffButton } from './OffButton'
 
 /** The AI watch officer's drawer: what the operator asked of it, what it made of each request (its
  *  reply, the intents it proposed and the groups it made), and retiring what no longer applies. A
@@ -14,8 +15,9 @@ import './tasking.css'
  *  decision (BOUNDARY says so where it is written); it reaches the officer only through the bridge,
  *  is not logged in the audit log, and no decision reads it or the officer's reply. */
 
-export function TaskingButton({ api, open, onClick }: { api: TaskingApi; open: boolean; onClick: () => void }) {
-  if (api.status === 'missing') return null
+/** `off`: why this run has no officer to ask (the button stays, greyed, saying so). */
+export function TaskingButton({ api, open, onClick, off = null }: { api: TaskingApi; open: boolean; onClick: () => void; off?: string | null }) {
+  if (off && !open) return <OffButton label="Officer" off={off} />
   const n = api.items.filter((i) => i.active).length
   const officer = officerOf(api.reader)
   return (

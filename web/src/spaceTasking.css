@@ -3,12 +3,12 @@
 .tcard.sr.done { border-left-color: var(--ok); }
 .tcard.sr.failed { border-left-color: var(--bad); }
 .tcard.sr .tcard-head { align-items: center; }
-.sr-link { font: 11px var(--mono); padding: 0 5px; }
+.sr-link { font: var(--text-label)/var(--leading-label) var(--font-data); padding: 0 5px; }
 .sr-sat { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .sr-bad { color: var(--bad); }
 .sr-first { grid-column: 2; }
-.sr-badge { margin-left: auto; font: 600 10px var(--mono); letter-spacing: 0.08em; padding: 2px 6px; border-radius: 3px; background: #1c2733; color: var(--muted); }
-.sr-cancel { font: 11px var(--mono); padding: 0 6px; margin-left: 4px; }
+.sr-badge { margin-left: auto; font: 600 var(--text-label)/var(--leading-label) var(--font-ui); letter-spacing: var(--caps-tracking); text-transform: uppercase; padding: 2px 6px; border-radius: 3px; background: #1c2733; color: var(--muted); }
+.sr-cancel { font: var(--text-label)/var(--leading-label) var(--font-ui); padding: 0 6px; margin-left: 4px; }
 .sr-badge.bad { background: var(--bad); color: #1a0606; }
 
 /* the space timeline: tasked collects (diamond at collect, bar to product) and cover watches */
@@ -30,14 +30,14 @@
 .sr-product .opt-notes { grid-column: 2 / -1; }
 
 /* collection and coverage forms */
-.sr-result { font-size: 12px; border-radius: 3px; padding: 6px 8px; background: var(--panel-2); border-left: 3px solid var(--ok); display: flex; flex-direction: column; gap: 3px; }
+.sr-result { font-size: var(--text-body); border-radius: 3px; padding: 6px 8px; background: var(--panel-2); border-left: 3px solid var(--ok); display: flex; flex-direction: column; gap: 3px; }
 .sr-result.wait { border-left-color: var(--warn); }
 .sr-result.bad { border-left-color: var(--bad); }
 .sr-result ul { margin: 0; padding-left: 16px; }
-.sr-why { font-size: 11px; }
+.sr-why { font-size: var(--text-label); }
 .sr-watches { display: flex; flex-direction: column; gap: 6px; }
 
 /* inbox: a collect's option */
-.ix-collect { margin: 6px 0; display: grid; grid-template-columns: 92px 1fr; gap: 2px 8px; font-size: 12px; }
-.ix-collect dt { color: var(--muted); font: 600 10px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; padding-top: 2px; }
+.ix-collect { margin: 6px 0; display: grid; grid-template-columns: 92px 1fr; gap: 2px 8px; font-size: var(--text-body); }
+.ix-collect dt { color: var(--muted); font: 600 var(--text-label)/var(--leading-label) var(--font-ui); letter-spacing: var(--caps-tracking); text-transform: uppercase; padding-top: 2px; }
 .ix-collect dd { margin: 0; }

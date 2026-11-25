@@ -3,15 +3,15 @@
    declaration waits for a person; red: hostile). Buttons are alike on purpose: confirm and revoke
    carry the same weight, and the permissive act is never the easier one. */
 .dc { display: flex; flex-direction: column; gap: 5px; }
-.dc-head { margin: 0; font-size: 13px; font-weight: 600; line-height: 1.35; }
+.dc-head { margin: 0; font-size: var(--text-body); font-weight: 600; line-height: var(--leading-body); }
 .dc-head.warn { color: var(--warn); }
 .dc-head.bad { color: #ff8a8a; }
-.dc-evidence { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 1px; font-size: 12px; color: #c8d0d9; }
+.dc-evidence { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 1px; font-size: var(--text-body); color: #c8d0d9; }
 .dc-evidence li { overflow-wrap: anywhere; }
 .dc-evidence li.warn { color: var(--warn); }
 .dc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
 
-.dc-btn { background: transparent; color: var(--text); border: 1px solid #3a4a5c; border-radius: 3px; padding: 5px 11px; font-size: 12.5px; font-weight: 600; line-height: 1.2; }
+.dc-btn { background: transparent; color: var(--text); border: 1px solid #3a4a5c; border-radius: 3px; padding: 5px 11px; font-size: var(--text-body); font-weight: 600; line-height: var(--leading-title); }
 .dc-btn:hover:not(:disabled) { border-color: #6a7f95; background: #1a2532; }
 .dc-btn:focus-visible, .dc-mark:focus-visible, .dc-ask:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .dc-btn:disabled { opacity: 0.45; }
@@ -21,32 +21,32 @@
 .dc-btn.engage:hover:not(:disabled) { border-color: var(--accent); background: #241c10; }
 .dc-btn.quiet { color: var(--muted); border-color: transparent; font-weight: 500; }
 /* an engagement on the track: in play (the card offers no Nominate), or the last one's outcome */
-.dc-engaged { margin: 4px 0 2px; font-size: 12px; color: var(--muted); }
+.dc-engaged { margin: 4px 0 2px; font-size: var(--text-body); color: var(--muted); }
 .dc-engaged.live { color: var(--accent); }
 .dc-engaged .dc-link { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; text-decoration: underline dotted; cursor: pointer; }
 .dc-engaged .dc-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .dc-btn.quiet:hover:not(:disabled) { color: var(--text); border-color: var(--line); }
 
 .dc-ask { margin-top: 4px; padding: 8px 10px; border: 1px solid #3a4a5c; border-radius: 4px; background: rgba(0, 0, 0, 0.22); display: flex; flex-direction: column; gap: 5px; outline: none; }
-.dc-ask-head { margin: 0; font-size: 13px; font-weight: 600; }
-.dc-note { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 5px 7px; font: 12px var(--sans); }
-.dc-err { margin: 2px 0 0; color: var(--bad); font-size: 12px; }
+.dc-ask-head { margin: 0; font-size: var(--text-body); font-weight: 600; }
+.dc-note { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 5px 7px; font: var(--text-body)/var(--leading-body) var(--font-ui); }
+.dc-err { margin: 2px 0 0; color: var(--bad); font-size: var(--text-body); }
 
 /* declaring by hand: hostile apart, the restrictive marks as one quiet group */
 .dc-declare { display: flex; flex-direction: column; gap: 6px; }
 .dc-declare-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.dc-lbl { font: 600 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
-.dc-lbl.soft { letter-spacing: 0.04em; text-transform: none; font: 11.5px var(--sans); }
+.dc-lbl { font: 600 var(--text-label)/var(--leading-label) var(--font-ui); letter-spacing: var(--caps-tracking); text-transform: uppercase; color: var(--muted); }
+.dc-lbl.soft { letter-spacing: 0; text-transform: none; font: var(--text-label)/var(--leading-label) var(--font-ui); }
 .dc-marks { display: inline-flex; align-items: center; gap: 0; margin-left: auto; }
 .dc-marks .dc-lbl { margin-right: 6px; }
-.dc-mark { background: transparent; color: #aab6c3; border: 1px solid var(--line); padding: 3px 8px; font-size: 11.5px; }
+.dc-mark { background: transparent; color: #aab6c3; border: 1px solid var(--line); padding: 3px 8px; font-size: var(--text-label); }
 .dc-mark + .dc-mark { border-left: 0; }
 .dc-mark:first-of-type { border-radius: 3px 0 0 3px; }
 .dc-mark:last-of-type { border-radius: 0 3px 3px 0; }
 .dc-mark:hover:not(:disabled) { color: var(--text); background: #1a2532; }
 .dc-mark.on { color: var(--text); background: #1c2733; box-shadow: inset 0 -2px 0 #6a7f95; }
 
-.dc-holding { margin: 0; font-size: 12px; color: #c8d0d9; }
-.dc-fold { font-size: 12px; color: var(--muted); }
+.dc-holding { margin: 0; font-size: var(--text-body); color: #c8d0d9; }
+.dc-fold { font-size: var(--text-body); color: var(--muted); }
 .dc-fold summary { cursor: pointer; }
 .dc-fold p { margin: 3px 0 0; color: #c8d0d9; }

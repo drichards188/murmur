@@ -19,6 +19,8 @@ import {
   type KeepOutLost,
 } from './engage'
 import './engage.css'
+import { useFloatBar } from './floating'
+import { FloatGrip } from './FloatingPanel'
 import {
   blocks,
   checksLine,
@@ -195,6 +197,8 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
   const [operator] = useOperator()
   const auth = useAuth()
   const ops = useOperators()
+  // its header is the drag bar (FloatingPanel.tsx): docked on the rail until dragged out over the map
+  const bar = useFloatBar()
   // rules 19: only an operator with engagement authority may accept a live track as behaving
   // now (the bridge refuses the whole nomination otherwise): nobody else is offered the control
   const mayAcceptBehaving = auth.auth === 'credentials' ? auth.engage === true : ops.engage.includes(operator)
@@ -498,7 +502,8 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
 
   return (
     <aside className="eg-panel" aria-label={title} onKeyDown={onKeyDown} data-tutorial="engage-form">
-      <header className="eg-top">
+      <header className="eg-top" {...bar}>
+        <FloatGrip />
         <h2>{title}</h2>
         <span className="eg-as">as {operator}</span>
         <button className="ghost mini close" onClick={onClose} aria-label="Close">

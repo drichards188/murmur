@@ -5,6 +5,8 @@ import { DOMAIN_WORDS, km, lightState, sensorColor, sensorShort, type ReachAnswe
 import type { WeatherField, WeatherGrid, WeatherMode } from './weather'
 import { describeField, regionsOf } from './weatherField'
 import { ColourField } from './WeatherLayer'
+import { useFloatBar } from './floating'
+import { FloatGrip } from './FloatingPanel'
 import './weather.css'
 
 /** bd murmur-4tq: what the weather and the light do to the sampled vehicle's sensors now, against
@@ -77,8 +79,10 @@ export function WeatherPanel({ center, vehicle, optical, onClose, mode, onMode, 
   const v = w?.values
   const wind = v?.wind_east_mps != null && v?.wind_north_mps != null ? Math.hypot(v.wind_east_mps, v.wind_north_mps) : null
   const direction = wind != null && wind > 0 ? (Math.atan2(-v!.wind_east_mps!, -v!.wind_north_mps!) * 180 / Math.PI + 360) % 360 : null
+  const bar = useFloatBar()
   return <aside className="weather-panel" aria-label="Weather">
-    <header><strong>Weather</strong><button className="ghost" aria-label="Close weather" onClick={onClose}>×</button></header>
+    <header {...bar}><FloatGrip /><strong>Weather</strong><button className="ghost" aria-label="Close weather" onClick={onClose}>×</button></header>
+    <div className="weather-body">
     <ColourField mode={mode} onMode={onMode} grid={grid} />
     <InView grid={grid} />
     <p title={`${point[1].toFixed(3)}, ${point[0].toFixed(3)}`}>{vehicle ? callsign(vehicle) : 'Map centre'}</p>
@@ -101,5 +105,6 @@ export function WeatherPanel({ center, vehicle, optical, onClose, mode, onMode, 
         {w?.model && <p><a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Weather data by Open-Meteo</a> · NOAA HRRR</p>}
       </details>
     </>}
+    </div>
   </aside>
 }

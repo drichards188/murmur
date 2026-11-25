@@ -4,12 +4,12 @@
 .ix.q { z-index: 5; }
 .q-card { border-left-color: var(--warn); }
 .q-card:hover { border-left-color: var(--warn); }
-.q-for { font-size: 12.5px; color: #c6cfd9; }
-.q-for b { font: 600 12.5px var(--mono); }
-.q-reach, .q-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font: 11.5px var(--mono); }
+.q-for { font-size: var(--text-body); color: #c6cfd9; }
+.q-for b { font-family: var(--font-data); }
+.q-reach, .q-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font: var(--text-label)/var(--leading-label) var(--font-ui); }
 .q-reach li.wait { color: var(--warn); }
 .q-reach li.ok { color: var(--ok); }
-.q-reach b { color: var(--text); }
+.q-reach b { color: var(--text); font-family: var(--font-data); }
 .q-changes li { color: var(--muted); }
 .q-actions { display: flex; justify-content: flex-end; }
 .q-done { border-left-color: var(--line); cursor: pointer; }
@@ -19,6 +19,8 @@
 .q-out.warn { color: var(--violet); border: 1px solid #4b3a66; }
 .q-out.bad { color: var(--bad); border: 1px solid #5a2c2c; }
 .ix-state.queued { background: #3a2f12; color: var(--warn); }
-.q-card .ix-kind { font-size: 13px; letter-spacing: 0; flex: 1; min-width: 0; }
-.q-why { font-size: 12px; color: var(--warn); }
-.q-fold summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+.q-card .ix-kind { flex: 1; min-width: 0; }
+/* an order that left the queue: its line, no longer the card's key line */
+.q-done .ix-kind { font-size: var(--text-body); }
+.q-why { font-size: var(--text-body); color: var(--warn); }
+.q-fold summary { font-size: var(--text-label); color: var(--muted); cursor: pointer; }
